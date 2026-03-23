@@ -38,7 +38,12 @@ pip install .
 Create a `.env` file in the root directory:
 
 ```env
+# Cloud AI
 OPENAI_API_KEY=your_api_key_here
+
+# Local AI Mode (Ollama)
+LOCAL_AI_MODE=false
+OLLAMA_API_BASE=http://localhost:11434
 ```
 
 ### Run the Demo
