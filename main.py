@@ -59,7 +59,8 @@ async def main():
     print(result)
 
 if __name__ == "__main__":
-    if not os.getenv("OPENAI_API_KEY"):
+    is_local = os.getenv("LOCAL_AI_MODE", "false").lower() == "true"
+    if not is_local and not os.getenv("OPENAI_API_KEY"):
         print("Error: OPENAI_API_KEY is not set in the environment.")
     else:
         asyncio.run(main())

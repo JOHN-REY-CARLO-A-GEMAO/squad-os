@@ -4,6 +4,7 @@ import time
 from typing import Any, Dict, List, Optional
 from litellm import acompletion, completion_cost
 from ..tools.base import BaseTool
+from ..utils.parser import extract_tool_calls_from_text
 
 class BaseAgent:
     def __init__(
@@ -12,13 +13,24 @@ class BaseAgent:
         goal: str,
         backstory: str,
         tools: List[BaseTool] = None,
-        model_name: str = "gpt-4o-mini"
+        model_name: str = "gpt-4o-mini",
+        model_override: Optional[str] = None
     ):
         self.role = role
         self.goal = goal
         self.backstory = backstory
         self.tools = tools or []
-        self.model_name = model_name
+
+        # Local AI support
+        local_mode = os.getenv("LOCAL_AI_MODE", "false").lower() == "true"
+        default_local_model = "ollama/llama3"
+
+        if model_override:
+            self.model_name = model_override
+        elif local_mode:
+            self.model_name = default_local_model
+        else:
+            self.model_name = model_name
 
     async def execute_task(self, task_description: str, context: str = "") -> Dict[str, Any]:
         start_time = time.time()
@@ -48,23 +60,72 @@ Respond with only the final output for the task. Use your available tools if nee
         ]
 
         try:
+            # Prepare acompletion arguments
+            completion_kwargs = {
+                "model": self.model_name,
+                "messages": messages,
+                "tools": litellm_tools if litellm_tools else None,
+                "tool_choice": "auto" if litellm_tools else None
+            }
+
+            # Handle Ollama connection for local mode
+            if self.model_name.startswith("ollama/"):
+                completion_kwargs["api_base"] = os.getenv("OLLAMA_API_BASE", "http://localhost:11434")
+
             # Reasoning loop (simple 1-turn tool-calling for now, could be expanded to a loop)
-            response = await acompletion(
-                model=self.model_name,
-                messages=messages,
-                tools=litellm_tools if litellm_tools else None,
-                tool_choice="auto" if litellm_tools else None
-            )
+            response = await acompletion(**completion_kwargs)
 
             message = response.choices[0].message
-            prompt_tokens = response.usage.prompt_tokens
-            completion_tokens = response.usage.completion_tokens
-            total_cost = completion_cost(completion_response=response)
+            prompt_tokens = getattr(response.usage, 'prompt_tokens', 0)
+            completion_tokens = getattr(response.usage, 'completion_tokens', 0)
+            try:
+                total_cost = completion_cost(completion_response=response)
+            except:
+                total_cost = 0.0
 
-            if message.tool_calls:
+            # Fallback tool-calling parser for local models
+            tool_calls = message.tool_calls
+            if not tool_calls and message.content and litellm_tools:
+                parsed_calls = extract_tool_calls_from_text(message.content)
+                if parsed_calls:
+                    # Simulate tool_calls structure
+                    from types import SimpleNamespace
+                    tool_calls = [
+                        SimpleNamespace(
+                            id=tc["id"],
+                            function=SimpleNamespace(
+                                name=tc["function"]["name"],
+                                arguments=tc["function"]["arguments"]
+                            )
+                        )
+                        for tc in parsed_calls
+                    ]
+
+            if tool_calls:
                 # Execute tools and follow up
-                messages.append(message)
-                for tool_call in message.tool_calls:
+                # If we parsed them ourselves, we still need to add the assistant message
+                if not message.tool_calls:
+                    # Convert SimpleNamespace tool calls back to dict for message history
+                    formatted_tool_calls = [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments
+                            }
+                        }
+                        for tc in tool_calls
+                    ]
+                    messages.append({
+                        "role": "assistant",
+                        "content": message.content,
+                        "tool_calls": formatted_tool_calls
+                    })
+                else:
+                    messages.append(message)
+
+                for tool_call in tool_calls:
                     tool_name = tool_call.function.name
                     tool_args = json.loads(tool_call.function.arguments)
                     
@@ -86,14 +147,21 @@ Respond with only the final output for the task. Use your available tools if nee
                         })
 
                 # Get final answer after tool use
-                response = await acompletion(
-                    model=self.model_name,
-                    messages=messages
-                )
+                final_completion_kwargs = {
+                    "model": self.model_name,
+                    "messages": messages
+                }
+                if self.model_name.startswith("ollama/"):
+                    final_completion_kwargs["api_base"] = os.getenv("OLLAMA_API_BASE", "http://localhost:11434")
+
+                response = await acompletion(**final_completion_kwargs)
                 message = response.choices[0].message
-                prompt_tokens += response.usage.prompt_tokens
-                completion_tokens += response.usage.completion_tokens
-                total_cost += completion_cost(completion_response=response)
+                prompt_tokens += getattr(response.usage, 'prompt_tokens', 0)
+                completion_tokens += getattr(response.usage, 'completion_tokens', 0)
+                try:
+                    total_cost += completion_cost(completion_response=response)
+                except:
+                    pass
 
             execution_ms = int((time.time() - start_time) * 1000)
             

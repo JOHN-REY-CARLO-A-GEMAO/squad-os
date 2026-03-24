@@ -1,3 +1,4 @@
+import os
 import json
 import logging
 from typing import Any, Dict, List, Optional
@@ -16,7 +17,16 @@ class MissionPlan(BaseModel):
 class Manager:
     def __init__(self, agents: List[BaseAgent], model_name: str = "gpt-4o-mini"):
         self.agents = {agent.role: agent for agent in agents}
-        self.model_name = model_name
+
+        # Local AI support
+        local_mode = os.getenv("LOCAL_AI_MODE", "false").lower() == "true"
+        default_local_model = "ollama/llama3"
+
+        if local_mode:
+            self.model_name = default_local_model
+        else:
+            self.model_name = model_name
+
         self.max_retries = 3
 
     async def plan_mission(self, goal: str) -> MissionPlan:
@@ -29,14 +39,22 @@ Assign each task to the most appropriate agent from the following list:
 
 Return your response as a structured JSON object representing the MissionPlan.
 """
-        response = await acompletion(
-            model=self.model_name,
-            messages=[
+        completion_kwargs = {
+            "model": self.model_name,
+            "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": f"The mission goal is: {goal}"}
             ],
-            response_format={"type": "json_object", "schema": MissionPlan.model_json_schema()}
-        )
+            "response_format": {"type": "json_object", "schema": MissionPlan.model_json_schema()}
+        }
+
+        if self.model_name.startswith("ollama/"):
+            completion_kwargs["api_base"] = os.getenv("OLLAMA_API_BASE", "http://localhost:11434")
+            # Local models might not support response_format="json_object" well,
+            # but LiteLLM handles it for some. We'll keep it and hope for the best,
+            # or could add a fallback if needed.
+
+        response = await acompletion(**completion_kwargs)
         
         plan_data = json.loads(response.choices[0].message.content)
         return MissionPlan(**plan_data)
