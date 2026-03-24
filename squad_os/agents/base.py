@@ -5,6 +5,8 @@ from typing import Any, Dict, List, Optional
 from litellm import acompletion, completion_cost
 from ..tools.base import BaseTool
 from ..utils.parser import extract_tool_calls_from_text
+from ..utils.dashboard import dashboard
+from ..database.session import get_relevant_post_mortems
 
 class BaseAgent:
     def __init__(
@@ -32,130 +34,75 @@ class BaseAgent:
         else:
             self.model_name = model_name
 
-    async def execute_task(self, task_description: str, context: str = "") -> Dict[str, Any]:
+    async def execute_task(self, task_description: str, context: str = "", max_turns: int = 10) -> Dict[str, Any]:
         start_time = time.time()
         
+        # Retrieve relevant post-mortems for long-term memory
+        past_experiences = await get_relevant_post_mortems(task_description)
+        memory_context = ""
+        if past_experiences:
+            memory_context = "\nRelevant past experiences:\n" + "\n".join([
+                f"- Goal: {m['goal']}\n  Outcome: {m['outcome'][:200]}..."
+                for m in past_experiences
+            ])
+
+        tool_descriptions = "\n".join([f"- {t.name}: {t.description} (Args: {json.dumps(t.parameters)})" for t in self.tools])
+
         system_prompt = f"""You are {self.role}.
 Your goal is: {self.goal}
 Your backstory: {self.backstory}
 
-Respond with only the final output for the task. Use your available tools if needed.
+To complete your task, you can think and use tools.
+Wrap your internal reasoning in <thought> tags.
+To call a tool, use XML format: <call:tool_name>{{"arg1": "value1"}}</call:tool_name>
+The system will respond with <response>tool result</response>.
+Continue this loop until you have the final answer.
+When you are ready to provide the final output, simply write it without any tags.
+
+Available tools:
+{tool_descriptions}
 """
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Context: {context}\n\nTask: {task_description}"}
+            {"role": "user", "content": f"Context: {context}\n{memory_context}\n\nTask: {task_description}"}
         ]
 
-        # Convert tool objects to LiteLLM format
-        litellm_tools = [
-            {
-                "type": "function",
-                "function": {
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": tool.parameters
-                }
-            }
-            for tool in self.tools
-        ]
+        prompt_tokens = 0
+        completion_tokens = 0
+        total_cost = 0.0
+        turn_count = 0
 
         try:
-            # Prepare acompletion arguments
-            completion_kwargs = {
-                "model": self.model_name,
-                "messages": messages,
-                "tools": litellm_tools if litellm_tools else None,
-                "tool_choice": "auto" if litellm_tools else None
-            }
+            while turn_count < max_turns:
+                turn_count += 1
 
-            # Handle Ollama connection for local mode
-            if self.model_name.startswith("ollama/"):
-                completion_kwargs["api_base"] = os.getenv("OLLAMA_API_BASE", "http://localhost:11434")
+                completion_kwargs = {
+                    "model": self.model_name,
+                    "messages": messages,
+                }
 
-            # Reasoning loop (simple 1-turn tool-calling for now, could be expanded to a loop)
-            response = await acompletion(**completion_kwargs)
-
-            message = response.choices[0].message
-            prompt_tokens = getattr(response.usage, 'prompt_tokens', 0)
-            completion_tokens = getattr(response.usage, 'completion_tokens', 0)
-            try:
-                total_cost = completion_cost(completion_response=response)
-            except:
-                total_cost = 0.0
-
-            # Fallback tool-calling parser for local models
-            tool_calls = message.tool_calls
-            if not tool_calls and message.content and litellm_tools:
-                parsed_calls = extract_tool_calls_from_text(message.content)
-                if parsed_calls:
-                    # Simulate tool_calls structure
-                    from types import SimpleNamespace
-                    tool_calls = [
-                        SimpleNamespace(
-                            id=tc["id"],
-                            function=SimpleNamespace(
-                                name=tc["function"]["name"],
-                                arguments=tc["function"]["arguments"]
-                            )
-                        )
-                        for tc in parsed_calls
-                    ]
-
-            if tool_calls:
-                # Execute tools and follow up
-                # If we parsed them ourselves, we still need to add the assistant message
-                if not message.tool_calls:
-                    # Convert SimpleNamespace tool calls back to dict for message history
-                    formatted_tool_calls = [
+                if self.model_name.startswith("ollama/"):
+                    completion_kwargs["api_base"] = os.getenv("OLLAMA_API_BASE", "http://localhost:11434")
+                else:
+                    # For cloud models, we can still provide tools in the standard way
+                    litellm_tools = [
                         {
-                            "id": tc.id,
                             "type": "function",
                             "function": {
-                                "name": tc.function.name,
-                                "arguments": tc.function.arguments
+                                "name": tool.name,
+                                "description": tool.description,
+                                "parameters": tool.parameters
                             }
                         }
-                        for tc in tool_calls
+                        for tool in self.tools
                     ]
-                    messages.append({
-                        "role": "assistant",
-                        "content": message.content,
-                        "tool_calls": formatted_tool_calls
-                    })
-                else:
-                    messages.append(message)
+                    if litellm_tools:
+                        completion_kwargs["tools"] = litellm_tools
+                        completion_kwargs["tool_choice"] = "auto"
 
-                for tool_call in tool_calls:
-                    tool_name = tool_call.function.name
-                    tool_args = json.loads(tool_call.function.arguments)
-                    
-                    tool = next((t for t in self.tools if t.name == tool_name), None)
-                    if tool:
-                        result = await tool.execute(**tool_args)
-                        messages.append({
-                            "role": "tool",
-                            "name": tool_name,
-                            "tool_call_id": tool_call.id,
-                            "content": result
-                        })
-                    else:
-                        messages.append({
-                            "role": "tool",
-                            "name": tool_name,
-                            "tool_call_id": tool_call.id,
-                            "content": f"Error: Tool {tool_name} not found."
-                        })
-
-                # Get final answer after tool use
-                final_completion_kwargs = {
-                    "model": self.model_name,
-                    "messages": messages
-                }
-                if self.model_name.startswith("ollama/"):
-                    final_completion_kwargs["api_base"] = os.getenv("OLLAMA_API_BASE", "http://localhost:11434")
-
-                response = await acompletion(**final_completion_kwargs)
+                response = await acompletion(**completion_kwargs)
                 message = response.choices[0].message
+
                 prompt_tokens += getattr(response.usage, 'prompt_tokens', 0)
                 completion_tokens += getattr(response.usage, 'completion_tokens', 0)
                 try:
@@ -163,14 +110,89 @@ Respond with only the final output for the task. Use your available tools if nee
                 except:
                     pass
 
+                # Add assistant message to history
+                messages.append(message)
+
+                # Log thinking if present
+                if "<thought>" in (message.content or ""):
+                    import re
+                    thought = re.search(r"<thought>(.*?)</thought>", message.content, re.DOTALL)
+                    if thought:
+                        dashboard.log_thought(self.role, thought.group(1).strip())
+
+                # Parse tool calls (both native and XML)
+                tool_calls = message.tool_calls or []
+                if not tool_calls and message.content:
+                    parsed_calls = extract_tool_calls_from_text(message.content)
+                    if parsed_calls:
+                        from types import SimpleNamespace
+                        tool_calls = [
+                            SimpleNamespace(
+                                id=tc.get("id", f"call_{time.time()}"),
+                                function=SimpleNamespace(
+                                    name=tc["function"]["name"],
+                                    arguments=tc["function"]["arguments"]
+                                )
+                            )
+                            for tc in parsed_calls
+                        ]
+
+                if not tool_calls:
+                    # No tool calls, assume final answer
+                    break
+
+                # Execute tool calls
+                for tool_call in tool_calls:
+                    tool_name = tool_call.function.name
+                    try:
+                        tool_args = json.loads(tool_call.function.arguments)
+                    except json.JSONDecodeError:
+                        tool_args = {"input": tool_call.function.arguments}
+                    
+                    dashboard.log_tool_call(self.role, tool_name, json.dumps(tool_args))
+
+                    tool = next((t for t in self.tools if t.name == tool_name), None)
+                    if tool:
+                        try:
+                            result = await tool.execute(**tool_args)
+                            tool_msg = {
+                                "role": "tool" if not self.model_name.startswith("ollama/") else "user",
+                                "name": tool_name,
+                                "tool_call_id": tool_call.id,
+                                "content": f"<response>{result}</response>"
+                            }
+                            # For some models, 'name' and 'tool_call_id' aren't allowed in 'user' role
+                            if self.model_name.startswith("ollama/"):
+                                tool_msg = {"role": "user", "content": f"Tool {tool_name} returned: {result}"}
+
+                            messages.append(tool_msg)
+                        except Exception as e:
+                            error_msg = f"Error executing tool {tool_name}: {str(e)}"
+                            messages.append({
+                                "role": "user",
+                                "content": f"System: {error_msg}. Please correct your tool call."
+                            })
+                    else:
+                        messages.append({
+                            "role": "user",
+                            "content": f"System: Tool {tool_name} not found. Available tools: {[t.name for t in self.tools]}"
+                        })
+
             execution_ms = int((time.time() - start_time) * 1000)
             
+            last_message = messages[-1]
+            if isinstance(last_message, dict):
+                output = last_message.get("content", "")
+            else:
+                output = getattr(last_message, "content", "")
+
             return {
-                "output": message.content,
+                "output": output,
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
                 "cost_usd": total_cost,
-                "execution_ms": execution_ms
+                "execution_ms": execution_ms,
+                "turns": turn_count
             }
 
         except Exception as e:

@@ -80,7 +80,7 @@ class SearchTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return "Searches the web for information (Mock interface)."
+        return "Searches the web for high-quality information using the Tavily API."
 
     @property
     def parameters(self) -> Dict[str, Any]:
@@ -93,6 +93,31 @@ class SearchTool(BaseTool):
         }
 
     async def execute(self, query: str) -> str:
-        # In a real scenario, this would call Tavily/Serper.
-        # Returning a mock result for the demo.
-        return f"Mock search results for: '{query}'. Topic: Flask web applications and modern multi-agent systems."
+        api_key = os.getenv("TAVILY_API_KEY")
+        if not api_key:
+            return "Error: TAVILY_API_KEY not found in environment. Mocking results: Flask is a micro web framework for Python."
+
+        url = "https://api.tavily.com/search"
+        payload = {
+            "api_key": api_key,
+            "query": query,
+            "search_depth": "advanced",
+            "include_images": False,
+            "include_answer": True,
+            "max_results": 5
+        }
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        results = data.get("results", [])
+                        formatted_results = []
+                        for res in results:
+                            formatted_results.append(f"Title: {res['title']}\nURL: {res['url']}\nContent: {res['content']}\n")
+                        return "\n---\n".join(formatted_results)
+                    else:
+                        return f"Error from Tavily API: {response.status} - {await response.text()}"
+        except Exception as e:
+            return f"Error executing search: {str(e)}"

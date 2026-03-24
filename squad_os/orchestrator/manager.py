@@ -4,12 +4,24 @@ import logging
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 from litellm import acompletion
+import asyncio
 from ..agents.base import BaseAgent
-from ..database.session import create_mission, create_task, update_task, update_mission
+from ..database.session import (
+    create_mission,
+    create_task,
+    update_task,
+    update_mission,
+    get_mission_tasks,
+    create_post_mortem
+)
+from ..utils.dashboard import dashboard
+from rich.live import Live
 
 class TaskPlan(BaseModel):
+    task_id: str = Field(description="Unique identifier for the task (e.g., 'task_1')")
     description: str = Field(description="Detailed instruction for the agent")
     assigned_agent_role: str = Field(description="The exact role of the agent to assign this to")
+    depends_on: List[str] = Field(default_factory=list, description="List of task_ids that must be completed before this task starts")
 
 class MissionPlan(BaseModel):
     tasks: List[TaskPlan] = Field(description="Sequential list of tasks to achieve the goal")
@@ -33,7 +45,10 @@ class Manager:
         agent_descriptions = "\n".join([f"- {a.role}: {a.goal}" for a in self.agents.values()])
         
         system_prompt = f"""You are a Lead Systems Architect. 
-Your goal is to break down a high-level mission into a series of sequential tasks.
+Your goal is to break down a high-level mission into a series of tasks.
+Tasks can run in parallel if they don't depend on each other.
+Use the 'depends_on' field to specify task dependencies using 'task_id'.
+
 Assign each task to the most appropriate agent from the following list:
 {agent_descriptions}
 
@@ -61,65 +76,94 @@ Return your response as a structured JSON object representing the MissionPlan.
 
     async def run_mission(self, goal: str):
         mission_id = await create_mission(goal)
-        plan = await self.plan_mission(goal)
+        dashboard.update_header(goal)
         
-        context = ""
-        for task_plan in plan.tasks:
-            agent = self.agents.get(task_plan.assigned_agent_role)
-            if not agent:
-                logging.error(f"Agent with role {task_plan.assigned_agent_role} not found.")
-                continue
+        with Live(dashboard.get_layout(), refresh_per_second=4, console=dashboard.console) as live:
+            plan = await self.plan_mission(goal)
 
-            task_id = await create_task(mission_id, task_plan.description, agent.role)
+            task_results = {} # task_id -> output
+            completed_tasks = set()
+            failed_tasks = set()
             
-            retry_count = 0
-            while retry_count <= self.max_retries:
-                result = await agent.execute_task(task_plan.description, context)
-                
-                if "error" in result:
-                    await update_task(task_id, status="FAILED", error=result["error"], retry_count=retry_count)
-                    break # Critical failure
+            # Helper to get context from dependencies
+            def get_context(depends_on: List[str]) -> str:
+                context_parts = []
+                for dep_id in depends_on:
+                    if dep_id in task_results:
+                        context_parts.append(f"Output from {dep_id}:\n{task_results[dep_id]}")
+                return "\n\n".join(context_parts)
 
-                # QA/Reviewer Handoff & Loop Logic
-                # Check for failure indications in a more robust way if possible
-                is_failed = agent.role == "QA/Reviewer" and any(word in result["output"].lower() for word in ["error", "failed", "bug", "reject"])
-                
-                if is_failed:
-                    retry_count += 1
-                    if retry_count > self.max_retries:
-                        await update_task(task_id, status="FAILED_REQUIRES_HUMAN_INTERVENTION", output_data=result["output"], retry_count=retry_count)
-                        await update_mission(mission_id, "FAILED")
-                        return
+            async def run_task(task_plan: TaskPlan):
+                agent = self.agents.get(task_plan.assigned_agent_role)
+                if not agent:
+                    logging.error(f"Agent with role {task_plan.assigned_agent_role} not found.")
+                    return None
 
-                    # Identify the agent responsible for the previous step (usually Developer)
-                    # We look for the most recent successful task that wasn't QA
-                    tasks = await get_mission_tasks(mission_id)
-                    previous_dev_task = next((t for t in reversed(tasks) if t["status"] == "COMPLETED" and t["assigned_agent"] != "QA/Reviewer"), None)
-                    
-                    if previous_dev_task:
-                        dev_agent_role = previous_dev_task["assigned_agent"]
-                        dev_agent = self.agents.get(dev_agent_role)
-                        if dev_agent:
-                            feedback_context = f"QA Feedback: {result['output']}\n\nOriginal Task: {previous_dev_task['description']}"
-                            logging.info(f"Retrying task through {dev_agent_role} due to QA failure. Attempt {retry_count}")
-                            dev_result = await dev_agent.execute_task(f"Fix the issues found by QA in your previous task: {previous_dev_task['description']}", feedback_context)
-                            context += f"\n\nRefined output from {dev_agent_role} (after QA feedback):\n{dev_result['output']}"
-                            # Re-run QA agent with updated context
-                            continue
-                
-                # Successful execution
-                await update_task(
-                    task_id, 
-                    status="COMPLETED", 
-                    output_data=result["output"], 
-                    prompt_tokens=result["prompt_tokens"],
-                    completion_tokens=result["completion_tokens"],
-                    cost_usd=result["cost_usd"],
-                    execution_ms=result["execution_ms"],
-                    retry_count=retry_count
-                )
-                context += f"\n\nOutput from {agent.role}:\n{result['output']}"
-                break # Exit retry loop on success
+                db_task_id = await create_task(mission_id, task_plan.description, agent.role, task_name=task_plan.task_id)
+                dashboard.log_status(agent.role, f"Waiting for dependencies: {task_plan.depends_on}")
 
-        await update_mission(mission_id, "COMPLETED")
-        return context
+                # Wait for dependencies or failure
+                for dep_id in task_plan.depends_on:
+                    while dep_id not in completed_tasks:
+                        if dep_id in failed_tasks:
+                            dashboard.log_status(agent.role, f"Dependency {dep_id} failed. Skipping task.")
+                            await update_task(db_task_id, status="SKIPPED", error=f"Dependency {dep_id} failed.")
+                            failed_tasks.add(task_plan.task_id)
+                            task_results[task_plan.task_id] = f"SKIPPED: Dependency {dep_id} failed"
+                            live.update(dashboard.get_layout())
+                            return None
+                        await asyncio.sleep(0.5)
+                        live.update(dashboard.get_layout())
+                
+                context = get_context(task_plan.depends_on)
+                dashboard.log_status(agent.role, f"Executing: {task_plan.task_id}")
+                live.update(dashboard.get_layout())
+
+                retry_count = 0
+                while retry_count <= self.max_retries:
+                    result = await agent.execute_task(task_plan.description, context)
+                    live.update(dashboard.get_layout())
+
+                    if "error" in result:
+                        retry_count += 1
+                        if retry_count > self.max_retries:
+                            await update_task(db_task_id, status="FAILED", error=result["error"], retry_count=retry_count-1)
+                            failed_tasks.add(task_plan.task_id)
+                            task_results[task_plan.task_id] = f"FAILED: {result['error']}"
+                            dashboard.log_status(agent.role, f"Failed: {task_plan.task_id}")
+                            live.update(dashboard.get_layout())
+                            return None
+                        dashboard.log_status(agent.role, f"Error (Attempt {retry_count}): {result['error']}. Retrying...")
+                        continue
+
+                    # Successful execution
+                    await update_task(
+                        db_task_id,
+                        status="COMPLETED",
+                        output_data=result["output"],
+                        prompt_tokens=result["prompt_tokens"],
+                        completion_tokens=result["completion_tokens"],
+                        cost_usd=result["cost_usd"],
+                        execution_ms=result["execution_ms"],
+                        retry_count=retry_count
+                    )
+                    task_results[task_plan.task_id] = result["output"]
+                    completed_tasks.add(task_plan.task_id)
+                    dashboard.log_status(agent.role, f"Completed: {task_plan.task_id}")
+                    live.update(dashboard.get_layout())
+                    return result["output"]
+
+            # Dispatch all tasks; they will wait for their dependencies internally
+            futures = [asyncio.create_task(run_task(tp)) for tp in plan.tasks]
+            await asyncio.gather(*futures)
+
+            # Generate post-mortem
+            mission_outcome = "\n\n".join([f"Task {tid}: {res}" for tid, res in task_results.items()])
+            all_tools_used = []
+            for agent in self.agents.values():
+                 all_tools_used.extend([t.name for t in agent.tools])
+
+            await create_post_mortem(mission_id, goal, mission_outcome, list(set(all_tools_used)))
+            await update_mission(mission_id, "COMPLETED")
+
+            return mission_outcome

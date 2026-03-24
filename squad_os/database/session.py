@@ -44,6 +44,7 @@ async def init_db():
             CREATE TABLE IF NOT EXISTS tasks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 mission_id INTEGER NOT NULL,
+                task_name TEXT,
                 description TEXT NOT NULL,
                 assigned_agent TEXT NOT NULL,
                 status TEXT NOT NULL,
@@ -58,6 +59,23 @@ async def init_db():
                 FOREIGN KEY (mission_id) REFERENCES missions (id)
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS post_mortems (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                mission_id INTEGER,
+                goal TEXT,
+                outcome TEXT,
+                successful_tools TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (mission_id) REFERENCES missions (id)
+            )
+        """)
+        # Migration: Add task_name to tasks if it doesn't exist
+        async with db.execute("PRAGMA table_info(tasks)") as cursor:
+            columns = [row[1] for row in await cursor.fetchall()]
+            if "task_name" not in columns:
+                await db.execute("ALTER TABLE tasks ADD COLUMN task_name TEXT")
+
         await db.commit()
 
 async def create_mission(goal: str) -> int:
@@ -69,14 +87,31 @@ async def create_mission(goal: str) -> int:
         await db.commit()
         return cursor.lastrowid
 
-async def create_task(mission_id: int, description: str, assigned_agent: str) -> int:
+async def create_task(mission_id: int, description: str, assigned_agent: str, task_name: Optional[str] = None) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
-            "INSERT INTO tasks (mission_id, description, assigned_agent, status) VALUES (?, ?, ?, ?)",
-            (mission_id, description, assigned_agent, "PENDING")
+            "INSERT INTO tasks (mission_id, task_name, description, assigned_agent, status) VALUES (?, ?, ?, ?, ?)",
+            (mission_id, task_name, description, assigned_agent, "PENDING")
         )
         await db.commit()
         return cursor.lastrowid
+
+async def create_post_mortem(mission_id: int, goal: str, outcome: str, successful_tools: List[str]):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO post_mortems (mission_id, goal, outcome, successful_tools) VALUES (?, ?, ?, ?)",
+            (mission_id, goal, outcome, json.dumps(successful_tools))
+        )
+        await db.commit()
+
+async def get_relevant_post_mortems(query: str, limit: int = 3) -> List[Dict[str, Any]]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        # Simple keyword search for now
+        sql = "SELECT * FROM post_mortems WHERE goal LIKE ? OR outcome LIKE ? ORDER BY created_at DESC LIMIT ?"
+        async with db.execute(sql, (f"%{query}%", f"%{query}%", limit)) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
 
 async def update_task(task_id: int, **kwargs):
     async with aiosqlite.connect(DB_PATH) as db:

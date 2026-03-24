@@ -5,9 +5,34 @@ from typing import Any, Dict, List, Optional
 def extract_tool_calls_from_text(text: str) -> List[Dict[str, Any]]:
     """
     Attempts to extract tool/function call intents from unstructured text.
-    Looks for JSON blocks or patterns like 'Action: name' and 'Action Input: {...}'
+    Looks for XML tags <call:tool_name>{json_args}</call:tool_name>, JSON blocks,
+    or patterns like 'Action: name' and 'Action Input: {...}'
     """
     tool_calls = []
+
+    # 0. Look for XML tags <call:tool_name>arguments</call:tool_name>
+    xml_calls = re.findall(r"<call:(\w+)>(.*?)</call:\1>", text, re.DOTALL)
+    for tool_name, arguments in xml_calls:
+        try:
+            # Try to parse arguments as JSON, if it fails, treat it as a string input
+            try:
+                args_dict = json.loads(arguments.strip())
+            except json.JSONDecodeError:
+                args_dict = {"input": arguments.strip()}
+
+            tool_calls.append({
+                "function": {
+                    "name": tool_name,
+                    "arguments": json.dumps(args_dict)
+                },
+                "type": "function",
+                "id": f"call_xml_{len(tool_calls)}"
+            })
+        except Exception:
+            continue
+
+    if tool_calls:
+        return tool_calls
 
     # 1. Look for code blocks with JSON
     json_blocks = re.findall(r"```json\s*(.*?)\s*```", text, re.DOTALL)
