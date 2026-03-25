@@ -1,41 +1,45 @@
 import asyncio
+import litellm
 from squad_os.agents.base import BaseAgent
 from squad_os.orchestrator.manager import Manager
-from squad_os.tools.registry import TerminalTool, HumanApprovalTool
+from squad_os.tools.registry import TerminalTool, FileWriterTool, HumanApprovalTool
 from squad_os.database.session import init_db
+
+# Set timeout to prevent long waits
+litellm.request_timeout = 60
 
 async def main():
     await init_db()
     terminal = TerminalTool()
-    human = HumanApprovalTool() # Initialize the new tool
+    writer = FileWriterTool()
+    human = HumanApprovalTool()
     
-    CLOUD_MODEL = "ollama/gpt-oss:20b-cloud"
+    # Using a fast cloud model
+    CLOUD_MODEL = "ollama/deepseek-v3.1:671b-cloud"
 
-    # Define the Agent
-    # We tell the agent in its backstory that it MUST ask for permission.
-    devops = BaseAgent(
-        role="DevOps Engineer",
-        goal="Push the current workspace changes to GitHub safely.",
-        backstory=(
-            "You are a careful engineer. You have access to the terminal, "
-            "but you MUST use the human_approval tool before running any 'git push' command."
-        ),
-        tools=[terminal, human], # Give it both tools
+    marketer = BaseAgent(
+        role="GitHub Specialist",
+        goal="Rewrite the README and organize the project for maximum GitHub stars.",
+        backstory="Expert in professional open-source documentation and project structure.",
+        tools=[terminal, writer, human],
         model_name=CLOUD_MODEL
     )
 
-    squad_manager = Manager(agents=[devops], model_name=CLOUD_MODEL)
+    squad_manager = Manager(agents=[marketer], model_name=CLOUD_MODEL)
 
+    # THE MISSION: Professional Polish
     mission_goal = (
-        "1. Check the git status. "
-        "2. Propose a commit message for the recent changes. "
-        "3. ASK the human for approval to push to the main branch. "
-        "4. If approved, execute the push."
+        "1. Rewrite 'README.md' to be professional. Include: "
+        "   - Badges for License and Python version. "
+        "   - Sections: Features (Async, SQLite, Human-in-the-loop), Dashboard, and Examples. "
+        "2. Create an 'examples/' folder and move the Java code there. "
+        "3. COMMIT and PUSH to GitHub main branch. "
+        "ASK FOR APPROVAL BEFORE PUSHING."
     )
 
-    print(f"--- Starting Safety-First Mission ---")
+    print(f"--- Starting Final Star-Maker Mission ---")
     await squad_manager.run_mission(mission_goal)
-    print("\n--- Mission Complete ---")
+    print("\n--- DONE! Refresh GitHub now! ---")
 
 if __name__ == "__main__":
     asyncio.run(main())
