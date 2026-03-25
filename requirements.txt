@@ -1,0 +1,9 @@
+litellm
+pydantic
+python-dotenv
+aiohttp
+beautifulsoup4
+markdownify
+duckduckgo-search
+streamlit
+aiosqlite

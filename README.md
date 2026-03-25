@@ -1,79 +1,73 @@
-# SquadOS Framework
+# 🛡️ SquadOS Framework
 
-SquadOS is a production-ready Multi-Agent System (MAS) framework built for Python, designed with an "Orchestrator-Managed Pipeline" architecture. It emphasizes modularity, security, and observability.
+[](https://opensource.org/licenses/Apache-2.0)
+[](https://www.python.org/)
+[](https://ollama.com/)
 
-## Key Features
+**SquadOS** is a production-ready, asynchronous Multi-Agent System (MAS) framework. It utilizes an **Orchestrator-Managed Pipeline** to coordinate specialized agents—such as Architects, Developers, and Researchers—for complex automation tasks.
 
-- **Asynchronous Execution:** Built with `asyncio` for non-blocking I/O operations.
-- **SQLite State Management:** Uses SQLite with Write-Ahead Logging (WAL) for ACID-compliant task tracking and auditing.
-- **Sandboxed File Operations:** Tools like `FileWriterTool` are restricted to a designated `workspace/` directory.
-- **LiteLLM Integration:** Compatible with any major LLM provider (OpenAI, Anthropic, Gemini, etc.) via a unified API.
-- **Structured Planning:** The `Manager` uses Pydantic models and LLM structured outputs to generate consistent mission plans.
-- **Observability:** Automatically tracks prompt/completion tokens, costs (USD), and execution latency for every task.
-- **Resilient Workflows:** Built-in cyclical retry loop (max 3 retries) for tasks that fail QA validation.
+-----
 
-## Architecture
+## 🚀 Key Features
 
-1. **Manager (Orchestrator):** The brain of the squad. It takes a high-level goal, uses a "Planner" LLM to break it into a task list, and assigns them to agents. It manages the "Direct Handoff" of context between agents.
-2. **BaseAgent:** A persona-driven class with a specific role, goal, and backstory. Each agent has its own toolset and reasoning loop.
-3. **Tools (Registry):** Modular components that agents can use to interact with the world (e.g., `WebScraperTool`, `FileWriterTool`).
-4. **Database (Shared Memory):** A centralized SQLite database (`shared_memory.db`) that stores the complete history and state of all missions and tasks.
+  * **Asynchronous Orchestration:** High-speed agent coordination using `asyncio` for non-blocking I/O.
+  * **SQLite Persistence:** Full mission auditing and state management in `shared_memory.db` with WAL mode.
+  * **Human-in-the-Loop (HITL):** Built-in safety protocols where agents request human approval via the terminal before executing critical actions.
+  * **Provider Agnostic:** Powered by LiteLLM. Seamlessly switch between OpenAI, Anthropic, or local **Ollama** models.
+  * **Agentic Dashboard:** Real-time observability to monitor token costs, latency, and agent logs via a built-in Streamlit UI.
 
-## Quick Start
+-----
 
-### Installation
+## 🛠️ Quick Start
 
-Ensure you have Python 3.10+ installed.
+### 1\. Installation
 
 ```bash
-# Clone the repository and navigate into it
-cd squad_os
-
-# Install dependencies (using uv or pip)
-pip install .
+git clone https://github.com/JOHN-REY-CARLO-A-GEMAO/squad-os.git
+cd squad-os
+pip install -r requirements.txt
 ```
 
-### Configuration
+### 2\. Configuration
 
 Create a `.env` file in the root directory:
 
 ```env
-OPENAI_API_KEY=your_api_key_here
+OPENAI_API_KEY=your_key_here
+# SquadOS also supports Ollama out of the box!
 ```
 
-### Run the Demo
-
-The demo showcases a "Researcher" finding information and a "Developer" building a Flask app based on that research, followed by a "QA/Reviewer" validation.
+### 3\. Run the Monitoring Dashboard
 
 ```bash
-python main.py
+cd workspace
+python -m streamlit run dashboard.py
 ```
 
-## Adding New "Departments"
+-----
 
-To add a new specialized team (department), follow these steps:
+## 💡 Real-World Examples
 
-1. **Define Tools:** Create new tool classes in `squad_os/tools/registry.py` by inheriting from `BaseTool`.
-2. **Instantiate Agents:** Create new `BaseAgent` instances with specific roles and tools.
-3. **Update Manager:** Pass the new agents to the `Manager` class.
+Explore the `examples/` directory to see SquadOS in action:
 
-Example:
+  * **Java GUI Builder:** A squad of agents (Architect, Developer, QA) collaborating to build a Java Swing Login system with validation and error handling.
+  * **Framework Researcher:** Agents performing live web searches to summarize the competitive landscape of AI tools.
 
-```python
-from squad_os.agents.base import BaseAgent
-from squad_os.tools.registry import SearchTool
+-----
 
-social_media_manager = BaseAgent(
-    role="Social Media Specialist",
-    goal="Create engaging posts for LinkedIn and Twitter based on technical articles.",
-    backstory="A creative content creator with a deep understanding of tech trends.",
-    tools=[SearchTool()]
-)
+## 🏗️ Architecture
 
-# Add it to the manager's agent list
-manager = Manager(agents=[researcher, developer, qa, social_media_manager])
-```
+  * **Manager (Orchestrator):** The "brain" that breaks high-level goals into task lists and manages agent handoffs.
+  * **BaseAgent:** Persona-driven agents with specific roles, goals, and private toolsets.
+  * **Tools Registry:** Modular components (WebSearch, FileWrite, Terminal) for real-world interaction.
+  * **Shared Memory:** A central SQLite DB for persistent history of all missions and tasks.
 
-## Development and Testing
+-----
 
-The framework is designed to be extensible. To add new features, follow the patterns in the `squad_os/` subdirectories. Ensure all new logic is `async` compatible.
+## 📜 License
+
+Distributed under the **Apache 2.0 License**. See `LICENSE` for more information.
+
+Built with ❤️ by **JOHN-REY-CARLO-A-GEMAO**
+
+-----
