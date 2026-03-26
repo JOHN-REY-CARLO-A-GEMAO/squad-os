@@ -8,6 +8,8 @@ from pydantic import BaseModel
 
 DB_PATH = "shared_memory.db"
 
+# --- PYDANTIC MODELS ---
+
 class MissionRecord(BaseModel):
     id: Optional[int] = None
     goal: str
@@ -28,10 +30,23 @@ class TaskRecord(BaseModel):
     cost_usd: float = 0.0
     execution_ms: int = 0
     retry_count: int = 0
+    created_at: Optional[datetime] = None
+
+class ApprovalRecord(BaseModel):
+    id: Optional[int] = None
+    task_id: int
+    mission_id: int
+    message: str
+    status: str = "PENDING"
+    feedback: Optional[str] = None
+
+# --- DATABASE INITIALIZATION ---
 
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("PRAGMA journal_mode=WAL;")
+        
+        # 1. Missions Table
         await db.execute("""
             CREATE TABLE IF NOT EXISTS missions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -40,6 +55,8 @@ async def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        
+        # 2. Tasks Table
         await db.execute("""
             CREATE TABLE IF NOT EXISTS tasks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -55,10 +72,38 @@ async def init_db():
                 cost_usd REAL DEFAULT 0.0,
                 execution_ms INTEGER DEFAULT 0,
                 retry_count INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (mission_id) REFERENCES missions (id)
             )
         """)
+
+        # 3. Approvals Table
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS approvals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id INTEGER NOT NULL,
+                mission_id INTEGER NOT NULL,
+                message TEXT NOT NULL,
+                status TEXT NOT NULL,
+                feedback TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (task_id) REFERENCES tasks (id),
+                FOREIGN KEY (mission_id) REFERENCES missions (id)
+            )
+        """)
+
+        # 4. NEW: Global Blackboard (Shared State between Agents)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS blackboard (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                key TEXT UNIQUE,
+                value TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         await db.commit()
+
+# --- MISSION & TASK HELPERS ---
 
 async def create_mission(goal: str) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
@@ -85,14 +130,75 @@ async def update_task(task_id: int, **kwargs):
         await db.execute(f"UPDATE tasks SET {keys} WHERE id = ?", values)
         await db.commit()
 
-async def get_mission_tasks(mission_id: int) -> List[Dict[str, Any]]:
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute("SELECT * FROM tasks WHERE mission_id = ?", (mission_id,)) as cursor:
-            rows = await cursor.fetchall()
-            return [dict(row) for row in rows]
-
 async def update_mission(mission_id: int, status: str):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE missions SET status = ? WHERE id = ?", (status, mission_id))
         await db.commit()
+
+# --- DASHBOARD & INTERACTIVITY HELPERS ---
+
+async def create_approval_request(mission_id: int, task_id: int, message: str) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "INSERT INTO approvals (mission_id, task_id, message, status) VALUES (?, ?, ?, ?)",
+            (mission_id, task_id, message, "PENDING")
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+async def get_approval_status(approval_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT status, feedback FROM approvals WHERE id = ?", (approval_id,)) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+# --- QUEUE & MEMORY HELPERS ---
+
+async def search_past_memory(query: str) -> List[Dict[str, Any]]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        search_query = f"%{query}%"
+        async with db.execute(
+            "SELECT assigned_agent, output_data, created_at FROM tasks "
+            "WHERE status = 'COMPLETED' AND output_data LIKE ? "
+            "ORDER BY id DESC LIMIT 5", 
+            (search_query,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+async def add_to_queue(goal: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO missions (goal, status) VALUES (?, ?)", 
+            (goal, "QUEUED")
+        )
+        await db.commit()
+
+async def get_next_queued_mission():
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM missions WHERE status = 'QUEUED' ORDER BY id ASC LIMIT 1"
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+# --- NEW: BLACKBOARD HELPERS (Agent-to-Agent Communication) ---
+
+async def update_blackboard(key: str, value: str):
+    """Save or update a piece of shared information."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO blackboard (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)", 
+            (key, value)
+        )
+        await db.commit()
+
+async def read_blackboard(key: str):
+    """Retrieve shared information by key."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT value FROM blackboard WHERE key = ?", (key,)) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else None

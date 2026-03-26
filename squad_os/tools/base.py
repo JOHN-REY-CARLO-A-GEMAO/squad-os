@@ -1,22 +1,9 @@
-from abc import ABC, abstractmethod
-from typing import Any, Dict
+﻿from typing import Any, Dict
 
-class BaseTool(ABC):
-    @property
-    @abstractmethod
-    def name(self) -> str:
-        pass
+class BaseTool:
+    name: str = ""
+    description: str = ""
+    parameters: Dict[str, Any] = {}
 
-    @property
-    @abstractmethod
-    def description(self) -> str:
-        pass
-
-    @property
-    @abstractmethod
-    def parameters(self) -> Dict[str, Any]:
-        pass
-
-    @abstractmethod
     async def execute(self, **kwargs) -> str:
-        pass
+        raise NotImplementedError("Subclasses must implement execute")
