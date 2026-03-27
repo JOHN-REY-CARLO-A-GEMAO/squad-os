@@ -9,3 +9,4 @@ streamlit
 aiosqlite
 playwright
 ffmpeg-python
+streamlit-autorefresh
