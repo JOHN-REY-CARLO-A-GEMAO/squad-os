@@ -25,10 +25,14 @@ class BrowserControlTool(BaseTool):
         "required": ["action"]
     }
 
-    def __init__(self):
-        self.output_dir = os.path.join("workspace", "outputs", "visuals")
+    def __init__(self, branch_id: Optional[str] = None):
+        if branch_id:
+            self.output_dir = os.path.join("workspace", "projects", branch_id, "visuals")
+        else:
+            self.output_dir = os.path.join("workspace", "outputs", "visuals")
+
         if not os.path.exists(self.output_dir):
-            os.makedirs(self.output_dir)
+            os.makedirs(self.output_dir, exist_ok=True)
         self._playwright = None
         self._browser: Optional[Browser] = None
         self._context: Optional[BrowserContext] = None

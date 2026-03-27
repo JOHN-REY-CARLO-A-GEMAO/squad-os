@@ -2,7 +2,7 @@ import os
 import subprocess
 import asyncio
 import json
-from typing import Dict, Any
+from typing import Dict, Any, Optional, List
 
 try:
     from duckduckgo_search import DDGS
@@ -24,41 +24,64 @@ class WebSearchTool(BaseTool):
 
 class FileWriterTool(BaseTool):
     name = "write_file"
-    description = "Write content to a file in the workspace directory."
+    description = "Write content to a file. Restricted to the current project branch."
     parameters = {"type": "object", "properties": {"filename": {"type": "string"}, "content": {"type": "string"}}, "required": ["filename", "content"]}
+    def __init__(self, branch_id: Optional[str] = None):
+        self.workspace = os.path.join("workspace", "projects", branch_id) if branch_id else "workspace"
+
     async def execute(self, filename: str, content: str) -> str:
-        workspace = "workspace"
-        if not os.path.exists(workspace): os.makedirs(workspace)
-        filepath = os.path.join(workspace, os.path.basename(filename))
+        if not os.path.exists(self.workspace): os.makedirs(self.workspace, exist_ok=True)
+        filepath = os.path.join(self.workspace, os.path.basename(filename))
         with open(filepath, "w", encoding="utf-8") as f: f.write(content)
-        return f"File '{filename}' written successfully."
+        return f"File '{filename}' written successfully to {self.workspace}."
 
 class ReadFileTool(BaseTool):
     name = "read_file"
-    description = "Read the content of a file from the workspace."
+    description = "Read the content of a file. Restricted to the current project branch."
     parameters = {"type": "object", "properties": {"filename": {"type": "string"}}, "required": ["filename"]}
+    def __init__(self, branch_id: Optional[str] = None):
+        self.workspace = os.path.join("workspace", "projects", branch_id) if branch_id else "workspace"
+
     async def execute(self, filename: str) -> str:
-        filepath = os.path.join("workspace", os.path.basename(filename))
-        if not os.path.exists(filepath): return "Error: File not found."
+        filepath = os.path.join(self.workspace, os.path.basename(filename))
+        if not os.path.exists(filepath): return f"Error: File {filename} not found in {self.workspace}."
         with open(filepath, "r", encoding="utf-8") as f: return f.read()
 
 class TerminalTool(BaseTool):
     name = "terminal"
-    description = "Execute shell commands."
+    description = "Execute shell commands. Restricted to the current project branch."
     parameters = {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}
+    def __init__(self, branch_id: Optional[str] = None):
+        self.workspace = os.path.realpath(os.path.join("workspace", "projects", branch_id)) if branch_id else os.path.realpath("workspace")
+
     async def execute(self, command: str) -> str:
-        process = await asyncio.create_subprocess_shell(command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        if not os.path.exists(self.workspace): os.makedirs(self.workspace, exist_ok=True)
+        process = await asyncio.create_subprocess_shell(
+            command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=self.workspace
+        )
         stdout, stderr = await process.communicate()
         return f"STDOUT: {stdout.decode()}\nSTDERR: {stderr.decode()}"
 
 class PythonRunnerTool(BaseTool):
     name = "python_runner"
-    description = "Execute Python code to perform complex calculations or data analysis."
+    description = "Execute Python code. Restricted to the current project branch."
     parameters = {"type": "object", "properties": {"code": {"type": "string"}, "filename": {"type": "string"}}, "required": ["code", "filename"]}
+    def __init__(self, branch_id: Optional[str] = None):
+        self.workspace = os.path.join("workspace", "projects", branch_id) if branch_id else "workspace"
+
     async def execute(self, code: str, filename: str) -> str:
-        filepath = os.path.join("workspace", os.path.basename(filename))
+        if not os.path.exists(self.workspace): os.makedirs(self.workspace, exist_ok=True)
+        filepath = os.path.join(self.workspace, os.path.basename(filename))
         with open(filepath, "w", encoding="utf-8") as f: f.write(code)
-        process = await asyncio.create_subprocess_exec("python", filepath, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        process = await asyncio.create_subprocess_exec(
+            "python", filepath,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=self.workspace
+        )
         stdout, stderr = await process.communicate()
         err = stderr.decode().strip()
         if err: return f"EXECUTION_ERROR:\n{err}"
@@ -105,6 +128,34 @@ class GetSharedValueTool(BaseTool):
         from squad_os.database.session import read_blackboard
         val = await read_blackboard(key)
         return f"Value for '{key}': {val}" if val else "Key not found."
+
+class CommitProjectTool(BaseTool):
+    name = "commit_project"
+    description = "Commit the current project branch, moving specified artifacts to final_outputs and archiving the branch."
+    parameters = {
+        "type": "object",
+        "properties": {
+            "artifacts": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "List of relative file paths within the project branch to commit (e.g., ['summary.md', 'visuals/demo.mp4'])"
+            }
+        },
+        "required": ["artifacts"]
+    }
+
+    def __init__(self, agent: Any):
+        self.agent = agent
+
+    async def execute(self, artifacts: List[str]) -> str:
+        if not self.agent.active_branch:
+            return "Error: No active project branch to commit."
+
+        try:
+            committed_paths = await self.agent.active_branch.commit(artifacts)
+            return f"Project committed successfully. Artifacts moved to: {committed_paths}. Branch archived."
+        except Exception as e:
+            return f"Commit error: {str(e)}"
 
 class DelegateTaskTool(BaseTool):
     name = "delegate_task"
