@@ -224,7 +224,7 @@ if not selected_project:
                                 st.markdown(f"📎 **Attached Files ({len(files)}):**")
                                 for f in files:
                                     st.caption(f"📄 {f['name']} ({f['size_bytes']//1024} KB)")
-                        except:
+                        except Exception:
                             pass
                 
                 # Agent Bubble
@@ -295,25 +295,37 @@ else:
 
     with tab2:
         st.subheader("Real-time Tool Execution")
-        log_path = os.path.join(project_root, "session_log.json")
-        if os.path.exists(log_path):
-            try:
-                with open(log_path, "r") as f:
-                    logs = json.load(f)
+        log_jsonl = os.path.join(project_root, "session_log.jsonl")
+        log_json = os.path.join(project_root, "session_log.json")
 
-                if logs:
-                    for entry in reversed(logs):
-                        with st.expander(f"🛠️ {entry.get('tool')} @ {entry.get('timestamp')}", expanded=(entry == logs[-1])):
-                            st.write("**Inputs:**")
-                            st.code(json.dumps(entry.get('inputs'), indent=2), language="json")
-                            st.write("**Output:**")
-                            st.text(entry.get('output'))
-                else:
-                    st.write("Log is empty.")
+        logs = []
+        if os.path.exists(log_jsonl):
+            try:
+                with open(log_jsonl, "r") as f:
+                    for line in f:
+                        if line.strip():
+                            logs.append(json.loads(line))
             except Exception as e:
-                st.error(f"Error reading logs: {e}")
+                st.error(f"Error reading .jsonl log: {e}")
+        elif os.path.exists(log_json):
+            # Backward compatibility for old .json format
+            try:
+                with open(log_json, "r") as f:
+                    logs = json.load(f)
+            except Exception as e:
+                st.error(f"Error reading .json log: {e}")
         else:
-            st.write("No `session_log.json` found.")
+            st.write("No `session_log.jsonl` or `session_log.json` found.")
+
+        if logs:
+            for entry in reversed(logs):
+                with st.expander(f"🛠️ {entry.get('tool')} @ {entry.get('timestamp')}", expanded=(entry == logs[-1])):
+                    st.write("**Inputs:**")
+                    st.code(json.dumps(entry.get('inputs'), indent=2), language="json")
+                    st.write("**Output:**")
+                    st.text(entry.get('output'))
+        elif os.path.exists(log_jsonl) or os.path.exists(log_json):
+            st.write("Log is empty.")
 
     with tab3:
         st.subheader("Project Context & Learnings")
