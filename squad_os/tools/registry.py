@@ -10,6 +10,7 @@ except ImportError:
     from ddgs import DDGS
 
 from squad_os.tools.base import BaseTool
+from squad_os.core.utils import is_safe_path
 
 class WebSearchTool(BaseTool):
     name = "web_search"
@@ -30,7 +31,12 @@ class FileWriterTool(BaseTool):
         self.workspace = os.path.join("workspace", "projects", branch_id) if branch_id else "workspace"
 
     async def execute(self, filename: str, content: str) -> str:
+        # Security check: Prevent path traversal
+        if not is_safe_path(self.workspace, filename):
+            return f"Error: Access denied. Path '{filename}' is outside the workspace."
+
         if not os.path.exists(self.workspace): os.makedirs(self.workspace, exist_ok=True)
+        # Use os.path.basename to be doubly safe, but validation already ensures it's within workspace
         filepath = os.path.join(self.workspace, os.path.basename(filename))
         with open(filepath, "w", encoding="utf-8") as f: f.write(content)
         return f"File '{filename}' written successfully to {self.workspace}."
@@ -43,6 +49,10 @@ class ReadFileTool(BaseTool):
         self.workspace = os.path.join("workspace", "projects", branch_id) if branch_id else "workspace"
 
     async def execute(self, filename: str) -> str:
+        # Security check: Prevent path traversal
+        if not is_safe_path(self.workspace, filename):
+            return f"Error: Access denied. Path '{filename}' is outside the workspace."
+
         # Try direct path
         filepath = os.path.join(self.workspace, filename)
         if os.path.exists(filepath) and os.path.isfile(filepath):
@@ -86,6 +96,10 @@ class PythonRunnerTool(BaseTool):
         self.workspace = os.path.join("workspace", "projects", branch_id) if branch_id else "workspace"
 
     async def execute(self, code: str, filename: str) -> str:
+        # Security check: Prevent path traversal
+        if not is_safe_path(self.workspace, filename):
+            return f"Error: Access denied. Path '{filename}' is outside the workspace."
+
         if not os.path.exists(self.workspace): os.makedirs(self.workspace, exist_ok=True)
         filepath = os.path.join(self.workspace, os.path.basename(filename))
         with open(filepath, "w", encoding="utf-8") as f: f.write(code)
