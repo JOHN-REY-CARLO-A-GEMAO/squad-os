@@ -5,8 +5,12 @@ import asyncio
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 from litellm import acompletion
+import os
+import shutil
+import aiosqlite
 from squad_os.agents.base import BaseAgent
-from squad_os.database.session import create_mission, create_task, update_task, update_mission
+from squad_os.database.session import create_mission, create_task, update_task, update_mission, update_blackboard, DB_PATH
+from squad_os.core.projects import ProjectBranch
 
 class TaskPlan(BaseModel):
     description: str
@@ -104,11 +108,65 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "..." }
             fallback_tasks.append(TaskPlan(description=f"Execute your assigned goal: {self.active_agents[role].goal}", assigned_agent_role=role))
         return MissionPlan(tasks=fallback_tasks)
 
-    async def run_mission(self, goal: str):
-        mission_id = await create_mission(goal)
+    async def run_mission(self, goal: str, uploaded_files_json: Optional[str] = None):
+        mission_id = await create_mission(goal, uploaded_files_json)
+
+        # 1. Create a Shared Project Branch for the Mission
+        slug = goal[:30]
+        branch_id = ProjectBranch.create_id(slug)
+        shared_branch = ProjectBranch(branch_id)
+        shared_branch.fork()
+        print(f"📂 [Manager]: Created shared mission branch: {branch_id}")
+
+        # 2. Handle Uploaded Files
+        enriched_goal = goal
+        if uploaded_files_json:
+            try:
+                files = json.loads(uploaded_files_json)
+                if files:
+                    uploads_dir = os.path.join(shared_branch.project_path, "uploads")
+                    os.makedirs(uploads_dir, exist_ok=True)
+
+                    file_summaries = []
+                    for f in files:
+                        src = f['temp_path']
+                        # Sanitize filename
+                        safe_name = os.path.basename(f['name'])
+                        dest = os.path.join(uploads_dir, safe_name)
+
+                        # Handle potential overwriting in the project directory
+                        if os.path.exists(dest):
+                            name, ext = os.path.splitext(safe_name)
+                            safe_name = f"{name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}{ext}"
+                            dest = os.path.join(uploads_dir, safe_name)
+                            f['name'] = safe_name
+
+                        if os.path.exists(src):
+                            shutil.move(src, dest)
+                            # Update path in metadata to be relative to workspace root
+                            rel_path = os.path.relpath(dest, os.getcwd())
+                            f['final_path'] = rel_path
+                            file_summaries.append(f"- Filename: {f['name']}, Type: {f['type']}, Size: {f['size_bytes']//1024}KB, Path: {rel_path}")
+
+                    if file_summaries:
+                        header = f"\n\n--- UPLOADED FILES ({len(file_summaries)}) ---\n"
+                        enriched_goal += header + "\n".join(file_summaries)
+
+                    # Update DB with new paths
+                    async with aiosqlite.connect(DB_PATH) as db:
+                        await db.execute("UPDATE missions SET uploaded_files = ? WHERE id = ?", (json.dumps(files), mission_id))
+                        await db.commit()
+            except Exception as e:
+                print(f"⚠️ [Manager]: Error processing uploaded files: {e}")
+
         try:
-            await self.recruit_squad(goal)
-            plan = await self.plan_mission(goal)
+            await self.recruit_squad(enriched_goal)
+
+            # Inject shared branch into all agents
+            for agent in self.active_agents.values():
+                agent.active_branch = shared_branch
+
+            plan = await self.plan_mission(enriched_goal)
             tasks = plan.tasks
         except Exception as e:
             print(f"❌ [Manager]: Setup failed: {e}")

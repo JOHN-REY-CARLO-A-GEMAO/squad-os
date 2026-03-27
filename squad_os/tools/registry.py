@@ -37,15 +37,28 @@ class FileWriterTool(BaseTool):
 
 class ReadFileTool(BaseTool):
     name = "read_file"
-    description = "Read the content of a file. Restricted to the current project branch."
+    description = "Read the content of a file. Can read from project root or uploads/ subdirectory."
     parameters = {"type": "object", "properties": {"filename": {"type": "string"}}, "required": ["filename"]}
     def __init__(self, branch_id: Optional[str] = None):
         self.workspace = os.path.join("workspace", "projects", branch_id) if branch_id else "workspace"
 
     async def execute(self, filename: str) -> str:
+        # Try direct path
+        filepath = os.path.join(self.workspace, filename)
+        if os.path.exists(filepath) and os.path.isfile(filepath):
+            with open(filepath, "r", encoding="utf-8", errors="ignore") as f: return f.read()
+
+        # Try basename in workspace
         filepath = os.path.join(self.workspace, os.path.basename(filename))
-        if not os.path.exists(filepath): return f"Error: File {filename} not found in {self.workspace}."
-        with open(filepath, "r", encoding="utf-8") as f: return f.read()
+        if os.path.exists(filepath) and os.path.isfile(filepath):
+            with open(filepath, "r", encoding="utf-8", errors="ignore") as f: return f.read()
+
+        # Try in uploads/
+        filepath = os.path.join(self.workspace, "uploads", os.path.basename(filename))
+        if os.path.exists(filepath) and os.path.isfile(filepath):
+            with open(filepath, "r", encoding="utf-8", errors="ignore") as f: return f.read()
+
+        return f"Error: File {filename} not found in {self.workspace} or its uploads/ folder."
 
 class TerminalTool(BaseTool):
     name = "terminal"

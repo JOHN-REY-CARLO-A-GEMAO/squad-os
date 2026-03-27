@@ -71,7 +71,7 @@ async def run_worker():
             
             try:
                 # EXECUTE MISSION
-                await manager.run_mission(mission['goal'])
+                await manager.run_mission(mission['goal'], mission.get('uploaded_files'))
                 print(f"✅ MISSION #{mission['id']} COMPLETE.")
             except Exception as e:
                 print(f"❌ MISSION #{mission['id']} FAILED: {e}")

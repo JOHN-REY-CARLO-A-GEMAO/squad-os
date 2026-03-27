@@ -49,7 +49,53 @@ def load_missions():
             pass
     return pd.DataFrame()
 
-def submit_new_mission(prompt):
+def save_uploaded_files(uploaded_files):
+    if not uploaded_files:
+        return None
+
+    # 200MB per file, 500MB total cap
+    MAX_FILE_SIZE = 200 * 1024 * 1024
+    MAX_TOTAL_SIZE = 500 * 1024 * 1024
+
+    total_size = sum(f.size for f in uploaded_files)
+    if total_size > MAX_TOTAL_SIZE:
+        st.error(f"Total upload size exceeds 500MB limit (Current: {total_size / (1024*1024):.1f}MB)")
+        return "ERROR_SIZE"
+
+    for f in uploaded_files:
+        if f.size > MAX_FILE_SIZE:
+            st.error(f"File '{f.name}' exceeds 200MB limit.")
+            return "ERROR_SIZE"
+
+    # Create a temporary directory for these uploads
+    temp_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    upload_dir = os.path.join(WORKSPACE_DIR, "uploads", f"pending_{temp_id}")
+    os.makedirs(upload_dir, exist_ok=True)
+
+    files_metadata = []
+    for f in uploaded_files:
+        filename = os.path.basename(f.name)
+        name, ext = os.path.splitext(filename)
+
+        target_path = os.path.join(upload_dir, filename)
+        # Handle duplicate filenames in the same upload batch (unlikely but possible)
+        if os.path.exists(target_path):
+             filename = f"{name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}{ext}"
+             target_path = os.path.join(upload_dir, filename)
+
+        with open(target_path, "wb") as out:
+            out.write(f.getbuffer())
+
+        files_metadata.append({
+            "name": filename,
+            "type": f.type,
+            "size_bytes": f.size,
+            "temp_path": os.path.abspath(target_path)
+        })
+
+    return json.dumps(files_metadata)
+
+def submit_new_mission(prompt, uploaded_files_json=None):
     """Smart inserter that handles both older and newer database schemas."""
     for path in DB_PATHS:
         if os.path.exists(path):
@@ -60,7 +106,10 @@ def submit_new_mission(prompt):
                 columns = [c[1] for c in cursor.fetchall()]
                 
                 if 'goal' in columns:
-                    cursor.execute("INSERT INTO missions (goal, status) VALUES (?, ?)", (prompt, "QUEUED"))
+                    if 'uploaded_files' in columns:
+                        cursor.execute("INSERT INTO missions (goal, status, uploaded_files) VALUES (?, ?, ?)", (prompt, "QUEUED", uploaded_files_json))
+                    else:
+                        cursor.execute("INSERT INTO missions (goal, status) VALUES (?, ?)", (prompt, "QUEUED"))
                 elif 'name' in columns and 'description' in columns:
                     # Create a unique name based on timestamp
                     task_name = f"ChatTask_{datetime.now().strftime('%H%M%S')}"
@@ -164,6 +213,19 @@ if not selected_project:
                 # User Bubble
                 with st.chat_message("user"):
                     st.write(prompt_text)
+
+                    # Show uploaded files if any
+                    uploaded_files_json = row.get('uploaded_files')
+                    if uploaded_files_json:
+                        try:
+                            files = json.loads(uploaded_files_json)
+                            if files:
+                                st.markdown("---")
+                                st.markdown(f"📎 **Attached Files ({len(files)}):**")
+                                for f in files:
+                                    st.caption(f"📄 {f['name']} ({f['size_bytes']//1024} KB)")
+                        except:
+                            pass
                 
                 # Agent Bubble
                 with st.chat_message("assistant", avatar="🤖"):
@@ -181,9 +243,13 @@ if not selected_project:
             st.write("No missions found. Send a message below to start!")
 
     # Chat Input Box
-    if prompt := st.chat_input("Ask SquadOS to do something... (e.g., 'Go to wikipedia and take a screenshot of AI')"):
-        submit_new_mission(prompt)
-        st.rerun()
+    with st.container():
+        uploaded_files = st.file_uploader("📎 Attach documents, images, videos, etc.", accept_multiple_files=True, label_visibility="collapsed")
+        if prompt := st.chat_input("Ask SquadOS to do something... (e.g., 'Analyze this document for me')"):
+            files_json = save_uploaded_files(uploaded_files)
+            if files_json != "ERROR_SIZE":
+                submit_new_mission(prompt, files_json)
+                st.rerun()
 
 else:
     # --- INDIVIDUAL PROJECT VIEW ---
