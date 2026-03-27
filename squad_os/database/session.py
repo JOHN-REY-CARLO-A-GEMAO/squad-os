@@ -14,6 +14,7 @@ class MissionRecord(BaseModel):
     id: Optional[int] = None
     goal: str
     status: str = "PENDING"
+    uploaded_files: Optional[str] = None  # JSON string containing file metadata
     created_at: datetime = datetime.now()
 
 class TaskRecord(BaseModel):
@@ -52,9 +53,16 @@ async def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 goal TEXT NOT NULL,
                 status TEXT NOT NULL,
+                uploaded_files TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        # MIGRATION: Add uploaded_files to missions if it doesn't exist
+        async with db.execute("PRAGMA table_info(missions)") as cursor:
+            columns = [row[1] for row in await cursor.fetchall()]
+            if "uploaded_files" not in columns:
+                await db.execute("ALTER TABLE missions ADD COLUMN uploaded_files TEXT")
         
         # 2. Tasks Table
         await db.execute("""
@@ -105,11 +113,11 @@ async def init_db():
 
 # --- MISSION & TASK HELPERS ---
 
-async def create_mission(goal: str) -> int:
+async def create_mission(goal: str, uploaded_files: Optional[str] = None) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
-            "INSERT INTO missions (goal, status) VALUES (?, ?)",
-            (goal, "IN_PROGRESS")
+            "INSERT INTO missions (goal, status, uploaded_files) VALUES (?, ?, ?)",
+            (goal, "IN_PROGRESS", uploaded_files)
         )
         await db.commit()
         return cursor.lastrowid
@@ -168,11 +176,11 @@ async def search_past_memory(query: str) -> List[Dict[str, Any]]:
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
 
-async def add_to_queue(goal: str):
+async def add_to_queue(goal: str, uploaded_files: Optional[str] = None):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "INSERT INTO missions (goal, status) VALUES (?, ?)", 
-            (goal, "QUEUED")
+            "INSERT INTO missions (goal, status, uploaded_files) VALUES (?, ?, ?)",
+            (goal, "QUEUED", uploaded_files)
         )
         await db.commit()
 
