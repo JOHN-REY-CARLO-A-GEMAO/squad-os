@@ -1,6 +1,8 @@
 import asyncio
 import warnings
 from squad_os.orchestrator.manager import Manager
+
+# CORE & REGISTRY TOOLS
 from squad_os.tools.registry import (
     WebSearchTool,
     FileWriterTool,
@@ -9,11 +11,18 @@ from squad_os.tools.registry import (
     PythonRunnerTool,
     DashboardApprovalTool,
     MemorySearchTool,
-    # NEW 2026 TOOLS
     SetSharedValueTool,
     GetSharedValueTool,
-    DelegateTaskTool
+    DelegateTaskTool,
+    CommitProjectTool     # <--- Commits the final branch
 )
+
+# VISUAL & BROWSER TOOLS
+from squad_os.tools.visual import (
+    BrowserControlTool,   # <--- The Agent's Camera/Browser
+    VisionAnalysisTool    # <--- The Agent's Visual Analyzer
+)
+
 from squad_os.database.session import init_db, get_next_queued_mission, update_mission
 
 # Clean up terminal warnings
@@ -32,10 +41,14 @@ async def run_worker():
         PythonRunnerTool(),
         DashboardApprovalTool(),
         MemorySearchTool(),
-        # 2026 Roadmap Interoperability Tools
         SetSharedValueTool(),
         GetSharedValueTool(),
-        DelegateTaskTool()
+        DelegateTaskTool(),
+        CommitProjectTool(agent=None),
+        
+        # VISUAL CAPABILITIES ACTIVATED:
+        BrowserControlTool(),
+        VisionAnalysisTool()
     ]
     
     # 3. Initialize the Manager with the full toolset
