@@ -3,6 +3,7 @@ import sqlite3
 import pandas as pd
 import os
 import json
+import mimetypes
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
 
@@ -167,19 +168,23 @@ with st.sidebar:
     if not active_projects:
         st.write("No active projects.")
     for proj in active_projects:
-        if st.button(f"🚀 {proj}", key=f"btn_act_{proj}"):
+        label = f"📍 {proj}" if proj == st.session_state.selected_proj else f"🚀 {proj}"
+        if st.button(label, key=f"btn_act_{proj}", width="stretch"):
             st.session_state.selected_proj = proj
             st.session_state.is_active = True
+            st.rerun()
 
     st.write("**Archived Projects**")
     if not archived_projects:
         st.write("No archived projects.")
     for proj in archived_projects:
-        if st.button(f"📦 {proj}", key=f"btn_arc_{proj}"):
+        label = f"📍 {proj}" if proj == st.session_state.selected_proj else f"📦 {proj}"
+        if st.button(label, key=f"btn_arc_{proj}", width="stretch"):
             st.session_state.selected_proj = proj
             st.session_state.is_active = False
+            st.rerun()
 
-    if st.button("Reset View (Go to Chat)"):
+    if st.button("Reset View (Go to Chat)", width="stretch"):
         st.session_state.selected_proj = None
 
     # Global Stats
@@ -285,9 +290,24 @@ else:
                     with cols[idx % 2]:
                         st.write(f"**{v_file}**")
                         if v_file.lower().endswith(img_exts):
-                            st.image(v_path, use_container_width=True)
+                            try:
+                                st.image(v_path, use_container_width=True)
+                            except Exception:
+                                st.warning(f"Could not load image: {v_file}")
                         elif v_file.lower().endswith(vid_exts):
                             st.video(v_path)
+
+                        # Add a download button for accessibility/usability
+                        mime_type, _ = mimetypes.guess_type(v_path)
+                        with open(v_path, "rb") as f:
+                            st.download_button(
+                                label=f"💾 Download {v_file}",
+                                data=f,
+                                file_name=v_file,
+                                mime=mime_type or "application/octet-stream",
+                                key=f"dl_{v_file}",
+                                width="stretch"
+                            )
             else:
                 st.write("No visual artifacts found.")
         else:
@@ -303,7 +323,14 @@ else:
 
                 if logs:
                     for entry in reversed(logs):
-                        with st.expander(f"🛠️ {entry.get('tool')} @ {entry.get('timestamp')}", expanded=(entry == logs[-1])):
+                        # Format timestamp for better UX
+                        ts_raw = entry.get('timestamp')
+                        try:
+                            ts_formatted = datetime.fromisoformat(ts_raw).strftime("%H:%M:%S")
+                        except:
+                            ts_formatted = ts_raw
+
+                        with st.expander(f"🛠️ {entry.get('tool')} @ {ts_formatted}", expanded=(entry == logs[-1])):
                             st.write("**Inputs:**")
                             st.code(json.dumps(entry.get('inputs'), indent=2), language="json")
                             st.write("**Output:**")
