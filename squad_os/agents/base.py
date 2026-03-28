@@ -24,37 +24,63 @@ class BaseAgent:
             self.active_branch.fork()
             print(f"🚀 [Fork]: Created new branch {branch_id}")
 
-        # Update tools with active branch context
+        # Inject active branch into all tools
         for tool in self.tools.values():
-            if hasattr(tool, "workspace") or hasattr(tool, "output_dir"):
-                # We need a way to dynamically update tool paths
-                if hasattr(tool, "workspace"):
-                    tool.workspace = self.active_branch.project_path
-                if hasattr(tool, "output_dir"):
-                    # Special case for BrowserControlTool which uses a visuals subfolder
-                    if isinstance(tool.output_dir, str) and "visuals" in tool.output_dir:
-                        tool.output_dir = self.active_branch.visuals_path
-                    else:
-                        tool.output_dir = self.active_branch.project_path
+            if hasattr(tool, "workspace"):
+                tool.workspace = self.active_branch.project_path
+            if hasattr(tool, "output_dir"):
+                if isinstance(tool.output_dir, str) and "visuals" in tool.output_dir:
+                    tool.output_dir = self.active_branch.visuals_path
+                else:
+                    tool.output_dir = self.active_branch.project_path
+            if hasattr(tool, "active_branch"):
+                tool.active_branch = self.active_branch
 
-        tool_schemas = [{"type": "function", "function": {"name": t.name, "description": t.description, "parameters": t.parameters}} for t in self.tools.values()]
-        messages = [
-            {"role": "system", "content": f"You are {self.role}. {self.backstory}\nGoal: {self.goal}\nActive Project Branch: {self.active_branch.task_id}"},
-            {"role": "user", "content": f"Context: {context}\n\nTask: {task_description}\n\nIMPORTANT: Use tools to find info. Provide a final written summary."}
+        tool_schemas = [
+            {"type": "function", "function": {"name": t.name, "description": t.description, "parameters": t.parameters}}
+            for t in self.tools.values()
         ]
+
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    f"You are {self.role}. {self.backstory}\n"
+                    f"Goal: {self.goal}\n"
+                    f"Active Project Branch: {self.active_branch.task_id}"
+                )
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Context: {context}\n\n"
+                    f"Task: {task_description}\n\n"
+                    f"IMPORTANT: Use tools to complete the task. "
+                    f"Once the tool call succeeds, stop calling tools and provide a short final text summary of what was done."
+                )
+            }
+        ]
+
         for _ in range(10):
-            response = await litellm.acompletion(model=self.model_name, messages=messages, tools=tool_schemas if tool_schemas else None)
+            response = await litellm.acompletion(
+                model=self.model_name,
+                messages=messages,
+                tools=tool_schemas if tool_schemas else None
+            )
             resp_msg = response.choices[0].message
             messages.append(resp_msg)
 
-            # Convert to dict for easier access if it's a message object
+            # Convert to dict for easier access
             if hasattr(resp_msg, "dict"):
                 resp_dict = resp_msg.dict()
             else:
                 resp_dict = resp_msg if isinstance(resp_msg, dict) else {}
 
-            if resp_dict.get("tool_calls"):
-                for tool_call in resp_dict["tool_calls"]:
+            tool_calls = resp_dict.get("tool_calls")
+
+            if tool_calls:
+                all_succeeded = True
+                for tool_call in tool_calls:
                     if isinstance(tool_call, dict):
                         t_name = tool_call["function"]["name"]
                         t_args_str = tool_call["function"]["arguments"]
@@ -68,6 +94,7 @@ class BaseAgent:
                         t_args = json.loads(t_args_str) if isinstance(t_args_str, str) else t_args_str
                     except json.JSONDecodeError:
                         print(f"  [Error] Failed to parse arguments for {t_name}: {t_args_str}")
+                        all_succeeded = False
                         continue
 
                     if t_name in self.tools:
@@ -79,7 +106,36 @@ class BaseAgent:
                         except Exception as e:
                             print(f"  [Error] Tool {t_name} failed: {str(e)}")
                             result = f"Error: {str(e)}"
-                        messages.append({"role": "tool", "name": t_name, "tool_call_id": t_id, "content": str(result)})
-                continue 
-            return {"output": resp_dict.get("content"), "prompt_tokens": response.usage.prompt_tokens, "completion_tokens": response.usage.completion_tokens}
+                            all_succeeded = False
+                        messages.append({
+                            "role": "tool",
+                            "name": t_name,
+                            "tool_call_id": t_id,
+                            "content": str(result)
+                        })
+                    else:
+                        # Tool not found — append a clear error so model stops retrying
+                        messages.append({
+                            "role": "tool",
+                            "name": t_name,
+                            "tool_call_id": t_id,
+                            "content": f"Error: Tool '{t_name}' is not available."
+                        })
+                        all_succeeded = False
+
+                # If all tools succeeded, add a nudge to stop and summarize
+                if all_succeeded:
+                    messages.append({
+                        "role": "user",
+                        "content": "All tools executed successfully. Now provide a short text summary of what was accomplished. Do not call any more tools."
+                    })
+                continue
+
+            # No tool calls — model gave a text response, we're done
+            return {
+                "output": resp_dict.get("content"),
+                "prompt_tokens": response.usage.prompt_tokens,
+                "completion_tokens": response.usage.completion_tokens
+            }
+
         return {"output": "Max reasoning steps reached.", "error": "Loop timeout"}

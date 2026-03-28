@@ -165,25 +165,26 @@ class CommitProjectTool(BaseTool):
             "artifacts": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "List of relative file paths within the project branch to commit (e.g., ['summary.md', 'visuals/demo.mp4'])"
+                "description": "List of relative file paths within the project branch to commit"
             }
         },
         "required": ["artifacts"]
     }
 
-    def __init__(self, agent: Any):
+    def __init__(self, agent=None):
         self.agent = agent
+        self.active_branch = None  # Injected by BaseAgent at runtime
 
     async def execute(self, artifacts: List[str]) -> str:
-        if not self.agent.active_branch:
+        branch = self.active_branch or (self.agent.active_branch if self.agent else None)
+        if not branch:
             return "Error: No active project branch to commit."
-
         try:
-            committed_paths = await self.agent.active_branch.commit(artifacts)
+            committed_paths = await branch.commit(artifacts)
             return f"Project committed successfully. Artifacts moved to: {committed_paths}. Branch archived."
         except Exception as e:
+            print(f"  [CommitProjectTool ERROR]: {str(e)}")
             return f"Commit error: {str(e)}"
-
 class DelegateTaskTool(BaseTool):
     name = "delegate_task"
     description = "Hire a specialized sub-agent for an expert task. Returns findings."

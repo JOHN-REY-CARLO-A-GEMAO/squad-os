@@ -44,7 +44,7 @@ async def run_worker():
         SetSharedValueTool(),
         GetSharedValueTool(),
         DelegateTaskTool(),
-        CommitProjectTool(agent=None),
+        CommitProjectTool(agent=type('obj', (object,), {'active_branch': None})()),
         
         # VISUAL CAPABILITIES ACTIVATED:
         BrowserControlTool(),

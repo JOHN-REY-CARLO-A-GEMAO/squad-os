@@ -29,24 +29,15 @@ class Manager:
     def _repair_json(self, content: str) -> str:
         """Deep clean JSON, handling severe LLM hallucinations."""
         content = content.strip()
-        # Remove Markdown blocks
         if "```" in content:
             content = re.sub(r"```(?:json)?\s*(.*?)\s*```", r"\1", content, flags=re.DOTALL).strip()
-        
-        # Find outermost braces
         start = content.find('{')
         end = content.rfind('}')
         if start != -1 and end != -1:
             content = content[start:end+1]
-        
-        # Clean up control characters
         content = content.replace('\r', '').replace('\n', ' ')
-        
-        # Super-fix for bad quotes (LLM sometimes uses ' instead of ")
-        # Warning: This is aggressive but necessary for stubborn models
         if '"squad":' not in content and '"tasks":' not in content:
-           content = content.replace("'", '"')
-           
+            content = content.replace("'", '"')
         return content
 
     async def recruit_squad(self, goal: str):
@@ -58,40 +49,46 @@ AVAILABLE TOOLS: {tool_names}
 
 Hire a squad. Return ONLY a valid JSON object. DO NOT include any conversational text.
 Structure: {{ "squad": [ {{ "role": "...", "goal": "...", "backstory": "...", "tools_to_assign": ["tool_name"] }} ] }}"""
-        
+
         for attempt in range(self.max_retries):
             try:
                 response = await acompletion(model=self.model_name, messages=[{"role": "user", "content": prompt}])
                 cleaned = self._repair_json(response.choices[0].message.content)
                 hire_data = json.loads(cleaned)
-                
+
                 self.active_agents = {}
+                commit_keywords = ["devops", "version control", "deployment", "release"]
                 for member in hire_data.get('squad', []):
                     assigned = [self.tool_inventory[name] for name in member.get('tools_to_assign', []) if name in self.tool_inventory]
+                    role_lower = member['role'].lower()
+                    if any(kw in role_lower for kw in commit_keywords):
+                        if "commit_project" in self.tool_inventory and self.tool_inventory["commit_project"] not in assigned:
+                            assigned.append(self.tool_inventory["commit_project"])
                     print(f"🤝 [Manager]: Hired '{member['role']}'")
                     self.active_agents[member['role']] = BaseAgent(
                         role=member['role'], goal=member['goal'], backstory=member['backstory'],
                         tools=assigned, model_name=self.model_name
                     )
-                return 
+                return
             except Exception as e:
                 print(f"🔄 [Manager]: Hiring JSON Error. Retrying... ({attempt+1}/{self.max_retries})")
-        
+
         raise ValueError("Failed to parse Hiring JSON after max retries.")
 
     async def plan_mission(self, goal: str) -> MissionPlan:
         print(f"📋 [Manager]: Planning execution strategy...")
         roles = ", ".join([f"{a.role}" for a in self.active_agents.values()])
-        
+
         prompt = f"""Mission: {goal}
 Roles: {roles}
 
 RULES FOR PLANNING:
 1. Every task 'description' MUST specify which TOOL the agent should use.
 2. If the agent needs to hire someone, the description MUST explicitly say: 'MUST use delegate_task'.
-3. Return ONLY JSON. No other text.
+3. The LAST task MUST always be assigned to a DevOps/Version Control role and MUST explicitly say: 'MUST use commit_project tool to commit all artifacts'.
+4. Return ONLY JSON. No other text.
 Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "..." }} ] }}"""
-        
+
         for attempt in range(self.max_retries):
             try:
                 response = await acompletion(model=self.model_name, messages=[{"role": "user", "content": prompt}])
@@ -100,7 +97,7 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "..." }
                 return MissionPlan(**plan_dict)
             except Exception as e:
                 print(f"🔄 [Manager]: Planning JSON Error. Retrying... ({attempt+1}/{self.max_retries})")
-                
+
         # --- FATAL FALLBACK ---
         print("⚠️ [Manager]: LLM failed to plan. Falling back to an auto-generated sequential plan.")
         fallback_tasks = []
@@ -130,11 +127,9 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "..." }
                     file_summaries = []
                     for f in files:
                         src = f['temp_path']
-                        # Sanitize filename
                         safe_name = os.path.basename(f['name'])
                         dest = os.path.join(uploads_dir, safe_name)
 
-                        # Handle potential overwriting in the project directory
                         if os.path.exists(dest):
                             name, ext = os.path.splitext(safe_name)
                             safe_name = f"{name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}{ext}"
@@ -143,7 +138,6 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "..." }
 
                         if os.path.exists(src):
                             shutil.move(src, dest)
-                            # Update path in metadata to be relative to workspace root
                             rel_path = os.path.relpath(dest, os.getcwd())
                             f['final_path'] = rel_path
                             file_summaries.append(f"- Filename: {f['name']}, Type: {f['type']}, Size: {f['size_bytes']//1024}KB, Path: {rel_path}")
@@ -152,7 +146,6 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "..." }
                         header = f"\n\n--- UPLOADED FILES ({len(file_summaries)}) ---\n"
                         enriched_goal += header + "\n".join(file_summaries)
 
-                    # Update DB with new paths
                     async with aiosqlite.connect(DB_PATH) as db:
                         await db.execute("UPDATE missions SET uploaded_files = ? WHERE id = ?", (json.dumps(files), mission_id))
                         await db.commit()
@@ -168,6 +161,8 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "..." }
 
             plan = await self.plan_mission(enriched_goal)
             tasks = plan.tasks
+            for i, t in enumerate(tasks):
+                print(f"  📝 Task {i+1}: [{t.assigned_agent_role}] {t.description}")
         except Exception as e:
             print(f"❌ [Manager]: Setup failed: {e}")
             await update_mission(mission_id, "FAILED")
@@ -180,30 +175,32 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "..." }
         while task_idx < len(tasks):
             task_data = tasks[task_idx]
             agent = self.active_agents.get(task_data.assigned_agent_role)
-            
+
             # Fuzzy match fallback
             if not agent:
                 target = str(task_data.assigned_agent_role).lower()
                 for r, a in self.active_agents.items():
                     if r.lower() in target or target in r.lower():
-                        agent = a; break
-            
+                        agent = a
+                        break
+
             if not agent:
                 print(f"⚠️ [Manager]: Skipping task, role '{task_data.assigned_agent_role}' not found.")
-                task_idx += 1; continue
+                task_idx += 1
+                continue
 
             print(f"\n🚀 [Manager]: Task {task_idx+1}/{len(tasks)} -> {agent.role}")
             task_id = await create_task(mission_id, task_data.description, agent.role)
-            
+
             result = await agent.execute_task(task_data.description, context)
             output_text = result.get("output", "Task completed without text summary.")
 
-            # --- LEVEL 6.2: TOOL ENFORCEMENT CHECK ---
+            # --- TOOL ENFORCEMENT CHECK ---
             must_use = "must use" in task_data.description.lower() or "delegate_task" in task_data.description.lower()
             if must_use and len(output_text) < 20 and "DELEGATED" not in output_text:
                 print(f"⚠️ [Manager]: Agent {agent.role} skipped mandatory tool use. Forcing retry...")
                 context += f"\n\nERROR: You skipped a mandatory tool call. You MUST execute the tool now."
-                continue # Retry same task
+                continue
 
             # --- QA CHECK ---
             if "qa" in agent.role.lower() and any(w in output_text.lower() for w in ["fail", "reject", "error"]):
