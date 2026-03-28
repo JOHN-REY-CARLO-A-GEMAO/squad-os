@@ -5,6 +5,7 @@ import ffmpeg
 from typing import Dict, Any, Optional
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 from squad_os.tools.base import BaseTool
+from squad_os.core.utils import is_safe_path
 
 class BrowserControlTool(BaseTool):
     name = "browser_control"
@@ -158,6 +159,19 @@ class VisionAnalysisTool(BaseTool):
     }
 
     async def execute(self, image_path: str, query: str) -> str:
+        # Security Check: Prevent reading images outside the designated areas
+        # VisionAnalysisTool can read from workspace/projects/ (active) or workspace/outputs/ (legacy)
+
+        # We need to resolve image_path relative to the current working directory first,
+        # then check if it lies within our allowed sandbox.
+        abs_image_path = os.path.abspath(image_path)
+        is_safe = is_safe_path("workspace/projects", abs_image_path) or \
+                  is_safe_path("workspace/outputs", abs_image_path) or \
+                  is_safe_path("workspace/archives", abs_image_path)
+
+        if not is_safe:
+            return f"Error: Access denied. Image path '{image_path}' is outside the workspace."
+
         if not os.path.exists(image_path):
             alt_path = os.path.join("workspace", "outputs", "visuals", os.path.basename(image_path))
             if os.path.exists(alt_path):
