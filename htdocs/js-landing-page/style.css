@@ -85,6 +85,40 @@ li {
     font-weight: 600;
 }
 
+.copy-btn {
+    background: var(--primary-green);
+    color: var(--ethereal-white);
+    border: 1px solid var(--gold);
+    padding: 10px 20px;
+    border-radius: 8px;
+    font-family: 'Cinzel', serif;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-top: 10px;
+}
+
+.copy-btn:hover {
+    background: var(--light-green);
+    box-shadow: 0 0 10px var(--gold);
+}
+
+.copy-btn:active {
+    transform: scale(0.95);
+}
+
+.copy-btn.copied {
+    background: var(--light-green);
+    box-shadow: 0 0 10px var(--gold);
+}
+
+*:focus-visible {
+    outline: 3px solid var(--gold);
+    outline-offset: 4px;
+}
+
 footer {
     margin-top: 40px;
     padding-top: 20px;

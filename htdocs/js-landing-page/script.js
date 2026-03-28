@@ -56,4 +56,22 @@ document.addEventListener("DOMContentLoaded", () => {
     // So I will make it display 2026.
     document.getElementById("footer-year").innerHTML = `<strong>Current Year:</strong> 2026`;
 
+    // Copy to Clipboard Interaction
+    const copyBtn = document.getElementById("copy-btn");
+    copyBtn.addEventListener("click", () => {
+        const textToCopy = document.getElementById("calc-result").innerText;
+        navigator.clipboard.writeText(textToCopy).then(() => {
+            const originalText = copyBtn.innerText;
+            copyBtn.innerText = "Copied!";
+            copyBtn.classList.add("copied");
+
+            setTimeout(() => {
+                copyBtn.innerText = originalText;
+                copyBtn.classList.remove("copied");
+            }, 2000);
+        }).catch(err => {
+            console.error("Failed to copy: ", err);
+        });
+    });
+
 });
