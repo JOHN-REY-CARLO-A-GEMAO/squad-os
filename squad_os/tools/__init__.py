@@ -4,3 +4,5 @@ from squad_os.tools.registry import (
     DelegateTaskTool, CommitProjectTool
 )
 from squad_os.tools.visual import BrowserControlTool, VisionAnalysisTool
+
+from squad_os.tools.desktop import DesktopControlTool

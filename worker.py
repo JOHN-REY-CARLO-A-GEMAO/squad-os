@@ -3,6 +3,7 @@ import warnings
 from squad_os.orchestrator.manager import Manager
 
 # CORE & REGISTRY TOOLS
+from squad_os.tools.desktop import DesktopControlTool
 from squad_os.tools.registry import (
     WebSearchTool,
     FileWriterTool,
@@ -44,6 +45,7 @@ async def run_worker():
         SetSharedValueTool(),
         GetSharedValueTool(),
         DelegateTaskTool(),
+        DesktopControlTool(),
         CommitProjectTool(agent=type('obj', (object,), {'active_branch': None})()),
         
         # VISUAL CAPABILITIES ACTIVATED:
