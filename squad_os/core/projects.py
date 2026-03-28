@@ -63,18 +63,36 @@ class ProjectBranch:
         os.makedirs(final_outputs_dir, exist_ok=True)
 
         committed_paths = []
+        file_map = None  # Lazy-initialized mapping of filename -> [paths]
+
         for artifact in artifacts:
             # Handle both exact matches and glob-like behavior for artifacts in visuals
             possible_sources = []
-            if os.path.exists(os.path.join(self.project_path, artifact)):
-                possible_sources.append(os.path.join(self.project_path, artifact))
+            direct_path = os.path.join(self.project_path, artifact)
+
+            if os.path.exists(direct_path):
+                possible_sources.append(direct_path)
             else:
+                # Lazy-build the file map only if we need to search subdirectories
+                if file_map is None:
+                    file_map = {}
+                    for root, _, files in os.walk(self.project_path):
+                        for f in files:
+                            if f not in file_map:
+                                file_map[f] = []
+                            file_map[f].append(os.path.join(root, f))
+
                 # Try to find file by name if it's a direct filename but located in a subfolder like visuals/
                 artifact_name = os.path.basename(artifact)
-                for root, dirs, files in os.walk(self.project_path):
-                    for f in files:
-                        if f == artifact_name or artifact_name in f:
-                            possible_sources.append(os.path.join(root, f))
+
+                # Check for exact filename match in any subdirectory
+                if artifact_name in file_map:
+                    possible_sources.extend(file_map[artifact_name])
+
+                # Also check for substring matches (original behavior preserved)
+                for f_name, paths in file_map.items():
+                    if artifact_name != f_name and artifact_name in f_name:
+                        possible_sources.extend(paths)
 
             for src in possible_sources:
                 dest = os.path.join(final_outputs_dir, f"{self.task_id}_{os.path.basename(src)}")
