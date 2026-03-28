@@ -67,6 +67,9 @@ class BrowserControlTool(BaseTool):
 
             if action == "navigate":
                 if not url: return "Error: URL is required for navigate action."
+                # Security check: Prevent SSRF and local file disclosure (e.g., file://)
+                if not any(url.startswith(p) for p in ["http://", "https://"]):
+                    return f"Error: Access denied. Protocol not allowed for URL: {url}"
                 await self._page.goto(url)
                 if wait_for:
                     await self._page.wait_for_selector(wait_for)
