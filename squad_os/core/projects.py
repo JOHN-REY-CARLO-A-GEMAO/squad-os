@@ -2,7 +2,7 @@ import os
 import json
 import shutil
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 from squad_os.database.session import DB_PATH
 import aiosqlite
 
@@ -12,7 +12,7 @@ class ProjectBranch:
         self.base_dir = base_dir
         self.project_path = os.path.join(self.base_dir, "projects", self.task_id)
         self.visuals_path = os.path.join(self.project_path, "visuals")
-        self.log_path = os.path.join(self.project_path, "session_log.json")
+        self.log_path = os.path.join(self.project_path, "session_log.jsonl")
         self.memory_path = os.path.join(self.project_path, "project_memory.md")
         self.is_active = False
 
@@ -30,7 +30,7 @@ class ProjectBranch:
         os.makedirs(self.visuals_path, exist_ok=True)
         if not os.path.exists(self.log_path):
             with open(self.log_path, "w") as f:
-                json.dump([], f)
+                pass  # Initialize empty JSONL file
         if not os.path.exists(self.memory_path):
             with open(self.memory_path, "w") as f:
                 f.write(f"# Project Memory: {self.task_id}\n\n")
@@ -42,28 +42,20 @@ class ProjectBranch:
         if not os.path.exists(self.project_path):
             # If the branch is archived, try to find log in archives
             archive_path = os.path.join(self.base_dir, "archives", self.task_id)
-            log_path = os.path.join(archive_path, "session_log.json")
+            log_path = os.path.join(archive_path, "session_log.jsonl")
             if not os.path.exists(log_path):
                 return
 
-        if not os.path.exists(log_path):
-            logs = []
-        else:
-            with open(log_path, "r") as f:
-                try:
-                    logs = json.load(f)
-                except json.JSONDecodeError:
-                    logs = []
-
-        logs.append({
+        entry = {
             "timestamp": datetime.now().isoformat(),
             "tool": tool_name,
             "inputs": inputs,
             "output": output
-        })
+        }
 
-        with open(log_path, "w") as f:
-            json.dump(logs, f, indent=2)
+        # Optimized: O(1) append instead of O(N) read/write
+        with open(log_path, "a") as f:
+            f.write(json.dumps(entry) + "\n")
 
     async def commit(self, artifacts: List[str]):
 
