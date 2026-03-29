@@ -63,20 +63,36 @@ class ProjectBranch:
         os.makedirs(final_outputs_dir, exist_ok=True)
 
         committed_paths = []
-        for artifact in artifacts:
-            # Handle both exact matches and glob-like behavior for artifacts in visuals
-            possible_sources = []
-            if os.path.exists(os.path.join(self.project_path, artifact)):
-                possible_sources.append(os.path.join(self.project_path, artifact))
-            else:
-                # Try to find file by name if it's a direct filename but located in a subfolder like visuals/
-                artifact_name = os.path.basename(artifact)
-                for root, dirs, files in os.walk(self.project_path):
-                    for f in files:
-                        if f == artifact_name or artifact_name in f:
-                            possible_sources.append(os.path.join(root, f))
+        # BOLT OPTIMIZATION: Use a lazy-initialized file mapping to avoid O(M*N) filesystem walks.
+        # This reduces complexity from O(M*N) to O(N + M*K) where N is total files,
+        # M is number of artifacts, and K is number of unique filenames.
+        file_map = None
 
-            for src in possible_sources:
+        for artifact in artifacts:
+            # Handle both exact matches and glob-like behavior for artifacts in subfolders
+            possible_sources = []
+            direct_path = os.path.join(self.project_path, artifact)
+
+            if os.path.exists(direct_path):
+                possible_sources.append(direct_path)
+            else:
+                # Lazy-build file mapping if we need to search subdirectories
+                if file_map is None:
+                    file_map = {}
+                    for root, _, files in os.walk(self.project_path):
+                        for f in files:
+                            if f not in file_map:
+                                file_map[f] = []
+                            file_map[f].append(os.path.join(root, f))
+
+                artifact_name = os.path.basename(artifact)
+                # Search the mapping for exact or partial matches (preserving legacy behavior)
+                for f, paths in file_map.items():
+                    if f == artifact_name or artifact_name in f:
+                        possible_sources.extend(paths)
+
+            # Deduplicate sources just in case
+            for src in set(possible_sources):
                 dest = os.path.join(final_outputs_dir, f"{self.task_id}_{os.path.basename(src)}")
                 if os.path.isdir(src):
                     shutil.copytree(src, dest, dirs_exist_ok=True)
