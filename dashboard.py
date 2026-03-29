@@ -169,7 +169,7 @@ with st.sidebar:
         st.write("No active projects.")
     for proj in active_projects:
         label = f"📍 {proj}" if proj == st.session_state.selected_proj else f"🚀 {proj}"
-        if st.button(label, key=f"btn_act_{proj}", width="stretch"):
+        if st.button(label, key=f"btn_act_{proj}", width="stretch", help="Click to explore this active project's artifacts and logs"):
             st.session_state.selected_proj = proj
             st.session_state.is_active = True
             st.rerun()
@@ -179,7 +179,7 @@ with st.sidebar:
         st.write("No archived projects.")
     for proj in archived_projects:
         label = f"📍 {proj}" if proj == st.session_state.selected_proj else f"📦 {proj}"
-        if st.button(label, key=f"btn_arc_{proj}", width="stretch"):
+        if st.button(label, key=f"btn_arc_{proj}", width="stretch", help="Click to view artifacts from this archived project"):
             st.session_state.selected_proj = proj
             st.session_state.is_active = False
             st.rerun()
@@ -339,7 +339,15 @@ else:
 
         if logs:
             for entry in reversed(logs):
-                with st.expander(f"🛠️ {entry.get('tool')} @ {entry.get('timestamp')}", expanded=(entry == logs[-1])):
+                # Micro-UX: Format ISO timestamp to HH:MM:SS for better readability
+                ts_str = entry.get('timestamp', '')
+                try:
+                    dt = datetime.fromisoformat(ts_str)
+                    display_time = dt.strftime("%H:%M:%S")
+                except (ValueError, TypeError):
+                    display_time = ts_str
+
+                with st.expander(f"🛠️ {entry.get('tool')} @ {display_time}", expanded=(entry == logs[-1])):
                     st.write("**Inputs:**")
                     st.code(json.dumps(entry.get('inputs'), indent=2), language="json")
                     st.write("**Output:**")
