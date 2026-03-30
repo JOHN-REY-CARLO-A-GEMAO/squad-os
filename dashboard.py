@@ -169,7 +169,8 @@ with st.sidebar:
         st.write("No active projects.")
     for proj in active_projects:
         label = f"📍 {proj}" if proj == st.session_state.selected_proj else f"🚀 {proj}"
-        if st.button(label, key=f"btn_act_{proj}", width="stretch"):
+        status_tooltip = get_project_status(proj, is_active=True)
+        if st.button(label, key=f"btn_act_{proj}", width="stretch", help=f"Status: {status_tooltip}"):
             st.session_state.selected_proj = proj
             st.session_state.is_active = True
             st.rerun()
@@ -179,7 +180,8 @@ with st.sidebar:
         st.write("No archived projects.")
     for proj in archived_projects:
         label = f"📍 {proj}" if proj == st.session_state.selected_proj else f"📦 {proj}"
-        if st.button(label, key=f"btn_arc_{proj}", width="stretch"):
+        status_tooltip = get_project_status(proj, is_active=False)
+        if st.button(label, key=f"btn_arc_{proj}", width="stretch", help=f"Status: {status_tooltip}"):
             st.session_state.selected_proj = proj
             st.session_state.is_active = False
             st.rerun()
@@ -214,10 +216,13 @@ if not selected_project:
                 # Extract the prompt text based on schema
                 prompt_text = row.get('goal') if pd.notna(row.get('goal')) else row.get('description', 'Unknown Task')
                 status = row.get('status', 'UNKNOWN').upper()
+                created_at = row.get('created_at', '')
                 
                 # User Bubble
                 with st.chat_message("user"):
                     st.write(prompt_text)
+                    if created_at:
+                        st.caption(f"🕒 {created_at}")
 
                     # Show uploaded files if any
                     uploaded_files_json = row.get('uploaded_files')
@@ -339,7 +344,12 @@ else:
 
         if logs:
             for entry in reversed(logs):
-                with st.expander(f"🛠️ {entry.get('tool')} @ {entry.get('timestamp')}", expanded=(entry == logs[-1])):
+                ts = entry.get('timestamp')
+                try:
+                    ts = datetime.fromisoformat(ts).strftime("%H:%M:%S")
+                except Exception:
+                    pass
+                with st.expander(f"🛠️ {entry.get('tool')} @ {ts}", expanded=(entry == logs[-1])):
                     st.write("**Inputs:**")
                     st.code(json.dumps(entry.get('inputs'), indent=2), language="json")
                     st.write("**Output:**")
