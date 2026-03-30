@@ -2,6 +2,7 @@ import os
 import asyncio
 import datetime
 import ffmpeg
+import urllib.parse
 from typing import Dict, Any, Optional
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 from squad_os.tools.base import BaseTool
@@ -67,10 +68,14 @@ class BrowserControlTool(BaseTool):
 
             if action == "navigate":
                 if not url: return "Error: URL is required for navigate action."
-                await self._page.goto(url)
+                clean_url = url.strip()
+                parsed = urllib.parse.urlparse(clean_url)
+                if parsed.scheme.lower() not in ["http", "https"]:
+                    return f"Error: Protocol '{parsed.scheme}' not allowed. Only http/https are permitted."
+                await self._page.goto(clean_url)
                 if wait_for:
                     await self._page.wait_for_selector(wait_for)
-                return f"Navigated to {url}"
+                return f"Navigated to {clean_url}"
 
             elif action == "click":
                 if not selector: return "Error: Selector is required for click action."
