@@ -109,6 +109,15 @@ async def init_db():
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        # 5. Strategic Indexes for Performance
+        # Speed up get_next_queued_mission and load_missions in dashboard
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_missions_status_id ON missions (status, id);")
+        # Speed up search_past_memory and latest task lookups
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status_id_desc ON tasks (status, id DESC);")
+        # Speed up task-by-mission lookups
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_mission_id ON tasks (mission_id);")
+
         await db.commit()
 
 # --- MISSION & TASK HELPERS ---

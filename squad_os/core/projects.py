@@ -63,18 +63,29 @@ class ProjectBranch:
         os.makedirs(final_outputs_dir, exist_ok=True)
 
         committed_paths = []
+        # Optimized: Build a file mapping once O(N) to avoid O(M*N) walk
+        file_mapping = {}
+        for root, dirs, files in os.walk(self.project_path):
+            for f in files:
+                if f not in file_mapping:
+                    file_mapping[f] = []
+                file_mapping[f].append(os.path.join(root, f))
+
         for artifact in artifacts:
-            # Handle both exact matches and glob-like behavior for artifacts in visuals
+            # Handle both exact matches and glob-like behavior for artifacts
             possible_sources = []
             if os.path.exists(os.path.join(self.project_path, artifact)):
                 possible_sources.append(os.path.join(self.project_path, artifact))
             else:
-                # Try to find file by name if it's a direct filename but located in a subfolder like visuals/
+                # Try to find file by name in the pre-built mapping
                 artifact_name = os.path.basename(artifact)
-                for root, dirs, files in os.walk(self.project_path):
-                    for f in files:
-                        if f == artifact_name or artifact_name in f:
-                            possible_sources.append(os.path.join(root, f))
+                if artifact_name in file_mapping:
+                    possible_sources.extend(file_mapping[artifact_name])
+                else:
+                    # Partial match fallback (e.g. agent says 'screenshot' for 'screenshot_2025.png')
+                    for mapped_name, paths in file_mapping.items():
+                        if artifact_name in mapped_name:
+                            possible_sources.extend(paths)
 
             for src in possible_sources:
                 dest = os.path.join(final_outputs_dir, f"{self.task_id}_{os.path.basename(src)}")
