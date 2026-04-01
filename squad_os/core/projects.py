@@ -63,26 +63,35 @@ class ProjectBranch:
         os.makedirs(final_outputs_dir, exist_ok=True)
 
         committed_paths = []
-        for artifact in artifacts:
-            # Handle both exact matches and glob-like behavior for artifacts in visuals
-            possible_sources = []
-            if os.path.exists(os.path.join(self.project_path, artifact)):
-                possible_sources.append(os.path.join(self.project_path, artifact))
-            else:
-                # Try to find file by name if it's a direct filename but located in a subfolder like visuals/
-                artifact_name = os.path.basename(artifact)
-                for root, dirs, files in os.walk(self.project_path):
-                    for f in files:
-                        if f == artifact_name or artifact_name in f:
-                            possible_sources.append(os.path.join(root, f))
+        artifacts_to_search = []
 
-            for src in possible_sources:
-                dest = os.path.join(final_outputs_dir, f"{self.task_id}_{os.path.basename(src)}")
-                if os.path.isdir(src):
-                    shutil.copytree(src, dest, dirs_exist_ok=True)
+        # Phase 1: Check for exact matches first (O(M) stat operations)
+        for artifact in artifacts:
+            exact_path = os.path.join(self.project_path, artifact)
+            if os.path.exists(exact_path):
+                dest = os.path.join(final_outputs_dir, f"{self.task_id}_{os.path.basename(exact_path)}")
+                if os.path.isdir(exact_path):
+                    shutil.copytree(exact_path, dest, dirs_exist_ok=True)
                 else:
-                    shutil.copy2(src, dest)
+                    shutil.copy2(exact_path, dest)
                 committed_paths.append(dest)
+            else:
+                # If not found exactly, queue for a single project walk
+                artifacts_to_search.append(os.path.basename(artifact))
+
+        # Phase 2: Perform a single walk ONLY if some artifacts weren't found exactly (O(N) search)
+        if artifacts_to_search:
+            for root, _, files in os.walk(self.project_path):
+                for f in files:
+                    for target in artifacts_to_search:
+                        # Original logic: match if target is in filename (substring search)
+                        if target in f:
+                            src = os.path.join(root, f)
+                            dest = os.path.join(final_outputs_dir, f"{self.task_id}_{f}")
+                            # Avoid duplicate commits of the same file
+                            if dest not in committed_paths:
+                                shutil.copy2(src, dest)
+                                committed_paths.append(dest)
 
         # Update SQLite with project metadata
         async with aiosqlite.connect(DB_PATH) as db:
