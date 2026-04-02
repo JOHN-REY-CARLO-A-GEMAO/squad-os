@@ -1,4 +1,9 @@
+import logging
+import os
+
 from fpdf import FPDF
+
+logger = logging.getLogger(__name__)
 
 class SubmissionPDF(FPDF):
     def header(self):
@@ -13,9 +18,31 @@ def create_pdf(link, filename):
     pdf.cell(0, 10, 'Link to the screen recording:', ln=True)
     pdf.set_text_color(0, 0, 255)
     pdf.cell(0, 10, link, ln=True, link=link)
-    pdf.output(filename)
+
+    target_dir = os.path.dirname(os.path.abspath(filename))
+    if target_dir and not os.path.exists(target_dir):
+        os.makedirs(target_dir, exist_ok=True)
+
+    try:
+        pdf.output(filename)
+    except (OSError, IOError) as exc:
+        message = f"Failed to write PDF to '{filename}': {exc}"
+        logger.exception(message)
+        raise RuntimeError(message) from exc
+    except Exception as exc:
+        message = f"Unexpected error while writing PDF to '{filename}': {exc}"
+        logger.exception(message)
+        raise RuntimeError(message) from exc
 
 if __name__ == "__main__":
-    drive_link = "https://drive.google.com/drive/folders/1I69CFyGUftAiL5-b0EwcsEtTrLLiacHS?usp=sharing"
-    create_pdf(drive_link, "Submission_Link.pdf")
-    print(f"PDF generated: Submission_Link.pdf")
+    # The drive link must be provided via environment variable to avoid committing secrets or ephemeral links.
+    drive_link = os.environ.get('DRIVE_LINK')
+    if not drive_link:
+        raise RuntimeError(
+            "Missing required environment variable DRIVE_LINK. "
+            "Set DRIVE_LINK before running generate_pdf.py."
+        )
+
+    output_filename = "Submission_Link.pdf"
+    create_pdf(drive_link, output_filename)
+    print(f"PDF generated: {output_filename}")

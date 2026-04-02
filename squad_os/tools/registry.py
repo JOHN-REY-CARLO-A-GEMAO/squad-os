@@ -208,4 +208,5 @@ class DelegateTaskTool(BaseTool):
             model_name="ollama/deepseek-v3.1:671b-cloud"
         )
         result = await sub_agent.execute_task(task_description, "Context: Working as a specialist.")
-        return f"DELEGATED RESULT FROM {specialist_role}: {result.get('output')}"
+        output = result.get("output") or "No output returned."
+        return f"DELEGATED RESULT FROM {specialist_role}: {output}"

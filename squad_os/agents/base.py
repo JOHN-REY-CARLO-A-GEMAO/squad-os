@@ -107,6 +107,26 @@ class BaseAgent:
                             print(f"  [Error] Tool {t_name} failed: {str(e)}")
                             result = f"Error: {str(e)}"
                             all_succeeded = False
+
+                        # Handle RETRY_EXHAUSTED — try the named fallback tool
+                        if str(result).startswith("RETRY_EXHAUSTED:"):
+                            parts = str(result).split("FALLBACK:")
+                            if len(parts) > 1:
+                                fallback_name = parts[1].split("|")[0].strip()
+                                if fallback_name in self.tools:
+                                    print(f"  [{self.role}] primary tool failed, trying fallback: {fallback_name}...")
+                                    try:
+                                        fb_result = await self.tools[fallback_name].execute(**t_args)
+                                        if self.active_branch:
+                                            self.active_branch.log_tool_call(fallback_name, t_args, str(fb_result))
+                                        result = fb_result
+                                    except Exception as fb_e:
+                                        result = f"Primary failed ({parts[0]}) and fallback also failed: {fb_e}"
+                                        all_succeeded = False
+                                else:
+                                    result = f"Primary tool exhausted, fallback '{fallback_name}' not available."
+                                    all_succeeded = False
+
                         messages.append({
                             "role": "tool",
                             "name": t_name,

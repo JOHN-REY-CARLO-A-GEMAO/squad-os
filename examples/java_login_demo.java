@@ -2,6 +2,7 @@ import javax.swing.*;
 import java.awt.*;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
+import java.util.Arrays;
 
 public class java_login_demo {
     public static void main(String[] args) {
@@ -38,12 +39,15 @@ public class java_login_demo {
             @Override
             public void actionPerformed(ActionEvent e) {
                 String user = userField.getText();
-                String pass = new String(passField.getPassword());
-
-                if (user.isEmpty() || pass.isEmpty()) {
-                    JOptionPane.showMessageDialog(frame, "Error: Fields cannot be empty!", "Validation Error", JOptionPane.ERROR_MESSAGE);
-                } else {
-                    JOptionPane.showMessageDialog(frame, "Login Successful! Welcome, " + user);
+                char[] pass = passField.getPassword();
+                try {
+                    if (user.isEmpty() || pass.length == 0) {
+                        JOptionPane.showMessageDialog(frame, "Error: Fields cannot be empty!", "Validation Error", JOptionPane.ERROR_MESSAGE);
+                    } else {
+                        JOptionPane.showMessageDialog(frame, "Login Successful! Welcome, " + user);
+                    }
+                } finally {
+                    Arrays.fill(pass, '\0');
                 }
             }
         });

@@ -1,7 +1,8 @@
-﻿import json
+import json
 import logging
 import re
 import asyncio
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 from litellm import acompletion
@@ -57,7 +58,7 @@ Structure: {{ "squad": [ {{ "role": "...", "goal": "...", "backstory": "...", "t
                 hire_data = json.loads(cleaned)
 
                 self.active_agents = {}
-                commit_keywords = ["devops", "version control", "deployment", "release"]
+                commit_keywords = ["devops", "version control", "deployment", "release", "version", "coordinator", "control", "operator", "manager"]
                 for member in hire_data.get('squad', []):
                     assigned = [self.tool_inventory[name] for name in member.get('tools_to_assign', []) if name in self.tool_inventory]
                     role_lower = member['role'].lower()
@@ -85,7 +86,7 @@ Roles: {roles}
 RULES FOR PLANNING:
 1. Every task 'description' MUST specify which TOOL the agent should use.
 2. If the agent needs to hire someone, the description MUST explicitly say: 'MUST use delegate_task'.
-3. The LAST task MUST always be assigned to a DevOps/Version Control role and MUST explicitly say: 'MUST use commit_project tool to commit all artifacts'.
+3. The LAST task MUST be assigned to one of the HIRED roles listed above and MUST explicitly say: 'MUST use commit_project tool to commit all artifacts'. Do NOT invent new roles not in the hired list.
 4. Return ONLY JSON. No other text.
 Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "..." }} ] }}"""
 

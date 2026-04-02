@@ -1,18 +1,18 @@
 import asyncio
 import aiosqlite
-from squad_os.database.session import init_db
+from squad_os.database.session import DB_PATH, init_db
 
 async def submit():
     await init_db()
-    async with aiosqlite.connect('instance/shared_memory.db') as db:
+    async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "INSERT INTO missions (name, description, status) VALUES (?, ?, ?)",
+            "INSERT INTO missions (goal, status, uploaded_files) VALUES (?, ?, ?)",
             (
-                "VisualDemo", 
                 "DO NOT ask for human approval. DO NOT use web_search. "
                 "You are a web-browsing agent. Use the BrowserControlTool to navigate to 'https://news.ycombinator.com', "
-                "take a screenshot of the front page, and then use the CommitProjectTool to commit the visual artifacts.", 
-                "QUEUED"
+                "take a screenshot of the front page, and then use the CommitProjectTool to commit the visual artifacts.",
+                "QUEUED",
+                None,
             )
         )
         await db.commit()

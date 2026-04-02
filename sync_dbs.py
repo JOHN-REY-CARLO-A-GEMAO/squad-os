@@ -11,7 +11,7 @@ for path in db_paths:
         
         # 1. Ensure the table exists
         cursor.execute('''CREATE TABLE IF NOT EXISTS missions 
-                         (id INTEGER PRIMARY KEY, name TEXT, description TEXT, status TEXT)''')
+                         (id INTEGER PRIMARY KEY, name TEXT, description TEXT, status TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
         
         # 2. Add the mission if the table is empty
         cursor.execute("SELECT count(*) FROM missions")
@@ -19,8 +19,8 @@ for path in db_paths:
             cursor.execute("INSERT INTO missions (name, description, status) VALUES (?, ?, ?)",
                            ('SearchDemo', 'Search for AI trends, take screenshot, COMMIT.', 'QUEUED'))
         
-        # 3. Force all statuses to QUEUED
-        cursor.execute("UPDATE missions SET status = 'QUEUED'")
+        # 3. Retry only failed or errored missions by setting them back to QUEUED
+        cursor.execute("UPDATE missions SET status = 'QUEUED' WHERE status IN ('FAILED', 'ERROR')")
         
         conn.commit()
         conn.close()

@@ -3,56 +3,189 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MLBB Estes Landing Page - Moon Elf King</title>
-    <link rel="stylesheet" href="style.css">
+    <title>Software Dev - Moon Elf King</title>
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700&family=Raleway:wght@300;400;600&display=swap" rel="stylesheet">
+    
+    <style>
+        :root {
+            --primary-green: #2E7D32;
+            --light-green: #81C784;
+            --gold: #FFD700;
+            --ethereal-white: #F8FFF9;
+            --glow-shadow: 0 0 15px rgba(255, 215, 0, 0.4);
+            --border-color: #BDB76B;
+        }
+
+        body {
+            background-color: #121212;
+            background: linear-gradient(135deg, #0a2010 0%, #1a3a22 100%);
+            color: var(--ethereal-white);
+            font-family: 'Raleway', sans-serif;
+            margin: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+        }
+
+        .container {
+            width: 90%;
+            max-width: 800px;
+            background: rgba(46, 125, 50, 0.1);
+            padding: 40px;
+            border-radius: 20px;
+            box-shadow: 0 0 30px rgba(0, 0, 0, 0.5), inset 0 0 20px rgba(129, 199, 132, 0.1);
+            text-align: center;
+            backdrop-filter: blur(5px);
+            border: 1px solid rgba(189, 183, 107, 0.3);
+            margin: 20px 0;
+        }
+
+        h1, h2, h3 {
+            font-family: 'Cinzel', serif;
+            color: var(--gold);
+            text-transform: uppercase;
+            letter-spacing: 2px;
+        }
+
+        h1 {
+            font-size: 2.2rem;
+            margin-bottom: 30px;
+            text-shadow: 0 0 10px rgba(255, 215, 0, 0.6);
+        }
+
+        .glow-box {
+            margin: 20px 0;
+            padding: 20px;
+            border: 1.5px solid var(--border-color);
+            border-radius: 12px;
+            background: rgba(0, 0, 0, 0.2);
+            box-shadow: var(--glow-shadow);
+            transition: transform 0.3s ease;
+        }
+
+        .glow-box:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 0 25px rgba(255, 215, 0, 0.6);
+        }
+
+        ul {
+            list-style: none;
+            padding: 0;
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 15px;
+        }
+
+        li {
+            background: rgba(129, 199, 132, 0.2);
+            padding: 8px 15px;
+            border-radius: 20px;
+            border: 1px solid var(--gold);
+            color: var(--gold);
+            font-weight: 600;
+        }
+
+        footer {
+            margin-top: 40px;
+            padding-top: 20px;
+            border-top: 1px solid rgba(189, 183, 107, 0.4);
+            font-size: 0.9rem;
+        }
+
+        #student-info p { margin: 5px 0; }
+        strong { color: var(--gold); }
+        #current-date { font-style: italic; color: var(--light-green); }
+        #greeting { font-size: 1.5rem; color: var(--light-green); }
+    </style>
 </head>
 <body>
     <div class="container">
-        <!-- Header: JS Welcome String -->
         <header id="main-header">
             <h1 id="welcome-msg"></h1>
         </header>
 
-        <!-- Hero: Description -->
         <section id="hero" class="glow-box">
-            <h2>The Moon Elf King</h2>
-            <p>Heal the world with the power of the Moon. A support that never falters, a king that never retreats.</p>
+            <h2>The Code King's Decree</h2>
+            <p>Mastering the <strong>Car Rental System</strong> with Flask. A developer that never stops building, a student that never stops learning.</p>
         </section>
 
-        <!-- Information: JS Numbers -->
         <section id="info" class="glow-box">
-            <h3>Mission Efficiency</h3>
+            <h3>Project Progress</h3>
             <p id="calc-result"></p>
         </section>
 
-        <!-- List: JS Array -->
         <section id="list-section" class="glow-box">
-            <h3>Essential AI Agents</h3>
+            <h3>Current Stack & Tools</h3>
             <ul id="agent-list"></ul>
         </section>
 
-        <!-- Date: Current Date -->
         <section id="date-section" class="glow-box">
-            <h3>Scroll of Time</h3>
+            <h3>The 1-Hour Study Scroll</h3>
             <p id="current-date"></p>
         </section>
 
-        <!-- Conditional Section: Time-based greeting -->
         <section id="conditional-section" class="glow-box">
             <h3 id="greeting"></h3>
-            <p>Welcome to the Moon Elf Kingdom.</p>
+            <p>Welcome to the Software Development Sanctuary.</p>
         </section>
 
-        <!-- Footer: Student Info -->
         <footer>
             <div id="student-info">
                 <p><strong>Name:</strong> John Rey Carlo A. Gemao</p>
-                <p><strong>Course:</strong> BSIT</p>
-                <p><strong>Year:</strong> 2nd Year</p>
+                <p><strong>Course:</strong> BS Major in Software Development</p>
+                <p><strong>School:</strong> Laguna University</p>
                 <p id="footer-year"></p>
             </div>
         </footer>
     </div>
-    <script src="script.js"></script>
+
+    <script>
+        document.addEventListener("DOMContentLoaded", () => {
+            // 1. String Variable: Targeted Welcome Message
+            let welcomeMessage = "Domain of the Software Development Major";
+            document.getElementById("welcome-msg").innerText = welcomeMessage;
+
+            // 2. Number Calculation: Daily Efficiency (1-hour constraint)
+            let dailyStudyMinutes = 60; 
+            let productivityBoost = 1.5; // AI assistance multiplier
+            let effectiveMinutes = dailyStudyMinutes * productivityBoost;
+            document.getElementById("calc-result").innerHTML = 
+                `With only <b>${dailyStudyMinutes}</b> minutes of daily study, you achieve <b>${effectiveMinutes}</b> minutes worth of progress using AI synergy.`;
+
+            // 3. Array with 5+ items: Your Actual Tools
+            const techStack = ["Flask (Python)", "MySQL Workbench", "Java (OOP)", "Figma", "VS Code", "Firebase"];
+            const agentList = document.getElementById("agent-list");
+
+            techStack.forEach(tool => {
+                let li = document.createElement("li");
+                li.textContent = tool;
+                agentList.appendChild(li);
+            });
+
+            // 4. Date Object: Current Date
+            const now = new Date();
+            const dateOptions = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
+            document.getElementById("current-date").innerText = now.toLocaleDateString(undefined, dateOptions);
+
+            // 5. Conditional Statement: Evening Focus
+            let hour = now.getHours();
+            let greetingMessage = "";
+
+            if (hour < 12) {
+                greetingMessage = "Rise and Code!";
+            } else if (hour < 18) {
+                greetingMessage = "Keep Pushing Forward!";
+            } else {
+                greetingMessage = "The 1-Hour Study Grind Begins!";
+            }
+
+            document.getElementById("greeting").innerText = greetingMessage;
+
+            // Footer: Dynamic Year
+            document.getElementById("footer-year").innerHTML = `<strong>Current Year:</strong> ${now.getFullYear()}`;
+        });
+    </script>
 </body>
 </html>

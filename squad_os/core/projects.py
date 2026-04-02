@@ -1,3 +1,4 @@
+import logging
 import os
 import json
 import shutil
@@ -5,6 +6,8 @@ from datetime import datetime
 from typing import List, Dict, Any
 from squad_os.database.session import DB_PATH
 import aiosqlite
+
+logger = logging.getLogger(__name__)
 
 class ProjectBranch:
     def __init__(self, task_id: str, base_dir: str = "workspace"):
@@ -44,6 +47,13 @@ class ProjectBranch:
             archive_path = os.path.join(self.base_dir, "archives", self.task_id)
             log_path = os.path.join(archive_path, "session_log.jsonl")
             if not os.path.exists(log_path):
+                logger.warning(
+                    "ProjectBranch.log_tool_call: no log file found for task '%s' at '%s'. "
+                    "Expected archived log at '%s'.",
+                    self.task_id,
+                    self.project_path,
+                    log_path,
+                )
                 return
 
         entry = {
@@ -73,8 +83,16 @@ class ProjectBranch:
                 artifact_name = os.path.basename(artifact)
                 for root, dirs, files in os.walk(self.project_path):
                     for f in files:
-                        if f == artifact_name or artifact_name in f:
+                        # Only accept an exact filename match or files that start with the artifact name.
+                        # This avoids overly permissive substring matching that can select unintended files.
+                        if f == artifact_name or f.startswith(artifact_name):
                             possible_sources.append(os.path.join(root, f))
+
+            if not possible_sources:
+                raise FileNotFoundError(
+                    f"Artifact '{artifact}' not found in project path '{self.project_path}' "
+                    f"for task '{self.task_id}'. Commit aborted."
+                )
 
             for src in possible_sources:
                 dest = os.path.join(final_outputs_dir, f"{self.task_id}_{os.path.basename(src)}")
@@ -109,6 +127,17 @@ class ProjectBranch:
 
         dest = os.path.join(archive_dir, self.task_id)
         if os.path.exists(self.project_path):
+            if os.path.exists(dest):
+                # If the archive destination already exists, preserve the existing archive
+                # by generating a deterministic unique suffix instead of overwriting it.
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                suffix = 0
+                unique_dest = f"{dest}_{timestamp}"
+                while os.path.exists(unique_dest):
+                    suffix += 1
+                    unique_dest = f"{dest}_{timestamp}_{suffix}"
+                dest = unique_dest
+
             shutil.move(self.project_path, dest)
 
         async with aiosqlite.connect(DB_PATH) as db:

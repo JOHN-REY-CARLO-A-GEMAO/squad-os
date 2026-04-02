@@ -4,6 +4,7 @@ from squad_os.orchestrator.manager import Manager
 
 # CORE & REGISTRY TOOLS
 from squad_os.tools.desktop import DesktopControlTool
+from squad_os.tools.ui_inspector import UIInspectorTool
 from squad_os.tools.registry import (
     WebSearchTool,
     FileWriterTool,
@@ -46,6 +47,7 @@ async def run_worker():
         GetSharedValueTool(),
         DelegateTaskTool(),
         DesktopControlTool(),
+        UIInspectorTool(),
         CommitProjectTool(agent=type('obj', (object,), {'active_branch': None})()),
         
         # VISUAL CAPABILITIES ACTIVATED:
@@ -75,6 +77,7 @@ async def run_worker():
                 # EXECUTE MISSION
                 await manager.run_mission(mission['goal'], mission.get('uploaded_files'))
                 print(f"✅ MISSION #{mission['id']} COMPLETE.")
+                await update_mission(mission['id'], "COMPLETED")
             except Exception as e:
                 print(f"❌ MISSION #{mission['id']} FAILED: {e}")
                 await update_mission(mission['id'], "FAILED")

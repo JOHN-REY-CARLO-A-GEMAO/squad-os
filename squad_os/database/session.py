@@ -4,7 +4,7 @@ import aiosqlite
 import json
 from datetime import datetime
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 DB_PATH = "shared_memory.db"
 
@@ -15,7 +15,7 @@ class MissionRecord(BaseModel):
     goal: str
     status: str = "PENDING"
     uploaded_files: Optional[str] = None  # JSON string containing file metadata
-    created_at: datetime = datetime.now()
+    created_at: datetime = Field(default_factory=datetime.now)
 
 class TaskRecord(BaseModel):
     id: Optional[int] = None
@@ -132,6 +132,18 @@ async def create_task(mission_id: int, description: str, assigned_agent: str) ->
         return cursor.lastrowid
 
 async def update_task(task_id: int, **kwargs):
+    allowed_columns = {
+        "mission_id", "description", "assigned_agent", "status",
+        "input_data", "output_data", "error", "prompt_tokens",
+        "completion_tokens", "cost_usd", "execution_ms", "retry_count",
+        "created_at"
+    }
+    invalid_keys = [k for k in kwargs.keys() if k not in allowed_columns]
+    if invalid_keys:
+        raise ValueError(f"Invalid task column(s): {', '.join(invalid_keys)}")
+    if not kwargs:
+        return
+
     async with aiosqlite.connect(DB_PATH) as db:
         keys = ", ".join([f"{k} = ?" for k in kwargs.keys()])
         values = list(kwargs.values()) + [task_id]
