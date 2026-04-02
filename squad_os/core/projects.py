@@ -73,20 +73,36 @@ class ProjectBranch:
         os.makedirs(final_outputs_dir, exist_ok=True)
 
         committed_paths = []
+
+        # Optimization: Map all files in project once to avoid repeated O(N) os.walk
+        # This turns O(Artifacts * TotalFiles) into O(Artifacts + TotalFiles)
+        file_map = {}
+        for root, _, files in os.walk(self.project_path):
+            for f in files:
+                if f not in file_map:
+                    file_map[f] = []
+                file_map[f].append(os.path.join(root, f))
+
         for artifact in artifacts:
             # Handle both exact matches and glob-like behavior for artifacts in visuals
             possible_sources = []
-            if os.path.exists(os.path.join(self.project_path, artifact)):
-                possible_sources.append(os.path.join(self.project_path, artifact))
+            direct_path = os.path.join(self.project_path, artifact)
+
+            if os.path.exists(direct_path):
+                possible_sources.append(direct_path)
             else:
-                # Try to find file by name if it's a direct filename but located in a subfolder like visuals/
+                # Try to find file by name if it's a direct filename but located in a subfolder
                 artifact_name = os.path.basename(artifact)
-                for root, dirs, files in os.walk(self.project_path):
-                    for f in files:
-                        # Only accept an exact filename match or files that start with the artifact name.
-                        # This avoids overly permissive substring matching that can select unintended files.
-                        if f == artifact_name or f.startswith(artifact_name):
-                            possible_sources.append(os.path.join(root, f))
+
+                # Check for exact matches in our pre-built map
+                if artifact_name in file_map:
+                    possible_sources.extend(file_map[artifact_name])
+
+                # Check for files that start with the artifact name (prefix matching)
+                # We still need to iterate the map keys, but it's faster than os.walk repeated calls
+                for f_name in file_map:
+                    if f_name.startswith(artifact_name) and f_name != artifact_name:
+                        possible_sources.extend(file_map[f_name])
 
             if not possible_sources:
                 raise FileNotFoundError(
