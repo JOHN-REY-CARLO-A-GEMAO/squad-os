@@ -109,6 +109,17 @@ async def init_db():
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        # 5. Performance Indexes
+        # Speeds up MISSION queue lookups (get_next_queued_mission)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_missions_status_id ON missions(status, id)")
+
+        # Speeds up TASK lookups by status and mission filtering
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status_id ON tasks(status, id DESC, mission_id)")
+
+        # Speeds up retrieval of all tasks for a specific mission
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_mission_id ON tasks(mission_id)")
+
         await db.commit()
 
 # --- MISSION & TASK HELPERS ---
