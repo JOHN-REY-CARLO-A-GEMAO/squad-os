@@ -1,42 +1,29 @@
 /**
  * main.ts — Squad OS Entry Point
  * 
- * Wires together Logger, Dispatcher, and a test ResearcherAgent.
- * Runs a live task dispatch to prove the swarm is connected.
+ * Wires together Logger, Dispatcher, ResearcherAgent, and Daemon.
+ * Runs in listening mode — watching data/inbox/ for tasks indefinitely.
  */
 
 import { logger } from './tools/Logger.js';
 import { Dispatcher } from './core/Dispatcher.js';
+import { Daemon } from './core/Daemon.js';
 import { ResearcherAgent } from './agents/ResearcherAgent.js';
 
 async function main() {
   console.log('\n🧠 Squad OS — Initializing...\n');
 
-  // 1. Instantiate core components
+  // Core components
   const dispatcher = new Dispatcher();
-  await logger.info('Squad OS main.ts started');
+  const daemon = new Daemon(dispatcher);
 
-  // 2. Spawn and register a ResearcherAgent
+  // Register agents
   const researcher = new ResearcherAgent('researcher-001', 'Researcher');
   dispatcher.registerAgent(researcher);
 
-  // 3. Dispatch a test task
-  console.log('📋 Dispatching test task...\n');
-
-  try {
-    const result = await dispatcher.dispatchTask(
-      'Researcher',
-      'Analyze latest OpenClaw documentation'
-    );
-    console.log(`\n🎯 Final result: ${result}`);
-  } catch (err) {
-    console.error('\n💥 Dispatch failed:', err);
-  }
-
-  // 4. Final status
-  console.log('\n📊 Agent statuses:', dispatcher.listAgents());
-  await logger.info(`Squad OS main.ts finished. Agents: ${JSON.stringify(dispatcher.listAgents())}`);
-  console.log('\n✅ Squad OS pulse complete.\n');
+  // Start daemon in listening mode
+  daemon.start();
+  await logger.info('Squad OS started in Listening Mode — watching data/inbox/');
 }
 
 main().catch(async (err) => {

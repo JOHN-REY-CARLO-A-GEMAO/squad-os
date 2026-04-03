@@ -7,6 +7,10 @@ dist/
 # Logs
 data/logs/*.log
 
+# I/O — task files are runtime artifacts, not source
+data/inbox/*.json
+data/archive/*.json
+
 # OS
 .DS_Store
 Thumbs.db

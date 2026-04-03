@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "start": "npx tsx src/main.ts",
+    "test:autonomy": "npx tsx src/test-autonomy.ts",
     "pulse": "npx tsx src/core/pulse.ts",
     "build": "tsc",
     "check": "tsc --noEmit"
