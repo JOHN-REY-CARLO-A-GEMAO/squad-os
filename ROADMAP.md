@@ -10,7 +10,7 @@ Squad OS is an **agentic operating framework** designed to manage a squad of spe
 
 ---
 
-## Phase 1 — Foundations ✅ (Current)
+## Phase 1 — Foundations ✅
 
 **Goal:** Establish the core infrastructure and prove the system works.
 
@@ -19,8 +19,8 @@ Squad OS is an **agentic operating framework** designed to manage a squad of spe
 - [x] Set up directory structure (`src/core`, `src/agents`, `src/tools`, `data/logs`)
 - [x] Create identity and operating manifesto
 - [x] Establish memory and logging conventions
-- [ ] Build `pulse.ts` — the heartbeat script
-- [ ] Define core orchestration primitives in `src/core`
+- [x] Build `pulse.ts` — the heartbeat script
+- [x] Define core orchestration primitives in `src/core`
 
 ### Deliverables
 - `package.json` with TypeScript, tsx, @types/node
@@ -31,60 +31,63 @@ Squad OS is an **agentic operating framework** designed to manage a squad of spe
 
 ---
 
-## Phase 2 — Agentic Swarm
+## Phase 2 — Agentic Swarm ✅
 
 **Goal:** Move from single-threaded execution to a multi-agent dispatch system.
 
 ### Objectives
-- [ ] Build a **Dispatcher** agent in `src/agents/dispatcher.ts`
+- [x] Build a **Dispatcher** agent in `src/core/Dispatcher.ts`
   - Understands high-level goals and breaks them into sub-tasks
   - Maintains a task queue with status tracking
-- [ ] Create specialized **Worker** agents:
-  - `src/agents/coder.ts` — writes, refactors, and debugs code
-  - `src/agents/researcher.ts` — gathers info, reviews docs, validates outputs
-- [ ] Implement **agent communication protocol** (message-passing between agents)
-- [ ] Build a **task manifest** (`data/logs/tasks.json`) — live tracking of all sub-tasks
-- [ ] Add basic CLI commands to spawn/destroy workers
+- [x] Create specialized **Worker** agents:
+  - `src/agents/BaseAgent.ts` — abstract base with id, role, status, processTask
+  - `src/agents/ResearcherAgent.ts` — research-focused worker
+- [x] Implement **agent communication protocol** (message-passing between agents)
+- [x] Build a **task manifest** (`data/logs/squad.log`) — live tracking of all sub-tasks
+- [x] Add `dispatchTask()` method with idle-agent matching
 
 ### Deliverables
-- `src/agents/dispatcher.ts` — task orchestrator
-- `src/agents/coder.ts` — code-focused worker
-- `src/agents/researcher.ts` — research-focused worker
-- Task queue with status: `pending`, `in-progress`, `done`, `blocked`
-- Worker spawning via CLI
+- `src/agents/BaseAgent.ts` — abstract agent class
+- `src/agents/ResearcherAgent.ts` — first specialized worker
+- `src/core/Dispatcher.ts` — task orchestrator with registry
+- `src/tools/Logger.ts` — timestamped, level-tagged append-only logger
+- `data/logs/squad.log` — persistent execution log
 
 ---
 
-## Phase 3 — Autonomy
+## Phase 3 — Autonomy ✅ (Current)
 
-**Goal:** Squad OS runs with minimal supervision, corrects itself, and integrates with the outside world.
+**Goal:** Squad OS runs continuously as a service, self-sustaining with an event loop.
 
 ### Objectives
-- [ ] **Background processes** — long-running agents that monitor and act
-- [ ] **Self-correction loop** — agents that review their own outputs and retry on failure
-- [ ] **External integrations:**
-  - GitHub API (PR creation, issue tracking, repo management)
-  - Discord webhook (status reports, alerts)
-  - Filesystem watcher (auto-reaction to file changes)
-- [ ] **Persistence layer** — SQLite or JSON-based store for agent state
-- [ ] **Self-healing** — automatic recovery from known failure modes
-- [ ] **Dashboard** — simple HTML status page showing squad health
+- [x] **I/O directories** — `data/inbox/` (task ingestion) and `data/archive/` (processed tasks)
+- [x] **Daemon event loop** — `src/core/Daemon.ts` watches inbox every 5s, dispatches tasks, archives results
+- [x] **Inbox-based task dispatch** — drop a `.json` file `{ role, task }` → daemon handles the rest
+- [x] **Autonomy integration test** — `src/test-autonomy.ts` validates the full loop end-to-end
+- [x] Updated `src/main.ts` to start daemon in Listening Mode
+- [ ] Background process persistence (systemd/supervisord — future)
+- [ ] **GitHub API integration** — create Issues/PRs from tasks
+- [ ] **Discord webhook notifier** — push status reports to a channel
+- [ ] **Filesystem watcher** — react to file changes in real-time
+- [ ] **Self-correction loop** — agents retry on failure automatically
+- [ ] **Agent state persistence** — SQLite or JSON store for agent memory
 
 ### Deliverables
-- Background worker daemon
-- Self-correction/retry logic
-- GitHub integration (Issues + PRs)
-- Discord webhook notifier
-- Agent state persistence
-- Web-based status dashboard
+- `src/core/Daemon.ts` — 5-second event loop, inbox watcher, archive mover
+- `src/main.ts` — daemon startup in Listening Mode
+- `src/test-autonomy.ts` — integration test (spawns daemon, drops task, verifies archive)
+- `data/inbox/` — task ingestion directory
+- `data/archive/` — processed task storage
+- `npm run test:autonomy` — validated end-to-end ✅
 
 ---
 
 ## Notes
 
 - All code lives in `src/`. Logs live in `data/logs/`.
-- Phase 3 external integrations are speculative — may be refined based on actual needs.
+- Phase 3 external integrations (GitHub, Discord) are next priorities.
 - Memory files (`memory/YYYY-MM-DD.md`) track daily decisions and context.
+- System is currently in **Listening Mode** — run `npm start` to activate.
 
 ---
 
