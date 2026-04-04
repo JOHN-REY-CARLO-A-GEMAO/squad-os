@@ -68,25 +68,43 @@ class ProjectBranch:
             f.write(json.dumps(entry) + "\n")
 
     async def commit(self, artifacts: List[str]):
-
         final_outputs_dir = os.path.join(self.base_dir, "final_outputs")
         os.makedirs(final_outputs_dir, exist_ok=True)
 
+        # Optimization: Build a file map with a single O(N) walk instead of O(Artifacts * N)
+        file_map = {}
+        for root, dirs, files in os.walk(self.project_path):
+            for f in files:
+                if f not in file_map:
+                    file_map[f] = []
+                file_map[f].append(os.path.join(root, f))
+            # Also map directories to their full paths for exact matches
+            for d in dirs:
+                if d not in file_map:
+                    file_map[d] = []
+                file_map[d].append(os.path.join(root, d))
+
         committed_paths = []
         for artifact in artifacts:
-            # Handle both exact matches and glob-like behavior for artifacts in visuals
             possible_sources = []
-            if os.path.exists(os.path.join(self.project_path, artifact)):
-                possible_sources.append(os.path.join(self.project_path, artifact))
+            # 1. Try exact match from root
+            exact_path = os.path.join(self.project_path, artifact)
+            if os.path.exists(exact_path):
+                possible_sources.append(exact_path)
             else:
-                # Try to find file by name if it's a direct filename but located in a subfolder like visuals/
+                # 2. Use the optimized file map for filename matches
                 artifact_name = os.path.basename(artifact)
-                for root, dirs, files in os.walk(self.project_path):
-                    for f in files:
-                        # Only accept an exact filename match or files that start with the artifact name.
-                        # This avoids overly permissive substring matching that can select unintended files.
-                        if f == artifact_name or f.startswith(artifact_name):
-                            possible_sources.append(os.path.join(root, f))
+                if artifact_name in file_map:
+                    possible_sources.extend(file_map[artifact_name])
+
+                # 3. Handle prefix matching as before (less common but supported)
+                # If we still have nothing, or want to be thorough, we can check prefixes
+                # but based on previous logic it was exact OR prefix.
+                # To maintain parity with `f.startswith(artifact_name)`:
+                if not possible_sources:
+                    for filename, paths in file_map.items():
+                        if filename.startswith(artifact_name):
+                            possible_sources.extend(paths)
 
             if not possible_sources:
                 raise FileNotFoundError(
