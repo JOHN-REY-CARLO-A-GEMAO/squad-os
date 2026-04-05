@@ -245,7 +245,7 @@ if not selected_project:
                     else:
                         st.write(f"Status: {status}")
         else:
-            st.write("No missions found. Send a message below to start!")
+            st.info("No missions found. Send a message below to start!", icon="💬")
 
     # Chat Input Box
     with st.container():
@@ -309,7 +309,7 @@ else:
                                 width="stretch"
                             )
             else:
-                st.write("No visual artifacts found.")
+                st.info("No visual artifacts found.", icon="🖼️")
         else:
             st.error("Visuals directory missing.")
 
@@ -335,7 +335,7 @@ else:
             except Exception as e:
                 st.error(f"Error reading .json log: {e}")
         else:
-            st.write("No `session_log.jsonl` or `session_log.json` found.")
+            st.info("No tool execution logs found yet.", icon="📜")
 
         if logs:
             for entry in reversed(logs):
@@ -345,7 +345,7 @@ else:
                     st.write("**Output:**")
                     st.code(entry.get('output'))
         elif os.path.exists(log_jsonl) or os.path.exists(log_json):
-            st.write("Log is empty.")
+            st.info("Execution log is currently empty.", icon="📜")
 
     with tab3:
         st.subheader("Project Context & Learnings")
@@ -354,7 +354,7 @@ else:
             with open(memory_path, "r") as f:
                 st.markdown(f.read())
         else:
-            st.write("No `project_memory.md` found.")
+            st.info("No project memory or learnings recorded yet.", icon="🧠")
 
     with tab4:
         st.subheader("Pending Commit Reviewer")
@@ -368,4 +368,4 @@ else:
             except Exception as e:
                 st.error(f"Error parsing artifacts.json: {e}")
         else:
-            st.write("Manifest will appear when the project is ready for commit.")
+            st.info("Manifest will appear when the project is ready for commit.", icon="📋")
