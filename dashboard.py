@@ -169,7 +169,7 @@ with st.sidebar:
         st.write("No active projects.")
     for proj in active_projects:
         label = f"📍 {proj}" if proj == st.session_state.selected_proj else f"🚀 {proj}"
-        if st.button(label, key=f"btn_act_{proj}", width="stretch"):
+        if st.button(label, key=f"btn_act_{proj}", width="stretch", help="View this active project branch"):
             st.session_state.selected_proj = proj
             st.session_state.is_active = True
             st.rerun()
@@ -179,12 +179,12 @@ with st.sidebar:
         st.write("No archived projects.")
     for proj in archived_projects:
         label = f"📍 {proj}" if proj == st.session_state.selected_proj else f"📦 {proj}"
-        if st.button(label, key=f"btn_arc_{proj}", width="stretch"):
+        if st.button(label, key=f"btn_arc_{proj}", width="stretch", help="View this archived project branch"):
             st.session_state.selected_proj = proj
             st.session_state.is_active = False
             st.rerun()
 
-    if st.button("Reset View (Go to Chat)", width="stretch"):
+    if st.button("Reset View (Go to Chat)", width="stretch", help="Return to the main mission control chat"):
         st.session_state.selected_proj = None
 
     # Global Stats
@@ -245,7 +245,7 @@ if not selected_project:
                     else:
                         st.write(f"Status: {status}")
         else:
-            st.write("No missions found. Send a message below to start!")
+            st.info("No missions found. Send a message below to start!", icon="💬")
 
     # Chat Input Box
     with st.container():
@@ -253,7 +253,9 @@ if not selected_project:
         if prompt := st.chat_input("Ask SquadOS to do something... (e.g., 'Analyze this document for me')"):
             files_json = save_uploaded_files(uploaded_files)
             if files_json != "ERROR_SIZE":
-                submit_new_mission(prompt, files_json)
+                with st.spinner("Dispatching mission..."):
+                    submit_new_mission(prompt, files_json)
+                st.toast("🚀 Mission dispatched successfully!")
                 st.rerun()
 
 else:
@@ -264,7 +266,7 @@ else:
     with col1:
         st.header(f"Project: `{selected_project}`")
     with col2:
-        if st.button("🔙 Back to Chat"):
+        if st.button("🔙 Back to Chat", help="Return to the main mission control chat"):
             st.session_state.selected_proj = None
             st.rerun()
 
@@ -306,12 +308,13 @@ else:
                                 file_name=v_file,
                                 mime=mime_type or "application/octet-stream",
                                 key=f"dl_{v_file}",
-                                width="stretch"
+                                width="stretch",
+                                help=f"Download {v_file} to your local machine"
                             )
             else:
-                st.write("No visual artifacts found.")
+                st.info("No visual artifacts found.", icon="🖼️")
         else:
-            st.error("Visuals directory missing.")
+            st.info("Visuals directory missing.", icon="🖼️")
 
     with tab2:
         st.subheader("Real-time Tool Execution")
@@ -335,7 +338,7 @@ else:
             except Exception as e:
                 st.error(f"Error reading .json log: {e}")
         else:
-            st.write("No `session_log.jsonl` or `session_log.json` found.")
+            st.info("No execution logs found.", icon="📜")
 
         if logs:
             for entry in reversed(logs):
@@ -345,7 +348,7 @@ else:
                     st.write("**Output:**")
                     st.code(entry.get('output'))
         elif os.path.exists(log_jsonl) or os.path.exists(log_json):
-            st.write("Log is empty.")
+            st.info("Log is empty.", icon="📜")
 
     with tab3:
         st.subheader("Project Context & Learnings")
@@ -354,7 +357,7 @@ else:
             with open(memory_path, "r") as f:
                 st.markdown(f.read())
         else:
-            st.write("No `project_memory.md` found.")
+            st.info("No project memory recorded yet.", icon="🧠")
 
     with tab4:
         st.subheader("Pending Commit Reviewer")
@@ -368,4 +371,4 @@ else:
             except Exception as e:
                 st.error(f"Error parsing artifacts.json: {e}")
         else:
-            st.write("Manifest will appear when the project is ready for commit.")
+            st.info("Manifest will appear when the project is ready for commit.", icon="📋")
