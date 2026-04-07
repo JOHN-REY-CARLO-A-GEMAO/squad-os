@@ -39,10 +39,12 @@ def get_db_connection():
             pass
     return None
 
+@st.cache_data(ttl=5)
 def load_missions():
     conn = get_db_connection()
     if conn:
         try:
+            # We return a DataFrame which is serializable by Streamlit's cache
             df = pd.read_sql_query("SELECT * FROM missions ORDER BY id ASC", conn)
             conn.close()
             return df
@@ -121,6 +123,7 @@ def submit_new_mission(prompt, uploaded_files_json=None):
             except Exception as e:
                 st.error(f"Failed to push to {path}: {e}")
 
+@st.cache_data(ttl=5)
 def load_global_stats():
     conn = get_db_connection()
     if conn:
@@ -129,7 +132,8 @@ def load_global_stats():
             cursor.execute("SELECT SUM(prompt_tokens), SUM(completion_tokens), SUM(cost_usd) FROM tasks")
             stats = cursor.fetchone()
             conn.close()
-            return stats
+            # Convert sqlite3.Row to tuple to ensure serializability for caching
+            return tuple(stats) if stats else (0, 0, 0.0)
         except Exception:
             pass
     return (0, 0, 0.0)
