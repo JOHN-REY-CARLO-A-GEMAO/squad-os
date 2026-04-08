@@ -39,6 +39,7 @@ def get_db_connection():
             pass
     return None
 
+@st.cache_data(ttl=5)
 def load_missions():
     conn = get_db_connection()
     if conn:
@@ -121,6 +122,7 @@ def submit_new_mission(prompt, uploaded_files_json=None):
             except Exception as e:
                 st.error(f"Failed to push to {path}: {e}")
 
+@st.cache_data(ttl=5)
 def load_global_stats():
     conn = get_db_connection()
     if conn:
@@ -129,7 +131,13 @@ def load_global_stats():
             cursor.execute("SELECT SUM(prompt_tokens), SUM(completion_tokens), SUM(cost_usd) FROM tasks")
             stats = cursor.fetchone()
             conn.close()
-            return stats
+            if stats:
+                # Handle None values from SUM() on empty/partially empty tables
+                return (
+                    stats[0] or 0,
+                    stats[1] or 0,
+                    stats[2] or 0.0
+                )
         except Exception:
             pass
     return (0, 0, 0.0)
