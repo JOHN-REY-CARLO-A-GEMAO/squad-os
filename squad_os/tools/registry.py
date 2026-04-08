@@ -17,9 +17,15 @@ class WebSearchTool(BaseTool):
     description = "Search the internet for real-time information and trends."
     parameters = {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}
     async def execute(self, query: str) -> str:
+        # Security: Input validation and sanitization
+        if not query or not query.strip():
+            return "Error: Empty search query."
+
+        sanitized_query = query.strip()[:255] # Limit length to prevent DoS
+
         try:
             with DDGS() as ddgs:
-                results = list(ddgs.text(query, max_results=5))
+                results = list(ddgs.text(sanitized_query, max_results=5))
                 return "\n\n".join([f"Title: {r['title']}\nLink: {r['href']}\nSnippet: {r['body']}" for r in results])
         except Exception as e: return f"Search error: {str(e)}"
 
