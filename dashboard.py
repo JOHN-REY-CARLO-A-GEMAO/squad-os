@@ -343,7 +343,7 @@ else:
                     st.write("**Inputs:**")
                     st.code(json.dumps(entry.get('inputs'), indent=2), language="json")
                     st.write("**Output:**")
-                    st.text(entry.get('output'))
+                    st.code(entry.get('output'))
         elif os.path.exists(log_jsonl) or os.path.exists(log_json):
             st.write("Log is empty.")
 

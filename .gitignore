@@ -1,14 +1,39 @@
-__pycache__/
-*.py[cod]
-*$py.class
-.env
-.venv
-env/
+# Dependencies
+node_modules/
+_archive-ts/node_modules/
+
+# Python venv
 venv/
-ENV/
-env.bak/
-venv.bak/
-shared_memory.db
-workspace/
-!workspace/README.md
-!workspace/tests/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+
+# Build output
+dist/
+
+# Logs
+data/logs/*.log
+
+# I/O — task files are runtime artifacts
+data/inbox/*.json
+data/archive/*.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# SQLite
+*.db
+*.db-wal
+*.db-shm
