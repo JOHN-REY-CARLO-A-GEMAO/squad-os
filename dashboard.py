@@ -184,7 +184,7 @@ with st.sidebar:
             st.session_state.is_active = False
             st.rerun()
 
-    if st.button("Reset View (Go to Chat)", width="stretch"):
+    if st.button("Reset View (Go to Chat)", width="stretch", icon="💬", help="Return to the main chat interface"):
         st.session_state.selected_proj = None
 
     # Global Stats
@@ -192,8 +192,18 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("📊 Global Performance")
     col_s1, col_s2 = st.columns(2)
-    col_s1.metric("Total Cost", f"${stats[2] if stats[2] else 0.0:.4f}")
-    col_s2.metric("Total Tokens", f"{ (stats[0] or 0) + (stats[1] or 0) :,}")
+    col_s1.metric(
+        "Total Cost",
+        f"${stats[2] if stats[2] else 0.0:.4f}",
+        border=True,
+        help="Cumulative cost of all LLM requests in USD"
+    )
+    col_s2.metric(
+        "Total Tokens",
+        f"{ (stats[0] or 0) + (stats[1] or 0) :,}",
+        border=True,
+        help="Total combined prompt and completion tokens used"
+    )
 
 selected_project = st.session_state.selected_proj
 is_selected_active = st.session_state.is_active
@@ -245,16 +255,18 @@ if not selected_project:
                     else:
                         st.write(f"Status: {status}")
         else:
-            st.write("No missions found. Send a message below to start!")
+            st.info("No missions found. Send a message below to start!", icon="💬")
 
     # Chat Input Box
     with st.container():
         uploaded_files = st.file_uploader("📎 Attach documents, images, videos, etc.", accept_multiple_files=True, label_visibility="collapsed")
         if prompt := st.chat_input("Ask SquadOS to do something... (e.g., 'Analyze this document for me')"):
-            files_json = save_uploaded_files(uploaded_files)
-            if files_json != "ERROR_SIZE":
-                submit_new_mission(prompt, files_json)
-                st.rerun()
+            with st.spinner("Dispatching mission..."):
+                files_json = save_uploaded_files(uploaded_files)
+                if files_json != "ERROR_SIZE":
+                    submit_new_mission(prompt, files_json)
+                    st.toast("Mission successfully dispatched!", icon="🚀")
+                    st.rerun()
 
 else:
     # --- INDIVIDUAL PROJECT VIEW ---
@@ -309,9 +321,9 @@ else:
                                 width="stretch"
                             )
             else:
-                st.write("No visual artifacts found.")
+                st.info("No visual artifacts found.", icon="🖼️")
         else:
-            st.error("Visuals directory missing.")
+            st.info("Visuals directory missing.", icon="🖼️")
 
     with tab2:
         st.subheader("Real-time Tool Execution")
@@ -335,17 +347,23 @@ else:
             except Exception as e:
                 st.error(f"Error reading .json log: {e}")
         else:
-            st.write("No `session_log.jsonl` or `session_log.json` found.")
+            st.info("No logs found for this project.", icon="📜")
 
         if logs:
             for entry in reversed(logs):
-                with st.expander(f"🛠️ {entry.get('tool')} @ {entry.get('timestamp')}", expanded=(entry == logs[-1])):
+                ts = entry.get('timestamp')
+                try:
+                    ts = datetime.fromisoformat(ts).strftime('%H:%M:%S')
+                except Exception:
+                    pass
+
+                with st.expander(f"🛠️ {entry.get('tool')} @ {ts}", expanded=(entry == logs[-1])):
                     st.write("**Inputs:**")
                     st.code(json.dumps(entry.get('inputs'), indent=2), language="json")
                     st.write("**Output:**")
                     st.code(entry.get('output'))
         elif os.path.exists(log_jsonl) or os.path.exists(log_json):
-            st.write("Log is empty.")
+            st.info("Log is empty.", icon="📜")
 
     with tab3:
         st.subheader("Project Context & Learnings")
@@ -354,7 +372,7 @@ else:
             with open(memory_path, "r") as f:
                 st.markdown(f.read())
         else:
-            st.write("No `project_memory.md` found.")
+            st.info("No project memory found.", icon="🧠")
 
     with tab4:
         st.subheader("Pending Commit Reviewer")
@@ -368,4 +386,4 @@ else:
             except Exception as e:
                 st.error(f"Error parsing artifacts.json: {e}")
         else:
-            st.write("Manifest will appear when the project is ready for commit.")
+            st.info("Manifest will appear when the project is ready for commit.", icon="📋")
