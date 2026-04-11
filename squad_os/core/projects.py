@@ -73,6 +73,8 @@ class ProjectBranch:
         os.makedirs(final_outputs_dir, exist_ok=True)
 
         committed_paths = []
+        committed_basenames = {}  # Track basenames to handle duplicates
+
         for artifact in artifacts:
             # Handle both exact matches and glob-like behavior for artifacts in visuals
             possible_sources = []
@@ -95,7 +97,29 @@ class ProjectBranch:
                 )
 
             for src in possible_sources:
-                dest = os.path.join(final_outputs_dir, f"{self.task_id}_{os.path.basename(src)}")
+                # Preserve relative path structure to avoid basename collisions
+                rel_path = os.path.relpath(src, self.project_path)
+                basename = os.path.basename(src)
+
+                # Handle duplicate basenames from different source folders
+                if basename in committed_basenames:
+                    # Add index suffix to prevent overwriting
+                    name, ext = os.path.splitext(basename)
+                    idx = 1
+                    new_basename = f"{name}_{idx}{ext}"
+                    while new_basename in committed_basenames:
+                        idx += 1
+                        new_basename = f"{name}_{idx}{ext}"
+                    basename = new_basename
+
+                committed_basenames[basename] = src
+                dest = os.path.join(final_outputs_dir, f"{self.task_id}_{basename}")
+
+                # Also ensure parent directories exist if preserving structure
+                dest_dir = os.path.dirname(dest)
+                if dest_dir:
+                    os.makedirs(dest_dir, exist_ok=True)
+
                 if os.path.isdir(src):
                     shutil.copytree(src, dest, dirs_exist_ok=True)
                 else:

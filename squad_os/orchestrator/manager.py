@@ -37,11 +37,43 @@ class Manager:
         if start != -1 and end != -1:
             content = content[start:end+1]
         content = content.replace('\r', '').replace('\n', ' ')
-        if '"squad":' not in content and '"tasks":' not in content:
-            content = content.replace("'", '"')
+
+        # Only attempt quote repair if JSON is invalid and looks like it uses single quotes for keys
+        # This regex specifically targets JSON property keys: 'property_name': value
+        # It uses word boundary and lookahead to avoid matching apostrophes inside string values
+        import json
+        try:
+            json.loads(content)
+            return content  # Valid JSON, no repair needed
+        except json.JSONDecodeError:
+            pass  # Need repair
+
+        # Check if it looks like single-quoted JSON (property names in single quotes)
+        # Only match: 'word_chars': (property names) not: 'any content with spaces'
+        # This avoids mangling contractions like O'Brien or don't
+        # Pattern: single quote, followed by word chars (no spaces/apostrophes), then quote-colon
+        content = re.sub(r"'([a-zA-Z_][a-zA-Z0-9_]*)'\s*:", r'"\1":', content)
         return content
 
     async def recruit_squad(self, goal: str):
+    # --- NEW: Short-circuit for simple greetings ---
+        low_complexity_keywords = ["hi", "hello", "hey", "who are you", "what's up"]
+        if goal.lower().strip() in low_complexity_keywords:
+            print(f"👋 [Manager]: Simple greeting detected. Minimizing squad...")
+        self.active_agents = {
+            "Assistant": BaseAgent(
+                role="Assistant", 
+                goal="Respond politely to the user.", 
+                backstory="A helpful and concise assistant.",
+                tools=[], 
+                model_name=self.model_name
+            )
+        }
+        return
+ 
+
+
+
         print(f"🧐 [Manager]: Analyzing job description and hiring specialists...")
         tool_names = ", ".join(self.tool_inventory.keys())
         prompt = f"""You are an HR Director.
@@ -172,8 +204,17 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "..." }
         context = ""
         task_idx = 0
         backtrack_counts = {}
+        total_iteration_count = 0
+        max_total_iterations = len(tasks) * 3  # Cap total iterations to prevent infinite loops
 
         while task_idx < len(tasks):
+            # Global iteration cap to prevent infinite loops
+            total_iteration_count += 1
+            if total_iteration_count > max_total_iterations:
+                print(f"⚠️ [Manager]: Maximum iteration count ({max_total_iterations}) exceeded. Aborting mission.")
+                await update_mission(mission_id, "FAILED")
+                return
+
             task_data = tasks[task_idx]
             agent = self.active_agents.get(task_data.assigned_agent_role)
 
@@ -207,10 +248,14 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "..." }
             if "qa" in agent.role.lower() and any(w in output_text.lower() for w in ["fail", "reject", "error"]):
                 backtrack_counts[task_idx] = backtrack_counts.get(task_idx, 0) + 1
                 if backtrack_counts[task_idx] <= self.max_retries:
-                    print(f"🔄 [Manager]: QA Failure detected. Sending previous agent back to fix it...")
+                    print(f"🔄 [Manager]: QA Failure detected. Sending previous agent back to fix it... (attempt {backtrack_counts[task_idx]}/{self.max_retries})")
                     context += f"\n\n### QA FEEDBACK: {output_text}"
                     task_idx = max(0, task_idx - 1)
                     continue
+                else:
+                    print(f"⚠️ [Manager]: QA backtrack limit exceeded for task {task_idx + 1}. Proceeding anyway.")
+                    # Reset backtrack count for future QA checks on this task
+                    backtrack_counts[task_idx] = 0
 
             # Success path
             await update_task(task_id, status="COMPLETED", output_data=output_text)

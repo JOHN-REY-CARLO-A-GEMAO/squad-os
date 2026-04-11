@@ -2,7 +2,9 @@ import os
 import subprocess
 import asyncio
 import json
-from typing import Dict, Any, Optional, List
+import re
+import shlex
+from typing import Dict, Any, Optional, List, Set
 
 try:
     from duckduckgo_search import DDGS
@@ -12,10 +14,127 @@ except ImportError:
 from squad_os.tools.base import BaseTool
 from squad_os.core.utils import is_safe_path
 
+# Security: Dangerous command patterns that are blocked
+DANGEROUS_PATTERNS: Set[str] = {
+    'rm -rf /', 'rm -rf /*', 'rm -rf ~', 'dd if=/dev/zero', 'mkfs.', 'fdisk',
+    '>:', '>&', '/dev/null', 'shutdown', 'reboot', 'halt', 'poweroff',
+    'init 0', 'telinit 0', 'kill -9 -1', 'kill -9 1',
+    'curl .*|.*sh', 'curl .*|.*bash', 'wget .*|.*sh', 'wget .*|.*bash',
+    '> /etc/', '>> /etc/', 'echo.*> /', 'echo.*>> /',
+    'chmod 777 /', 'chmod -R 777 /', 'chown -R',
+    'mkfs.ext', 'mkfs.btrfs', 'mkfs.xfs', 'parted', 'gparted',
+    'del /f /s /q', 'rd /s /q', 'format ', 'diskpart',
+}
+
+# Allowed safe commands for terminal
+ALLOWED_COMMANDS: Set[str] = {
+    'ls', 'dir', 'pwd', 'cd', 'cat', 'type', 'head', 'tail', 'less', 'more',
+    'echo', 'grep', 'find', 'wc', 'sort', 'uniq', 'diff', 'cmp',
+    'mkdir', 'touch', 'cp', 'copy', 'mv', 'move', 'rm', 'del', 'rmdir', 'rd',
+    'python', 'python3', 'pip', 'pip3', 'node', 'npm', 'yarn',
+    'git', 'git clone', 'git status', 'git log', 'git diff', 'git show',
+    'curl', 'wget', 'tar', 'zip', 'unzip', 'gzip', 'gunzip',
+    'make', 'cmake', 'gcc', 'g++', 'javac', 'java', 'go', 'rustc',
+    'docker', 'kubectl', 'terraform', 'ansible-playbook',
+    'pytest', 'unittest', 'test', 'coverage',
+    'black', 'flake8', 'pylint', 'mypy', 'isort',
+    'cat', 'cut', 'awk', 'sed', 'tr', 'xargs', 'tee',
+    'ssh', 'scp', 'sftp', 'rsync', 'nc', 'netcat',
+    'ping', 'traceroute', 'tracert', 'nslookup', 'dig', 'host',
+    'ps', 'top', 'htop', 'df', 'du', 'free', 'uptime', 'whoami', 'id',
+    'stat', 'file', 'which', 'where', 'whereis', 'locate', 'updatedb',
+    'openssl', 'ssh-keygen', 'gpg', 'md5sum', 'sha256sum', 'shasum',
+    'base64', 'hexdump', 'xxd', 'od', 'strings',
+    'tree', 'fzf', 'rg', 'fd', 'ag', 'pt', 'ack',
+}
+
+
+def _is_dangerous_command(command: str) -> bool:
+    """Check if command contains dangerous patterns."""
+    cmd_lower = command.lower().strip()
+    for pattern in DANGEROUS_PATTERNS:
+        if pattern.lower() in cmd_lower:
+            return True
+    # Check for shell injection patterns
+    if re.search(r'`[^`]+`', cmd_lower) or re.search(r'\$\([^)]+\)', cmd_lower):
+        return True
+    return False
+
+
+def _validate_terminal_command(command: str) -> tuple[bool, str]:
+    """Validate terminal command against allowlist and dangerous patterns."""
+    if not command or not command.strip():
+        return False, "Empty command not allowed"
+
+    if _is_dangerous_command(command):
+        return False, "Command contains dangerous patterns and is blocked for security"
+
+    # Parse command to get base command
+    try:
+        parts = shlex.split(command)
+        if not parts:
+            return False, "Could not parse command"
+        base_cmd = parts[0].lower()
+    except ValueError:
+        # If shlex fails, do basic check
+        base_cmd = command.strip().split()[0].lower()
+
+    # Check if base command is in allowlist
+    # Also check first part of piped commands
+    for subcmd in command.split('|'):
+        subcmd_parts = subcmd.strip().split()
+        if subcmd_parts:
+            sub_base = subcmd_parts[0].lower().strip()
+            # Allow common shell built-ins and safe commands
+            if sub_base not in ALLOWED_COMMANDS and not sub_base.startswith('./'):
+                # Special case: check for qualified paths like /bin/ls
+                if '/' in sub_base:
+                    sub_base = os.path.basename(sub_base)
+                    if sub_base not in ALLOWED_COMMANDS:
+                        return False, f"Command '{sub_base}' not in allowed command list"
+
+    return True, ""
+
+
+# Dangerous Python code patterns
+DANGEROUS_PYTHON_PATTERNS: List[tuple[str, str]] = [
+    (r'\b__import__\s*\(\s*["\']os["\']', "Blocked: dynamic import of os module"),
+    (r'\b__import__\s*\(\s*["\']subprocess["\']', "Blocked: dynamic import of subprocess"),
+    (r'\b__import__\s*\(\s*["\']sys["\']', "Blocked: dynamic import of sys module"),
+    (r'\b__import__\s*\(\s*["\']shutil["\']', "Blocked: dynamic import of shutil module"),
+    (r'\beval\s*\(', "Blocked: eval() is dangerous"),
+    (r'\bexec\s*\(', "Blocked: exec() is dangerous"),
+    (r'\bcompile\s*\(', "Blocked: compile() can be used for code injection"),
+    (r'os\.system\s*\(', "Blocked: os.system() is dangerous"),
+    (r'os\.popen\s*\(', "Blocked: os.popen() is dangerous"),
+    (r'os\.spawn', "Blocked: os.spawn* is dangerous"),
+    (r'os\.fork', "Blocked: os.fork() is dangerous"),
+    (r'subprocess\.call', "Blocked: subprocess.call() is dangerous"),
+    (r'subprocess\.run', "Blocked: subprocess.run() is dangerous"),
+    (r'subprocess\.Popen', "Blocked: subprocess.Popen() is dangerous"),
+    (r'subprocess\.check_output', "Blocked: subprocess.check_output() is dangerous"),
+    (r'shutil\.rmtree\s*\([^)]*["\']?/["\']?', "Blocked: shutil.rmtree() on root paths"),
+    (r'shutil\.rmtree\s*\([^)]*["\']?~', "Blocked: shutil.rmtree() on home directory"),
+]
+
+
+def _validate_python_code(code: str) -> tuple[bool, str]:
+    """Validate Python code against dangerous patterns."""
+    if not code or not code.strip():
+        return False, "Empty code not allowed"
+
+    for pattern, message in DANGEROUS_PYTHON_PATTERNS:
+        if re.search(pattern, code, re.IGNORECASE):
+            return False, message
+
+    return True, ""
+
+
 class WebSearchTool(BaseTool):
     name = "web_search"
     description = "Search the internet for real-time information and trends."
     parameters = {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}
+
     async def execute(self, query: str) -> str:
         try:
             with DDGS() as ddgs:
@@ -36,8 +155,10 @@ class FileWriterTool(BaseTool):
             return f"Error: Access denied. Path '{filename}' is outside the workspace."
 
         if not os.path.exists(self.workspace): os.makedirs(self.workspace, exist_ok=True)
-        # Use os.path.basename to be doubly safe, but validation already ensures it's within workspace
-        filepath = os.path.join(self.workspace, os.path.basename(filename))
+        # Preserve subdirectory structure - validation ensures it's within workspace
+        filepath = os.path.join(self.workspace, filename) if not os.path.isabs(filename) else os.path.join(self.workspace, os.path.relpath(filename, "/"))
+        # Ensure parent directories exist
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
         with open(filepath, "w", encoding="utf-8") as f: f.write(content)
         return f"File '{filename}' written successfully to {self.workspace}."
 
@@ -78,6 +199,11 @@ class TerminalTool(BaseTool):
         self.workspace = os.path.realpath(os.path.join("workspace", "projects", branch_id)) if branch_id else os.path.realpath("workspace")
 
     async def execute(self, command: str) -> str:
+        # Security: Validate command before execution
+        is_valid, error_msg = _validate_terminal_command(command)
+        if not is_valid:
+            return f"SECURITY_ERROR: {error_msg}"
+
         if not os.path.exists(self.workspace): os.makedirs(self.workspace, exist_ok=True)
         process = await asyncio.create_subprocess_shell(
             command,
@@ -99,6 +225,11 @@ class PythonRunnerTool(BaseTool):
         # Security check: Prevent path traversal
         if not is_safe_path(self.workspace, filename):
             return f"Error: Access denied. Path '{filename}' is outside the workspace."
+
+        # Security: Validate code before execution
+        is_valid, error_msg = _validate_python_code(code)
+        if not is_valid:
+            return f"SECURITY_ERROR: {error_msg}"
 
         if not os.path.exists(self.workspace): os.makedirs(self.workspace, exist_ok=True)
         filepath = os.path.join(self.workspace, os.path.basename(filename))

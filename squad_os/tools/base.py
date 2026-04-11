@@ -3,6 +3,18 @@ import functools
 from typing import Any, Dict, Optional
 
 
+class RetryExhaustedResult:
+    """Result type indicating all retries exhausted with optional fallback."""
+    def __init__(self, error: str, fallback_name: Optional[str] = None):
+        self.error = error
+        self.fallback_name = fallback_name
+
+    def __str__(self) -> str:
+        if self.fallback_name:
+            return f"RETRY_EXHAUSTED:{self.error}|FALLBACK:{self.fallback_name}"
+        return f"RETRY_EXHAUSTED:{self.error}"
+
+
 def retry_on_failure(max_attempts: int = 3, delay: float = 1.0):
     """Decorator that retries a tool on exception, then falls back if defined."""
     def decorator(func):
@@ -17,15 +29,19 @@ def retry_on_failure(max_attempts: int = 3, delay: float = 1.0):
                     if attempt < max_attempts - 1:
                         await asyncio.sleep(delay * (attempt + 1))
             # All attempts exhausted — delegate to fallback if set
+            fallback_name = getattr(self, 'fallback_name', None)
             fallback = getattr(self, 'fallback_tool', None)
             if fallback:
                 if isinstance(fallback, str):
-                    # Placeholder; resolved by agent at call site
-                    return f"RETRY_EXHAUSTED:{last_error}|FALLBACK:{fallback}"
+                    # Fallback is a tool name string; return structured result for agent resolution
+                    return RetryExhaustedResult(str(last_error), fallback)
                 try:
                     return await fallback.execute(*args, **kwargs)
                 except Exception as fb_e:
                     return f"Retry failed ({last_error}) and fallback also failed ({fb_e})"
+            if fallback_name:
+                # Fallback name is defined but not yet resolved to tool instance
+                return RetryExhaustedResult(str(last_error), fallback_name)
             return f"Tool error after {max_attempts} attempts: {last_error}"
         return wrapper
     return decorator
@@ -35,7 +51,8 @@ class BaseTool:
     name: str = ""
     description: str = ""
     parameters: Optional[Dict[str, Any]] = None
-    fallback_tool: Optional[Any] = None  # Set by subclass or injected by agent
+    fallback_name: Optional[str] = None  # Name of fallback tool; resolved by agent through tool_inventory
+    fallback_tool: Optional[Any] = None  # Direct tool instance; used if set
 
     def __init__(self, parameters: Optional[Dict[str, Any]] = None):
         if parameters is None:

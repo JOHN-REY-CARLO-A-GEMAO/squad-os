@@ -3,8 +3,19 @@ import json
 import asyncio
 from typing import Any, Dict, List, Optional
 import litellm
-from squad_os.tools.base import BaseTool
+from squad_os.tools.base import BaseTool, RetryExhaustedResult
 from squad_os.core.projects import ProjectBranch
+
+# Global semaphore for LLM calls to prevent rate-limit exhaustion
+# Configurable via env var for different Ollama/hardware setups
+try:
+    _LLM_CONCURRENCY_LIMIT = int(os.environ.get("SQUAD_OS_LLM_CONCURRENCY", 5))
+    if _LLM_CONCURRENCY_LIMIT <= 0:
+        _LLM_CONCURRENCY_LIMIT = 5
+except ValueError:
+    _LLM_CONCURRENCY_LIMIT = 5
+_LLM_SEMAPHORE = asyncio.Semaphore(_LLM_CONCURRENCY_LIMIT)
+
 
 class BaseAgent:
     def __init__(self, role: str, goal: str, backstory: str, tools: List[BaseTool] = None, model_name: str = "gpt-4o-mini", branch_id: str = None):
@@ -22,7 +33,7 @@ class BaseAgent:
             branch_id = ProjectBranch.create_id(task_description[:30])
             self.active_branch = ProjectBranch(branch_id)
             self.active_branch.fork()
-            print(f"🚀 [Fork]: Created new branch {branch_id}")
+            print(f" [Fork]: Created new branch {branch_id}")
 
         # Inject active branch into all tools
         for tool in self.tools.values():
@@ -62,19 +73,26 @@ class BaseAgent:
         ]
 
         for _ in range(10):
-            response = await litellm.acompletion(
-                model=self.model_name,
-                messages=messages,
-                tools=tool_schemas if tool_schemas else None
-            )
+            # Use semaphore to prevent API rate-limit exhaustion
+            async with _LLM_SEMAPHORE:
+                response = await litellm.acompletion(
+                    model=self.model_name,
+                    messages=messages,
+                    tools=tool_schemas if tool_schemas else None
+                )
             resp_msg = response.choices[0].message
             messages.append(resp_msg)
 
-            # Convert to dict for easier access
-            if hasattr(resp_msg, "dict"):
+            # Convert to dict for easier access - use model_dump() for Pydantic v2 compatibility
+            # with fallback to dict() or direct dict conversion
+            if isinstance(resp_msg, dict):
+                resp_dict = resp_msg
+            elif hasattr(resp_msg, "model_dump"):
+                resp_dict = resp_msg.model_dump()
+            elif hasattr(resp_msg, "dict"):
                 resp_dict = resp_msg.dict()
             else:
-                resp_dict = resp_msg if isinstance(resp_msg, dict) else {}
+                resp_dict = {}
 
             tool_calls = resp_dict.get("tool_calls")
 
@@ -108,24 +126,34 @@ class BaseAgent:
                             result = f"Error: {str(e)}"
                             all_succeeded = False
 
-                        # Handle RETRY_EXHAUSTED — try the named fallback tool
-                        if str(result).startswith("RETRY_EXHAUSTED:"):
-                            parts = str(result).split("FALLBACK:")
-                            if len(parts) > 1:
-                                fallback_name = parts[1].split("|")[0].strip()
-                                if fallback_name in self.tools:
-                                    print(f"  [{self.role}] primary tool failed, trying fallback: {fallback_name}...")
-                                    try:
-                                        fb_result = await self.tools[fallback_name].execute(**t_args)
-                                        if self.active_branch:
-                                            self.active_branch.log_tool_call(fallback_name, t_args, str(fb_result))
-                                        result = fb_result
-                                    except Exception as fb_e:
-                                        result = f"Primary failed ({parts[0]}) and fallback also failed: {fb_e}"
-                                        all_succeeded = False
-                                else:
-                                    result = f"Primary tool exhausted, fallback '{fallback_name}' not available."
+                        fallback_name = None
+                        error_msg = None
+
+                        if isinstance(result, RetryExhaustedResult):
+                            fallback_name = result.fallback_name
+                            error_msg = result.error
+                        elif str(result).startswith("RETRY_EXHAUSTED:"):
+                            parts = str(result).split("|")
+                            error_msg = parts[0].replace("RETRY_EXHAUSTED:", "")
+                            for part in parts[1:]:
+                                if part.startswith("FALLBACK:"):
+                                    fallback_name = part.replace("FALLBACK:", "").strip()
+                                    break
+
+                        if fallback_name:
+                            if fallback_name in self.tools:
+                                print(f"  [{self.role}] primary tool failed ({error_msg}), trying fallback: {fallback_name}...")
+                                try:
+                                    fb_result = await self.tools[fallback_name].execute(**t_args)
+                                    if self.active_branch:
+                                        self.active_branch.log_tool_call(fallback_name, t_args, str(fb_result))
+                                    result = fb_result
+                                except Exception as fb_e:
+                                    result = f"Primary failed ({error_msg}) and fallback also failed: {fb_e}"
                                     all_succeeded = False
+                            else:
+                                result = f"Primary tool exhausted ({error_msg}), fallback '{fallback_name}' not available."
+                                all_succeeded = False
 
                         messages.append({
                             "role": "tool",

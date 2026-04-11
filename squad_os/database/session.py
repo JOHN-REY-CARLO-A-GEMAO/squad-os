@@ -3,17 +3,36 @@ import sqlite3
 import aiosqlite
 import json
 from datetime import datetime
+from enum import Enum
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 DB_PATH = "shared_memory.db"
+
+# --- STATUS ENUMS ---
+class MissionStatus(str, Enum):
+    PENDING = "PENDING"
+    IN_PROGRESS = "IN_PROGRESS"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    QUEUED = "QUEUED"
+
+class TaskStatus(str, Enum):
+    PENDING = "PENDING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+
+class ApprovalStatus(str, Enum):
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
 
 # --- PYDANTIC MODELS ---
 
 class MissionRecord(BaseModel):
     id: Optional[int] = None
     goal: str
-    status: str = "PENDING"
+    status: str = MissionStatus.PENDING.value
     uploaded_files: Optional[str] = None  # JSON string containing file metadata
     created_at: datetime = Field(default_factory=datetime.now)
 
@@ -22,7 +41,7 @@ class TaskRecord(BaseModel):
     mission_id: int
     description: str
     assigned_agent: str
-    status: str = "PENDING"
+    status: str = TaskStatus.PENDING.value
     input_data: Optional[str] = None
     output_data: Optional[str] = None
     error: Optional[str] = None
@@ -38,10 +57,32 @@ class ApprovalRecord(BaseModel):
     task_id: int
     mission_id: int
     message: str
-    status: str = "PENDING"
+    status: str = ApprovalStatus.PENDING.value
     feedback: Optional[str] = None
 
 # --- DATABASE INITIALIZATION ---
+
+async def _run_migrations(db: aiosqlite.Connection, current_version: int) -> int:
+    """Run sequential migrations. Returns new schema version."""
+    migrations = {
+        0: lambda db: db.execute("ALTER TABLE missions ADD COLUMN uploaded_files TEXT"),
+        # Add future migrations here:
+        # 1: lambda db: db.execute("ALTER TABLE tasks ADD COLUMN new_column TEXT"),
+    }
+
+    new_version = current_version
+    for version, migration in sorted(migrations.items()):
+        if version >= current_version:
+            try:
+                await migration(db)
+                new_version = version + 1
+            except aiosqlite.Error as e:
+                # Migration may fail if column already exists, etc.
+                print(f"[DB Migration] Note: Migration {version} skipped: {e}")
+                new_version = version + 1
+
+    return new_version
+
 
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
@@ -58,12 +99,16 @@ async def init_db():
             )
         """)
 
-        # MIGRATION: Add uploaded_files to missions if it doesn't exist
-        async with db.execute("PRAGMA table_info(missions)") as cursor:
-            columns = [row[1] for row in await cursor.fetchall()]
-            if "uploaded_files" not in columns:
-                await db.execute("ALTER TABLE missions ADD COLUMN uploaded_files TEXT")
-        
+        # MIGRATION: Use user_version PRAGMA with sequential migration map
+        async with db.execute("PRAGMA user_version") as cursor:
+            user_version = (await cursor.fetchone())[0]
+
+        if user_version == 0:
+            # Run all migrations from version 0
+            new_version = await _run_migrations(db, 0)
+            # Update schema version after migrations
+            await db.execute(f"PRAGMA user_version = {new_version}")
+
         # 2. Tasks Table
         await db.execute("""
             CREATE TABLE IF NOT EXISTS tasks (
@@ -117,7 +162,7 @@ async def create_mission(goal: str, uploaded_files: Optional[str] = None) -> int
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             "INSERT INTO missions (goal, status, uploaded_files) VALUES (?, ?, ?)",
-            (goal, "IN_PROGRESS", uploaded_files)
+            (goal, MissionStatus.IN_PROGRESS.value, uploaded_files)
         )
         await db.commit()
         return cursor.lastrowid
@@ -126,7 +171,7 @@ async def create_task(mission_id: int, description: str, assigned_agent: str) ->
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             "INSERT INTO tasks (mission_id, description, assigned_agent, status) VALUES (?, ?, ?, ?)",
-            (mission_id, description, assigned_agent, "PENDING")
+            (mission_id, description, assigned_agent, TaskStatus.PENDING.value)
         )
         await db.commit()
         return cursor.lastrowid
@@ -161,7 +206,7 @@ async def create_approval_request(mission_id: int, task_id: int, message: str) -
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             "INSERT INTO approvals (mission_id, task_id, message, status) VALUES (?, ?, ?, ?)",
-            (mission_id, task_id, message, "PENDING")
+            (mission_id, task_id, message, ApprovalStatus.PENDING.value)
         )
         await db.commit()
         return cursor.lastrowid
@@ -178,12 +223,14 @@ async def get_approval_status(approval_id: int):
 async def search_past_memory(query: str) -> List[Dict[str, Any]]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        search_query = f"%{query}%"
+        # Use trailing wildcard only for better index utilization
+        # Leading % forces full table scan which is inefficient
+        search_query = f"{query}%"
         async with db.execute(
             "SELECT assigned_agent, output_data, created_at FROM tasks "
-            "WHERE status = 'COMPLETED' AND output_data LIKE ? "
-            "ORDER BY id DESC LIMIT 5", 
-            (search_query,)
+            "WHERE status = ? AND output_data LIKE ? "
+            "ORDER BY id DESC LIMIT 5",
+            (TaskStatus.COMPLETED.value, search_query)
         ) as cursor:
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
@@ -192,7 +239,7 @@ async def add_to_queue(goal: str, uploaded_files: Optional[str] = None):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "INSERT INTO missions (goal, status, uploaded_files) VALUES (?, ?, ?)",
-            (goal, "QUEUED", uploaded_files)
+            (goal, MissionStatus.QUEUED.value, uploaded_files)
         )
         await db.commit()
 
@@ -200,7 +247,8 @@ async def get_next_queued_mission():
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            "SELECT * FROM missions WHERE status = 'QUEUED' ORDER BY id ASC LIMIT 1"
+            "SELECT * FROM missions WHERE status = ? ORDER BY id ASC LIMIT 1",
+            (MissionStatus.QUEUED.value,)
         ) as cursor:
             row = await cursor.fetchone()
             return dict(row) if row else None
