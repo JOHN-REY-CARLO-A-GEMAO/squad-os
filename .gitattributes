@@ -1,0 +1,14 @@
+
+# Normalize line endings for all text files
+* text=auto
+
+# Explicitly normalize these types
+*.py text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.toml text eol=lf
+*.json text eol=lf
+*.html text eol=lf
+*.js text eol=lf
+*.java text eol=lf
+*.sh text eol=lf
