@@ -66,8 +66,9 @@ async def _run_migrations(db: aiosqlite.Connection, current_version: int) -> int
     """Run sequential migrations. Returns new schema version."""
     migrations = {
         0: lambda db: db.execute("ALTER TABLE missions ADD COLUMN uploaded_files TEXT"),
-        # Add future migrations here:
-        # 1: lambda db: db.execute("ALTER TABLE tasks ADD COLUMN new_column TEXT"),
+        1: lambda db: db.execute("CREATE INDEX IF NOT EXISTS idx_missions_status ON missions(status)"),
+        2: lambda db: db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)"),
+        3: lambda db: db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_mission_id ON tasks(mission_id)"),
     }
 
     new_version = current_version
@@ -98,16 +99,6 @@ async def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-
-        # MIGRATION: Use user_version PRAGMA with sequential migration map
-        async with db.execute("PRAGMA user_version") as cursor:
-            user_version = (await cursor.fetchone())[0]
-
-        if user_version == 0:
-            # Run all migrations from version 0
-            new_version = await _run_migrations(db, 0)
-            # Update schema version after migrations
-            await db.execute(f"PRAGMA user_version = {new_version}")
 
         # 2. Tasks Table
         await db.execute("""
@@ -154,6 +145,25 @@ async def init_db():
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        # Ensure tables are created before running migrations or creating indexes
+        await db.commit()
+
+        # MIGRATION: Use user_version PRAGMA with sequential migration map
+        async with db.execute("PRAGMA user_version") as cursor:
+            user_version = (await cursor.fetchone())[0]
+
+        # Run migrations if any (covers existing users)
+        new_version = await _run_migrations(db, user_version)
+        if new_version > user_version:
+            # Update schema version after migrations
+            await db.execute(f"PRAGMA user_version = {new_version}")
+
+        # Ensure indexes exist (covers fresh DBs and ensures consistency)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_missions_status ON missions(status)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_mission_id ON tasks(mission_id)")
+
         await db.commit()
 
 # --- MISSION & TASK HELPERS ---
