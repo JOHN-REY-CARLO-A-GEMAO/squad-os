@@ -69,29 +69,66 @@ def _validate_terminal_command(command: str) -> tuple[bool, str]:
     if _is_dangerous_command(command):
         return False, "Command contains dangerous patterns and is blocked for security"
 
-    # Parse command to get base command
+    # Parse command using shlex to respect quoting
     try:
         parts = shlex.split(command)
-        if not parts:
-            return False, "Could not parse command"
-        base_cmd = parts[0].lower()
-    except ValueError:
-        # If shlex fails, do basic check
-        base_cmd = command.strip().split()[0].lower()
+    except ValueError as e:
+        return False, f"Could not parse command: {str(e)}"
 
-    # Check if base command is in allowlist
-    # Also check first part of piped commands
-    for subcmd in command.split('|'):
-        subcmd_parts = subcmd.strip().split()
-        if subcmd_parts:
-            sub_base = subcmd_parts[0].lower().strip()
-            # Allow common shell built-ins and safe commands
-            if sub_base not in ALLOWED_COMMANDS and not sub_base.startswith('./'):
-                # Special case: check for qualified paths like /bin/ls
-                if '/' in sub_base:
-                    sub_base = os.path.basename(sub_base)
-                    if sub_base not in ALLOWED_COMMANDS:
-                        return False, f"Command '{sub_base}' not in allowed command list"
+    if not parts:
+        return False, "Empty command not allowed"
+
+    # Shell operators and metacharacters that signify a new command or redirection
+    # We strictly block redirections (>, <) and subshells ($(), ``) for now as they are high risk
+    operators = {'|', ';', '&&', '||', '>', '<', '>>', '2>', '2>&1', '&', '(', ')'}
+
+    # Every command part following an operator must be in the allowlist
+    # The first part is always a command
+    check_next_is_cmd = True
+
+    for i, part in enumerate(parts):
+        # Security: Block common subshell bypass patterns in any part
+        if '$(' in part or '`' in part:
+            return False, "Subshells are blocked for security"
+
+        # Check for inline operators like 'ls;'
+        current_part = part
+        if current_part.endswith(';') and len(current_part) > 1:
+            # We treat 'ls;' as 'ls' followed by an operator
+            current_part = current_part[:-1]
+            # We need to signal that the NEXT word (if any) or even the remainder of this word (if it was split weirdly)
+            # but shlex usually splits on ; if there is a space. If no space, it keeps it together.
+            # Since we just removed the ;, the NEXT part in the loop should be treated as a command.
+            # But wait, 'ls;whoami' might be ONE part 'ls;whoami' in some shlex versions or if not handled.
+            # Actually shlex.split('ls;whoami') -> ['ls;whoami']
+            if ';' in current_part:
+                 # This is a complex case like 'ls;whoami' which shlex didn't split
+                 return False, f"Command contains unsafely joined sub-commands: {part}"
+
+        if part in operators:
+            check_next_is_cmd = True
+            continue
+
+        if check_next_is_cmd:
+            sub_base = current_part.strip()
+            # Allow local execution if it starts with ./ (restricted by cwd in TerminalTool)
+            if sub_base.startswith('./'):
+                check_next_is_cmd = False
+                continue
+
+            # If it's a qualified path like /bin/ls, check the base command name
+            if '/' in sub_base:
+                cmd_name = os.path.basename(sub_base).lower()
+            else:
+                cmd_name = sub_base.lower()
+
+            if cmd_name not in ALLOWED_COMMANDS:
+                return False, f"Command '{cmd_name}' not in allowed command list"
+
+            if part.endswith(';'):
+                check_next_is_cmd = True
+            else:
+                check_next_is_cmd = False
 
     return True, ""
 
