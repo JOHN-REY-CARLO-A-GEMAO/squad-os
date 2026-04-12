@@ -18,6 +18,10 @@ st.set_page_config(page_title="SquadOS: Project Command Center", layout="wide", 
 # Auto-refresh every 5 seconds
 st_autorefresh(interval=5000, key="datarefresh")
 
+if st.session_state.get('mission_submitted'):
+    st.toast("🚀 Mission dispatched successfully!", icon="✅")
+    del st.session_state.mission_submitted
+
 # Ensure workspace directories exist
 os.makedirs(PROJECTS_DIR, exist_ok=True)
 os.makedirs(ARCHIVES_DIR, exist_ok=True)
@@ -168,8 +172,15 @@ with st.sidebar:
     if not active_projects:
         st.write("No active projects.")
     for proj in active_projects:
-        label = f"📍 {proj}" if proj == st.session_state.selected_proj else f"🚀 {proj}"
-        if st.button(label, key=f"btn_act_{proj}", width="stretch"):
+        is_selected = proj == st.session_state.selected_proj
+        label = f"📍 {proj}" if is_selected else f"🚀 {proj}"
+        if st.button(
+            label,
+            key=f"btn_act_{proj}",
+            width="stretch",
+            type="primary" if is_selected else "secondary",
+            help=f"View details for active project: {proj}"
+        ):
             st.session_state.selected_proj = proj
             st.session_state.is_active = True
             st.rerun()
@@ -178,13 +189,20 @@ with st.sidebar:
     if not archived_projects:
         st.write("No archived projects.")
     for proj in archived_projects:
-        label = f"📍 {proj}" if proj == st.session_state.selected_proj else f"📦 {proj}"
-        if st.button(label, key=f"btn_arc_{proj}", width="stretch"):
+        is_selected = proj == st.session_state.selected_proj
+        label = f"📍 {proj}" if is_selected else f"📦 {proj}"
+        if st.button(
+            label,
+            key=f"btn_arc_{proj}",
+            width="stretch",
+            type="primary" if is_selected else "secondary",
+            help=f"View details for archived project: {proj}"
+        ):
             st.session_state.selected_proj = proj
             st.session_state.is_active = False
             st.rerun()
 
-    if st.button("Reset View (Go to Chat)", width="stretch"):
+    if st.button("Reset View (Go to Chat)", width="stretch", help="Return to the main Mission Control Chat"):
         st.session_state.selected_proj = None
 
     # Global Stats
@@ -192,8 +210,8 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("📊 Global Performance")
     col_s1, col_s2 = st.columns(2)
-    col_s1.metric("Total Cost", f"${stats[2] if stats[2] else 0.0:.4f}")
-    col_s2.metric("Total Tokens", f"{ (stats[0] or 0) + (stats[1] or 0) :,}")
+    col_s1.metric("Total Cost", f"${stats[2] if stats[2] else 0.0:.4f}", help="Cumulative cost of all tasks in USD")
+    col_s2.metric("Total Tokens", f"{ (stats[0] or 0) + (stats[1] or 0) :,}", help="Total tokens (prompt + completion) consumed")
 
 selected_project = st.session_state.selected_proj
 is_selected_active = st.session_state.is_active
@@ -254,6 +272,7 @@ if not selected_project:
             files_json = save_uploaded_files(uploaded_files)
             if files_json != "ERROR_SIZE":
                 submit_new_mission(prompt, files_json)
+                st.session_state.mission_submitted = True
                 st.rerun()
 
 else:
@@ -264,7 +283,7 @@ else:
     with col1:
         st.header(f"Project: `{selected_project}`")
     with col2:
-        if st.button("🔙 Back to Chat"):
+        if st.button("🔙 Back to Chat", help="Return to the main Mission Control Chat"):
             st.session_state.selected_proj = None
             st.rerun()
 
