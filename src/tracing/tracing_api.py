@@ -9,6 +9,21 @@ class TraceInput(BaseModel):
 
 @app.post("/api/v1/runs/{run_id}/graph")
 async def generate_graph(run_id: str, input: TraceInput):
+    """
+    Generate a Mermaid graph representation from a trace context for the specified run.
+    
+    Parameters:
+        run_id (str): Identifier of the run for which the graph is generated.
+        input (TraceInput): Request body containing `tracing_context` used to build the graph.
+    
+    Returns:
+        dict: A JSON-serializable mapping with keys:
+            - "run_id": the provided `run_id`
+            - "mermaid_graph": the generated Mermaid-format graph as a string
+    
+    Raises:
+        HTTPException: With status_code 500 if graph generation fails; `detail` contains the underlying exception message.
+    """
     try:
         from .tracing_parser import TraceParser
         parser = TraceParser(input.tracing_context)
