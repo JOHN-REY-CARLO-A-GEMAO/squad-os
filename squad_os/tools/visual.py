@@ -2,6 +2,7 @@ import os
 import asyncio
 import datetime
 import ffmpeg
+from urllib.parse import urlparse
 from typing import Dict, Any, Optional
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 from squad_os.tools.base import BaseTool
@@ -67,6 +68,12 @@ class BrowserControlTool(BaseTool):
 
             if action == "navigate":
                 if not url: return "Error: URL is required for navigate action."
+
+                # Security Check: Prevent SSRF and local file access
+                parsed_url = urlparse(url)
+                if parsed_url.scheme.lower() not in ("http", "https"):
+                    return f"SECURITY_ERROR: Access denied. Protocol '{parsed_url.scheme}' is not allowed. Only http and https are permitted."
+
                 await self._page.goto(url)
                 if wait_for:
                     await self._page.wait_for_selector(wait_for)
@@ -87,7 +94,8 @@ class BrowserControlTool(BaseTool):
                 return f"Typed '{text}' into {selector}"
 
             elif action == "screenshot":
-                desc = description or "screenshot"
+                # Security: Prevent path traversal via description
+                desc = os.path.basename(description or "screenshot")
                 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                 filename = f"{timestamp}_{desc.replace(' ', '_')}.png"
                 filepath = os.path.join(self.output_dir, filename)
@@ -113,7 +121,8 @@ class BrowserControlTool(BaseTool):
                 video_path = await video_obj.path()
                 if video_path and os.path.exists(video_path):
                     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                    desc = description or "demo"
+                    # Security: Prevent path traversal via description
+                    desc = os.path.basename(description or "demo")
                     mp4_filename = f"{timestamp}_{desc.replace(' ', '_')}.mp4"
                     mp4_filepath = os.path.join(self.output_dir, mp4_filename)
 
