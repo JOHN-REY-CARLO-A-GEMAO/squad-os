@@ -15,6 +15,11 @@ ARCHIVES_DIR = os.path.join(WORKSPACE_DIR, "archives")
 
 st.set_page_config(page_title="SquadOS: Project Command Center", layout="wide", page_icon="🛡️")
 
+# Toast feedback for mission submission
+if st.session_state.get("mission_submitted"):
+    st.toast("🚀 Mission dispatched successfully!", icon="✅")
+    st.session_state.mission_submitted = False
+
 # Auto-refresh every 5 seconds
 st_autorefresh(interval=5000, key="datarefresh")
 
@@ -166,20 +171,20 @@ with st.sidebar:
 
     st.write("**Active Projects**")
     if not active_projects:
-        st.write("No active projects.")
+        st.info("No active projects.", icon="🚀")
     for proj in active_projects:
         label = f"📍 {proj}" if proj == st.session_state.selected_proj else f"🚀 {proj}"
-        if st.button(label, key=f"btn_act_{proj}", width="stretch"):
+        if st.button(label, key=f"btn_act_{proj}", width="stretch", help=f"View details for {proj} (Active)"):
             st.session_state.selected_proj = proj
             st.session_state.is_active = True
             st.rerun()
 
     st.write("**Archived Projects**")
     if not archived_projects:
-        st.write("No archived projects.")
+        st.info("No archived projects.", icon="📦")
     for proj in archived_projects:
         label = f"📍 {proj}" if proj == st.session_state.selected_proj else f"📦 {proj}"
-        if st.button(label, key=f"btn_arc_{proj}", width="stretch"):
+        if st.button(label, key=f"btn_arc_{proj}", width="stretch", help=f"View details for {proj} (Archived)"):
             st.session_state.selected_proj = proj
             st.session_state.is_active = False
             st.rerun()
@@ -192,8 +197,8 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("📊 Global Performance")
     col_s1, col_s2 = st.columns(2)
-    col_s1.metric("Total Cost", f"${stats[2] if stats[2] else 0.0:.4f}")
-    col_s2.metric("Total Tokens", f"{ (stats[0] or 0) + (stats[1] or 0) :,}")
+    col_s1.metric("Total Cost", f"${stats[2] if stats[2] else 0.0:.4f}", help="Total USD spent on LLM tokens across all missions.", border=True)
+    col_s2.metric("Total Tokens", f"{ (stats[0] or 0) + (stats[1] or 0) :,}", help="Combined count of prompt and completion tokens.", border=True)
 
 selected_project = st.session_state.selected_proj
 is_selected_active = st.session_state.is_active
@@ -254,6 +259,7 @@ if not selected_project:
             files_json = save_uploaded_files(uploaded_files)
             if files_json != "ERROR_SIZE":
                 submit_new_mission(prompt, files_json)
+                st.session_state.mission_submitted = True
                 st.rerun()
 
 else:
@@ -309,7 +315,7 @@ else:
                                 width="stretch"
                             )
             else:
-                st.write("No visual artifacts found.")
+                st.info("No visual artifacts found.", icon="🖼️")
         else:
             st.error("Visuals directory missing.")
 
@@ -335,17 +341,24 @@ else:
             except Exception as e:
                 st.error(f"Error reading .json log: {e}")
         else:
-            st.write("No `session_log.jsonl` or `session_log.json` found.")
+            st.info("No session logs found.", icon="📜")
 
         if logs:
             for entry in reversed(logs):
-                with st.expander(f"🛠️ {entry.get('tool')} @ {entry.get('timestamp')}", expanded=(entry == logs[-1])):
+                raw_ts = entry.get('timestamp', '')
+                try:
+                    # Try parsing ISO timestamp for a cleaner HH:MM:SS display
+                    ts_display = datetime.fromisoformat(raw_ts).strftime("%H:%M:%S")
+                except Exception:
+                    ts_display = raw_ts
+
+                with st.expander(f"🛠️ {entry.get('tool')} @ {ts_display}", expanded=(entry == logs[-1])):
                     st.write("**Inputs:**")
                     st.code(json.dumps(entry.get('inputs'), indent=2), language="json")
                     st.write("**Output:**")
                     st.code(entry.get('output'))
         elif os.path.exists(log_jsonl) or os.path.exists(log_json):
-            st.write("Log is empty.")
+            st.info("Log is empty.", icon="📜")
 
     with tab3:
         st.subheader("Project Context & Learnings")
@@ -354,7 +367,7 @@ else:
             with open(memory_path, "r") as f:
                 st.markdown(f.read())
         else:
-            st.write("No `project_memory.md` found.")
+            st.info("No long-term memory discovered yet.", icon="🧠")
 
     with tab4:
         st.subheader("Pending Commit Reviewer")
@@ -368,4 +381,4 @@ else:
             except Exception as e:
                 st.error(f"Error parsing artifacts.json: {e}")
         else:
-            st.write("Manifest will appear when the project is ready for commit.")
+            st.info("Manifest will appear when the project is ready for commit.", icon="📋")
