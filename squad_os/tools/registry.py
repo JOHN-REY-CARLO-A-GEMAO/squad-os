@@ -69,29 +69,46 @@ def _validate_terminal_command(command: str) -> tuple[bool, str]:
     if _is_dangerous_command(command):
         return False, "Command contains dangerous patterns and is blocked for security"
 
-    # Parse command to get base command
-    try:
-        parts = shlex.split(command)
-        if not parts:
-            return False, "Could not parse command"
-        base_cmd = parts[0].lower()
-    except ValueError:
-        # If shlex fails, do basic check
-        base_cmd = command.strip().split()[0].lower()
+    # Define shell operators that split commands
+    operators = {'|', ';', '&', '&&', '||', '\n', '\r'}
 
-    # Check if base command is in allowlist
-    # Also check first part of piped commands
-    for subcmd in command.split('|'):
-        subcmd_parts = subcmd.strip().split()
-        if subcmd_parts:
-            sub_base = subcmd_parts[0].lower().strip()
-            # Allow common shell built-ins and safe commands
-            if sub_base not in ALLOWED_COMMANDS and not sub_base.startswith('./'):
-                # Special case: check for qualified paths like /bin/ls
-                if '/' in sub_base:
-                    sub_base = os.path.basename(sub_base)
-                    if sub_base not in ALLOWED_COMMANDS:
-                        return False, f"Command '{sub_base}' not in allowed command list"
+    try:
+        # Use shlex to tokenize the command correctly, respecting quotes
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        return False, "Could not parse command (possible unbalanced quotes)"
+
+    if not tokens:
+        return True, ""
+
+    # The first token must be an allowed command or a local script
+    # We also need to check tokens following operators
+    check_next = True
+    for i, token in enumerate(tokens):
+        if token in operators:
+            check_next = True
+            continue
+
+        if check_next:
+            base_cmd = token.lower()
+            is_allowed = False
+
+            if base_cmd in ALLOWED_COMMANDS:
+                is_allowed = True
+            elif base_cmd.startswith('./'):
+                is_allowed = True
+            elif '/' in base_cmd or '\\' in base_cmd:
+                # For qualified paths, we only allow them if the absolute path
+                # corresponds to a known safe command location, or if the basename is allowed
+                # and it's in a standard system path. For simplicity and higher security,
+                # we only allow it if the basename is in ALLOWED_COMMANDS.
+                if os.path.basename(base_cmd) in ALLOWED_COMMANDS:
+                    is_allowed = True
+
+            if not is_allowed:
+                return False, f"Command '{base_cmd}' not in allowed command list"
+
+            check_next = False
 
     return True, ""
 
