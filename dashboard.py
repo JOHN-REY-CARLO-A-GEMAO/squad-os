@@ -168,8 +168,15 @@ with st.sidebar:
     if not active_projects:
         st.write("No active projects.")
     for proj in active_projects:
-        label = f"📍 {proj}" if proj == st.session_state.selected_proj else f"🚀 {proj}"
-        if st.button(label, key=f"btn_act_{proj}", width="stretch"):
+        is_selected = proj == st.session_state.selected_proj and st.session_state.is_active
+        label = f"📍 {proj}" if is_selected else f"🚀 {proj}"
+        if st.button(
+            label,
+            key=f"btn_act_{proj}",
+            width="stretch",
+            type="primary" if is_selected else "secondary",
+            help=f"View details for active project: {proj}"
+        ):
             st.session_state.selected_proj = proj
             st.session_state.is_active = True
             st.rerun()
@@ -178,8 +185,15 @@ with st.sidebar:
     if not archived_projects:
         st.write("No archived projects.")
     for proj in archived_projects:
-        label = f"📍 {proj}" if proj == st.session_state.selected_proj else f"📦 {proj}"
-        if st.button(label, key=f"btn_arc_{proj}", width="stretch"):
+        is_selected = proj == st.session_state.selected_proj and not st.session_state.is_active
+        label = f"📍 {proj}" if is_selected else f"📦 {proj}"
+        if st.button(
+            label,
+            key=f"btn_arc_{proj}",
+            width="stretch",
+            type="primary" if is_selected else "secondary",
+            help=f"View details for archived project: {proj}"
+        ):
             st.session_state.selected_proj = proj
             st.session_state.is_active = False
             st.rerun()
@@ -192,8 +206,18 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("📊 Global Performance")
     col_s1, col_s2 = st.columns(2)
-    col_s1.metric("Total Cost", f"${stats[2] if stats[2] else 0.0:.4f}")
-    col_s2.metric("Total Tokens", f"{ (stats[0] or 0) + (stats[1] or 0) :,}")
+    col_s1.metric(
+        "Total Cost",
+        f"${stats[2] if stats[2] else 0.0:.4f}",
+        help="Cumulative cost of all completed tasks in USD.",
+        border=True
+    )
+    col_s2.metric(
+        "Total Tokens",
+        f"{(stats[0] or 0) + (stats[1] or 0):,}",
+        help="Total tokens (Prompt + Completion) consumed across all missions.",
+        border=True
+    )
 
 selected_project = st.session_state.selected_proj
 is_selected_active = st.session_state.is_active
@@ -306,10 +330,11 @@ else:
                                 file_name=v_file,
                                 mime=mime_type or "application/octet-stream",
                                 key=f"dl_{v_file}",
-                                width="stretch"
+                                width="stretch",
+                                help=f"Download {v_file} to your local machine."
                             )
             else:
-                st.write("No visual artifacts found.")
+                st.info("🖼️ No visual artifacts found for this project.")
         else:
             st.error("Visuals directory missing.")
 
@@ -335,7 +360,7 @@ else:
             except Exception as e:
                 st.error(f"Error reading .json log: {e}")
         else:
-            st.write("No `session_log.jsonl` or `session_log.json` found.")
+            st.info("📜 No execution logs found. The mission might not have started yet.")
 
         if logs:
             for entry in reversed(logs):
@@ -345,7 +370,7 @@ else:
                     st.write("**Output:**")
                     st.code(entry.get('output'))
         elif os.path.exists(log_jsonl) or os.path.exists(log_json):
-            st.write("Log is empty.")
+            st.info("📜 The log file exists but contains no entries yet.")
 
     with tab3:
         st.subheader("Project Context & Learnings")
@@ -354,7 +379,7 @@ else:
             with open(memory_path, "r") as f:
                 st.markdown(f.read())
         else:
-            st.write("No `project_memory.md` found.")
+            st.info("🧠 No project memory has been recorded yet.")
 
     with tab4:
         st.subheader("Pending Commit Reviewer")
@@ -368,4 +393,4 @@ else:
             except Exception as e:
                 st.error(f"Error parsing artifacts.json: {e}")
         else:
-            st.write("Manifest will appear when the project is ready for commit.")
+            st.info("✅ The manifest will appear here when the project is ready for commit.")
