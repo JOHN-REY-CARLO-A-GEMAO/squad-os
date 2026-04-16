@@ -1,6 +1,7 @@
 import os
 import asyncio
 import datetime
+from urllib.parse import urlparse
 import ffmpeg
 from typing import Dict, Any, Optional
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
@@ -67,6 +68,12 @@ class BrowserControlTool(BaseTool):
 
             if action == "navigate":
                 if not url: return "Error: URL is required for navigate action."
+
+                # Security check: Restrict to http and https to prevent SSRF/LFD
+                parsed_url = urlparse(url)
+                if parsed_url.scheme.lower() not in ["http", "https"]:
+                    return f"SECURITY_ERROR: Protocol '{parsed_url.scheme}' is not allowed. Only http and https are permitted."
+
                 await self._page.goto(url)
                 if wait_for:
                     await self._page.wait_for_selector(wait_for)
