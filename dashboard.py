@@ -166,40 +166,41 @@ with st.sidebar:
 
     st.write("**Active Projects**")
     if not active_projects:
-        st.write("No active projects.")
+        st.info("No active projects.", icon="🚀")
     for proj in active_projects:
         label = f"📍 {proj}" if proj == st.session_state.selected_proj else f"🚀 {proj}"
-        if st.button(label, key=f"btn_act_{proj}", width="stretch"):
+        if st.button(label, key=f"btn_act_{proj}", width="stretch", help=f"View details for {proj}"):
             st.session_state.selected_proj = proj
             st.session_state.is_active = True
             st.rerun()
 
     st.write("**Archived Projects**")
     if not archived_projects:
-        st.write("No archived projects.")
+        st.info("No archived projects.", icon="📦")
     for proj in archived_projects:
         label = f"📍 {proj}" if proj == st.session_state.selected_proj else f"📦 {proj}"
-        if st.button(label, key=f"btn_arc_{proj}", width="stretch"):
+        if st.button(label, key=f"btn_arc_{proj}", width="stretch", help=f"View details for archived project {proj}"):
             st.session_state.selected_proj = proj
             st.session_state.is_active = False
             st.rerun()
 
-    if st.button("Reset View (Go to Chat)", width="stretch"):
+    if st.button("Reset View (Go to Chat)", width="stretch", shortcut="Esc", help="Return to the main mission control chat view"):
         st.session_state.selected_proj = None
+        st.rerun()
 
     # Global Stats
     stats = load_global_stats()
     st.markdown("---")
     st.subheader("📊 Global Performance")
     col_s1, col_s2 = st.columns(2)
-    col_s1.metric("Total Cost", f"${stats[2] if stats[2] else 0.0:.4f}")
-    col_s2.metric("Total Tokens", f"{ (stats[0] or 0) + (stats[1] or 0) :,}")
+    col_s1.metric("Total Cost", f"${stats[2] if stats[2] else 0.0:.4f}", border=True, help="Accumulated cost across all missions in USD")
+    col_s2.metric("Total Tokens", f"{ (stats[0] or 0) + (stats[1] or 0) :,}", border=True, help="Total prompt and completion tokens consumed")
 
 selected_project = st.session_state.selected_proj
 is_selected_active = st.session_state.is_active
 
 if not selected_project:
-    st.info("👋 Welcome to SquadOS. Dispatch a new mission below, or click a project on the left to view details.")
+    st.info("👋 Welcome to SquadOS. Dispatch a new mission below, or click a project on the left to view details.", icon="💬")
 
     # --- CHAT GPT LIKE INTERFACE ---
     st.subheader("💬 Mission Control Chat")
@@ -245,7 +246,7 @@ if not selected_project:
                     else:
                         st.write(f"Status: {status}")
         else:
-            st.write("No missions found. Send a message below to start!")
+            st.info("No missions found. Send a message below to start!", icon="💬")
 
     # Chat Input Box
     with st.container():
@@ -264,7 +265,7 @@ else:
     with col1:
         st.header(f"Project: `{selected_project}`")
     with col2:
-        if st.button("🔙 Back to Chat"):
+        if st.button("🔙 Back to Chat", shortcut="Esc", help="Return to the main mission control chat view", width="stretch"):
             st.session_state.selected_proj = None
             st.rerun()
 
@@ -291,7 +292,7 @@ else:
                         st.write(f"**{v_file}**")
                         if v_file.lower().endswith(img_exts):
                             try:
-                                st.image(v_path, use_container_width=True)
+                                st.image(v_path, width="stretch")
                             except Exception:
                                 st.warning(f"Could not load image: {v_file}")
                         elif v_file.lower().endswith(vid_exts):
@@ -309,7 +310,7 @@ else:
                                 width="stretch"
                             )
             else:
-                st.write("No visual artifacts found.")
+                st.info("No visual artifacts found.", icon="🖼️")
         else:
             st.error("Visuals directory missing.")
 
@@ -335,7 +336,7 @@ else:
             except Exception as e:
                 st.error(f"Error reading .json log: {e}")
         else:
-            st.write("No `session_log.jsonl` or `session_log.json` found.")
+            st.info("No logs found for this project.", icon="📜")
 
         if logs:
             for entry in reversed(logs):
@@ -345,7 +346,7 @@ else:
                     st.write("**Output:**")
                     st.code(entry.get('output'))
         elif os.path.exists(log_jsonl) or os.path.exists(log_json):
-            st.write("Log is empty.")
+            st.info("Log is empty.", icon="📜")
 
     with tab3:
         st.subheader("Project Context & Learnings")
@@ -354,7 +355,7 @@ else:
             with open(memory_path, "r") as f:
                 st.markdown(f.read())
         else:
-            st.write("No `project_memory.md` found.")
+            st.info("No project memory found.", icon="🧠")
 
     with tab4:
         st.subheader("Pending Commit Reviewer")
@@ -368,4 +369,4 @@ else:
             except Exception as e:
                 st.error(f"Error parsing artifacts.json: {e}")
         else:
-            st.write("Manifest will appear when the project is ready for commit.")
+            st.info("Manifest will appear when the project is ready for commit.", icon="✅")
