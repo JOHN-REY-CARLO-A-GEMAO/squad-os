@@ -69,29 +69,47 @@ def _validate_terminal_command(command: str) -> tuple[bool, str]:
     if _is_dangerous_command(command):
         return False, "Command contains dangerous patterns and is blocked for security"
 
-    # Parse command to get base command
-    try:
-        parts = shlex.split(command)
-        if not parts:
-            return False, "Could not parse command"
-        base_cmd = parts[0].lower()
-    except ValueError:
-        # If shlex fails, do basic check
-        base_cmd = command.strip().split()[0].lower()
+    # Security: Normalize newlines to semicolons to ensure they are treated as command separators
+    # and not bypassed by shlex's default whitespace handling.
+    normalized_command = command.replace('\n', ';').replace('\r', ';')
 
-    # Check if base command is in allowlist
-    # Also check first part of piped commands
-    for subcmd in command.split('|'):
-        subcmd_parts = subcmd.strip().split()
-        if subcmd_parts:
-            sub_base = subcmd_parts[0].lower().strip()
-            # Allow common shell built-ins and safe commands
-            if sub_base not in ALLOWED_COMMANDS and not sub_base.startswith('./'):
-                # Special case: check for qualified paths like /bin/ls
-                if '/' in sub_base:
-                    sub_base = os.path.basename(sub_base)
-                    if sub_base not in ALLOWED_COMMANDS:
-                        return False, f"Command '{sub_base}' not in allowed command list"
+    # Define shell operators that separate commands
+    operators = {';', '|', '&'}
+
+    try:
+        lexer = shlex.shlex(normalized_command, posix=True)
+        lexer.wordchars += "/.-_"  # Allow paths and flags in single tokens
+        tokens = []
+        while True:
+            token = lexer.get_token()
+            if not token:
+                break
+            tokens.append(token)
+    except ValueError as e:
+        return False, f"Could not parse command: {str(e)}"
+
+    if not tokens:
+        return False, "Empty command after parsing"
+
+    # Every command starts at the beginning or after an operator
+    check_next = True
+    for i, token in enumerate(tokens):
+        if token in operators:
+            check_next = True
+            continue
+
+        if check_next:
+            # This is a base command that needs validation
+            base_cmd = token.lower()
+            if base_cmd not in ALLOWED_COMMANDS and not base_cmd.startswith('./'):
+                # Check for qualified paths like /bin/ls
+                if '/' in base_cmd or '\\' in base_cmd:
+                    base_cmd_name = os.path.basename(base_cmd)
+                    if base_cmd_name not in ALLOWED_COMMANDS:
+                        return False, f"Command '{base_cmd}' not in allowed command list"
+                else:
+                    return False, f"Command '{base_cmd}' not in allowed command list"
+            check_next = False
 
     return True, ""
 
