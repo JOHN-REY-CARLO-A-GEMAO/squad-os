@@ -66,8 +66,9 @@ async def _run_migrations(db: aiosqlite.Connection, current_version: int) -> int
     """Run sequential migrations. Returns new schema version."""
     migrations = {
         0: lambda db: db.execute("ALTER TABLE missions ADD COLUMN uploaded_files TEXT"),
-        # Add future migrations here:
-        # 1: lambda db: db.execute("ALTER TABLE tasks ADD COLUMN new_column TEXT"),
+        1: lambda db: db.execute("CREATE INDEX IF NOT EXISTS idx_missions_status ON missions(status)"),
+        2: lambda db: db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)"),
+        3: lambda db: db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_mission_id ON tasks(mission_id)"),
     }
 
     new_version = current_version
@@ -154,6 +155,12 @@ async def init_db():
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        # 5. Indexes for Performance (Bolt)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_missions_status ON missions(status)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_mission_id ON tasks(mission_id)")
+
         await db.commit()
 
 # --- MISSION & TASK HELPERS ---
