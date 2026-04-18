@@ -18,6 +18,10 @@ st.set_page_config(page_title="SquadOS: Project Command Center", layout="wide", 
 # Auto-refresh every 5 seconds
 st_autorefresh(interval=5000, key="datarefresh")
 
+if 'mission_submitted' in st.session_state and st.session_state.mission_submitted:
+    st.toast("🚀 Mission dispatched successfully!", icon="✅")
+    del st.session_state.mission_submitted
+
 # Ensure workspace directories exist
 os.makedirs(PROJECTS_DIR, exist_ok=True)
 os.makedirs(ARCHIVES_DIR, exist_ok=True)
@@ -184,7 +188,7 @@ with st.sidebar:
             st.session_state.is_active = False
             st.rerun()
 
-    if st.button("Reset View (Go to Chat)", width="stretch"):
+    if st.button("Reset View (Go to Chat)", width="stretch", help="Return to the main mission control chat."):
         st.session_state.selected_proj = None
 
     # Global Stats
@@ -254,6 +258,7 @@ if not selected_project:
             files_json = save_uploaded_files(uploaded_files)
             if files_json != "ERROR_SIZE":
                 submit_new_mission(prompt, files_json)
+                st.session_state.mission_submitted = True
                 st.rerun()
 
 else:
@@ -264,7 +269,7 @@ else:
     with col1:
         st.header(f"Project: `{selected_project}`")
     with col2:
-        if st.button("🔙 Back to Chat"):
+        if st.button("🔙 Back to Chat", shortcut="Esc", help="Return to the main mission control chat."):
             st.session_state.selected_proj = None
             st.rerun()
 
@@ -291,7 +296,7 @@ else:
                         st.write(f"**{v_file}**")
                         if v_file.lower().endswith(img_exts):
                             try:
-                                st.image(v_path, use_container_width=True)
+                                st.image(v_path, width="stretch")
                             except Exception:
                                 st.warning(f"Could not load image: {v_file}")
                         elif v_file.lower().endswith(vid_exts):
