@@ -151,6 +151,10 @@ def get_project_status(project_id, is_active):
 
 st.title("🛡️ SquadOS: Project Command Center")
 
+if st.session_state.get('mission_submitted'):
+    st.toast("🚀 Mission dispatched successfully!", icon="✅")
+    del st.session_state.mission_submitted
+
 # Sidebar
 st.sidebar.header("🕹️ Control Panel")
 
@@ -254,6 +258,7 @@ if not selected_project:
             files_json = save_uploaded_files(uploaded_files)
             if files_json != "ERROR_SIZE":
                 submit_new_mission(prompt, files_json)
+                st.session_state.mission_submitted = True
                 st.rerun()
 
 else:
@@ -339,7 +344,14 @@ else:
 
         if logs:
             for entry in reversed(logs):
-                with st.expander(f"🛠️ {entry.get('tool')} @ {entry.get('timestamp')}", expanded=(entry == logs[-1])):
+                raw_ts = entry.get('timestamp', '')
+                try:
+                    # Format ISO timestamp to HH:MM:SS
+                    display_ts = datetime.fromisoformat(raw_ts).strftime("%H:%M:%S")
+                except Exception:
+                    display_ts = raw_ts
+
+                with st.expander(f"🛠️ {entry.get('tool')} @ {display_ts}", expanded=(entry == logs[-1])):
                     st.write("**Inputs:**")
                     st.code(json.dumps(entry.get('inputs'), indent=2), language="json")
                     st.write("**Output:**")
