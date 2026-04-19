@@ -69,29 +69,33 @@ def _validate_terminal_command(command: str) -> tuple[bool, str]:
     if _is_dangerous_command(command):
         return False, "Command contains dangerous patterns and is blocked for security"
 
-    # Parse command to get base command
+    # Security: Properly tokenize and check all commands separated by shell operators
     try:
-        parts = shlex.split(command)
-        if not parts:
-            return False, "Could not parse command"
-        base_cmd = parts[0].lower()
-    except ValueError:
-        # If shlex fails, do basic check
-        base_cmd = command.strip().split()[0].lower()
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        tokens = list(lexer)
+        if not tokens:
+            return False, "Empty command after parsing"
 
-    # Check if base command is in allowlist
-    # Also check first part of piped commands
-    for subcmd in command.split('|'):
-        subcmd_parts = subcmd.strip().split()
-        if subcmd_parts:
-            sub_base = subcmd_parts[0].lower().strip()
-            # Allow common shell built-ins and safe commands
-            if sub_base not in ALLOWED_COMMANDS and not sub_base.startswith('./'):
-                # Special case: check for qualified paths like /bin/ls
-                if '/' in sub_base:
-                    sub_base = os.path.basename(sub_base)
+        operators = {';', '&&', '||', '|', '&'}
+        check_next = True
+        for token in tokens:
+            if token in operators:
+                check_next = True
+                continue
+
+            if check_next:
+                sub_base = token.lower().strip()
+                # Allow local script execution (starts with ./)
+                if not sub_base.startswith('./'):
+                    # Check for qualified paths like /bin/ls
+                    if '/' in sub_base or '\\' in sub_base:
+                        sub_base = os.path.basename(sub_base)
+
                     if sub_base not in ALLOWED_COMMANDS:
                         return False, f"Command '{sub_base}' not in allowed command list"
+                check_next = False
+    except Exception as e:
+        return False, f"Command validation error: {str(e)}"
 
     return True, ""
 
