@@ -1,0 +1,4 @@
+## 2025-05-14 - Shell Operator Command Injection Bypass
+**Vulnerability:** The `TerminalTool` validation only checked the initial command or commands separated by pipes (`|`). This allowed attackers to bypass security restrictions by chaining unauthorized commands using other shell operators like `&&`, `;`, `||`, or `&` (e.g., `ls && unauthorized_cmd`).
+**Learning:** `shlex.split()` and basic string splitting are insufficient for security validation of shell commands because they do not account for all shell control operators. An attacker can hide unauthorized commands after these operators.
+**Prevention:** Use `shlex.shlex(punctuation_chars=True)` to properly tokenize shell command strings and identify all command boundaries. Every token following a shell operator must be treated as a new command and validated against the allowlist.
