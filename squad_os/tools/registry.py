@@ -69,29 +69,39 @@ def _validate_terminal_command(command: str) -> tuple[bool, str]:
     if _is_dangerous_command(command):
         return False, "Command contains dangerous patterns and is blocked for security"
 
-    # Parse command to get base command
+    # Use shlex with punctuation_chars=True to correctly identify shell operators
     try:
-        parts = shlex.split(command)
-        if not parts:
+        lexer = shlex.shlex(command, punctuation_chars=True)
+        tokens = list(lexer)
+        if not tokens:
             return False, "Could not parse command"
-        base_cmd = parts[0].lower()
-    except ValueError:
-        # If shlex fails, do basic check
-        base_cmd = command.strip().split()[0].lower()
+    except Exception as e:
+        return False, f"Command parsing error: {str(e)}"
 
-    # Check if base command is in allowlist
-    # Also check first part of piped commands
-    for subcmd in command.split('|'):
-        subcmd_parts = subcmd.strip().split()
-        if subcmd_parts:
-            sub_base = subcmd_parts[0].lower().strip()
-            # Allow common shell built-ins and safe commands
+    # Operators that signify the start of a new command
+    operators = {';', '&&', '||', '|', '&'}
+
+    # Every token that is the first in the command or follows an operator must be in ALLOWED_COMMANDS
+    is_new_command = True
+    for token in tokens:
+        if is_new_command:
+            sub_base = token.lower().strip()
+            # If sub_base is an operator itself, it's malformed or multiple operators (e.g. ;;), block it.
+            if sub_base in operators:
+                return False, f"Unexpected operator '{sub_base}'"
+
+            # Allow local execution if it starts with ./ but otherwise check allowlist
             if sub_base not in ALLOWED_COMMANDS and not sub_base.startswith('./'):
-                # Special case: check for qualified paths like /bin/ls
-                if '/' in sub_base:
-                    sub_base = os.path.basename(sub_base)
-                    if sub_base not in ALLOWED_COMMANDS:
+                # Check for absolute/qualified paths
+                if '/' in sub_base or '\\' in sub_base:
+                    base_name = os.path.basename(sub_base)
+                    if not base_name or base_name not in ALLOWED_COMMANDS:
                         return False, f"Command '{sub_base}' not in allowed command list"
+                else:
+                    return False, f"Command '{sub_base}' not in allowed command list"
+            is_new_command = False
+        elif token in operators:
+            is_new_command = True
 
     return True, ""
 
