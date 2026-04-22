@@ -52,8 +52,10 @@ ALLOWED_COMMANDS: Set[str] = {
 def _is_dangerous_command(command: str) -> bool:
     """Check if command contains dangerous patterns."""
     cmd_lower = command.lower().strip()
+    # Normalize whitespace to catch bypasses like 'rm -rf  /'
+    cmd_norm = re.sub(r'\s+', ' ', cmd_lower)
     for pattern in DANGEROUS_PATTERNS:
-        if pattern.lower() in cmd_lower:
+        if pattern.lower() in cmd_norm:
             return True
     # Check for shell injection patterns
     if re.search(r'`[^`]+`', cmd_lower) or re.search(r'\$\([^)]+\)', cmd_lower):
@@ -69,29 +71,40 @@ def _validate_terminal_command(command: str) -> tuple[bool, str]:
     if _is_dangerous_command(command):
         return False, "Command contains dangerous patterns and is blocked for security"
 
-    # Parse command to get base command
+    # Use shlex.shlex to tokenize the command and identify shell operators
     try:
-        parts = shlex.split(command)
-        if not parts:
-            return False, "Could not parse command"
-        base_cmd = parts[0].lower()
+        lexer = shlex.shlex(command, punctuation_chars=True)
+        tokens = list(lexer)
     except ValueError:
-        # If shlex fails, do basic check
-        base_cmd = command.strip().split()[0].lower()
+        return False, "Could not parse command"
 
-    # Check if base command is in allowlist
-    # Also check first part of piped commands
-    for subcmd in command.split('|'):
-        subcmd_parts = subcmd.strip().split()
-        if subcmd_parts:
-            sub_base = subcmd_parts[0].lower().strip()
+    if not tokens:
+        return False, "Empty command after parsing"
+
+    # Define shell operators that separate commands
+    operators = {';', '&&', '||', '|', '&'}
+
+    # The first token should be a base command
+    # Any token immediately following an operator should be a base command
+    is_next_base = True
+    for token in tokens:
+        if token in operators:
+            is_next_base = True
+            continue
+
+        if is_next_base:
+            sub_base = token.lower().strip()
             # Allow common shell built-ins and safe commands
             if sub_base not in ALLOWED_COMMANDS and not sub_base.startswith('./'):
                 # Special case: check for qualified paths like /bin/ls
-                if '/' in sub_base:
+                if '/' in sub_base or '\\' in sub_base:
                     sub_base = os.path.basename(sub_base)
                     if sub_base not in ALLOWED_COMMANDS:
                         return False, f"Command '{sub_base}' not in allowed command list"
+                else:
+                    # Not in allowlist and not a local script or qualified path
+                    return False, f"Command '{sub_base}' not in allowed command list"
+            is_next_base = False
 
     return True, ""
 
