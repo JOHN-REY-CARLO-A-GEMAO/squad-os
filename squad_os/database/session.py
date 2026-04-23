@@ -154,6 +154,12 @@ async def init_db():
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        # 5. Indexes for Performance
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_missions_status ON missions(status)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_mission_id ON tasks(mission_id)")
+
         await db.commit()
 
 # --- MISSION & TASK HELPERS ---
