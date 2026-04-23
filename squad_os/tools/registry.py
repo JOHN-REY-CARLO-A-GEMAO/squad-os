@@ -69,29 +69,39 @@ def _validate_terminal_command(command: str) -> tuple[bool, str]:
     if _is_dangerous_command(command):
         return False, "Command contains dangerous patterns and is blocked for security"
 
-    # Parse command to get base command
+    # Robust tokenization using shlex to identify shell operators
     try:
-        parts = shlex.split(command)
-        if not parts:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        tokens = list(lexer)
+        if not tokens:
             return False, "Could not parse command"
-        base_cmd = parts[0].lower()
-    except ValueError:
-        # If shlex fails, do basic check
-        base_cmd = command.strip().split()[0].lower()
+    except Exception as e:
+        return False, f"Command parsing error: {str(e)}"
 
-    # Check if base command is in allowlist
-    # Also check first part of piped commands
-    for subcmd in command.split('|'):
-        subcmd_parts = subcmd.strip().split()
-        if subcmd_parts:
-            sub_base = subcmd_parts[0].lower().strip()
-            # Allow common shell built-ins and safe commands
-            if sub_base not in ALLOWED_COMMANDS and not sub_base.startswith('./'):
-                # Special case: check for qualified paths like /bin/ls
-                if '/' in sub_base:
-                    sub_base = os.path.basename(sub_base)
-                    if sub_base not in ALLOWED_COMMANDS:
-                        return False, f"Command '{sub_base}' not in allowed command list"
+    operators = {';', '&&', '||', '|', '&'}
+    redirections = {'>', '>>'}
+
+    # Validate first command and any commands following operators
+    for i, token in enumerate(tokens):
+        is_subsequent_cmd = i > 0 and tokens[i-1] in operators
+        if i == 0 or is_subsequent_cmd:
+            base_cmd = token.lower()
+            if base_cmd not in ALLOWED_COMMANDS and not base_cmd.startswith('./'):
+                if '/' in base_cmd:
+                    base_cmd = os.path.basename(base_cmd)
+                if base_cmd not in ALLOWED_COMMANDS:
+                    return False, f"Command '{token}' not in allowed command list"
+
+        # Security: Prevent redirection to sensitive system paths
+        if token in redirections and i + 1 < len(tokens):
+            target_path = tokens[i+1]
+            if target_path.startswith('/') or target_path.startswith('\\'):
+                # Allow redirection only within workspace (basic check, TerminalTool sets CWD)
+                # But blocking absolute paths to sensitive areas is a good defense-in-depth
+                if not any(target_path.startswith(p) for p in ['/etc', '/var', '/usr', '/bin', '/sbin']):
+                    pass # Allow other absolute paths for now, or be stricter?
+                else:
+                    return False, f"Redirection to sensitive path '{target_path}' is blocked"
 
     return True, ""
 
