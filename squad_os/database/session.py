@@ -66,8 +66,9 @@ async def _run_migrations(db: aiosqlite.Connection, current_version: int) -> int
     """Run sequential migrations. Returns new schema version."""
     migrations = {
         0: lambda db: db.execute("ALTER TABLE missions ADD COLUMN uploaded_files TEXT"),
-        # Add future migrations here:
-        # 1: lambda db: db.execute("ALTER TABLE tasks ADD COLUMN new_column TEXT"),
+        1: lambda db: db.execute("CREATE INDEX IF NOT EXISTS idx_missions_status ON missions(status)"),
+        2: lambda db: db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)"),
+        3: lambda db: db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_mission_id ON tasks(mission_id)"),
     }
 
     new_version = current_version
@@ -99,16 +100,6 @@ async def init_db():
             )
         """)
 
-        # MIGRATION: Use user_version PRAGMA with sequential migration map
-        async with db.execute("PRAGMA user_version") as cursor:
-            user_version = (await cursor.fetchone())[0]
-
-        if user_version == 0:
-            # Run all migrations from version 0
-            new_version = await _run_migrations(db, 0)
-            # Update schema version after migrations
-            await db.execute(f"PRAGMA user_version = {new_version}")
-
         # 2. Tasks Table
         await db.execute("""
             CREATE TABLE IF NOT EXISTS tasks (
@@ -129,6 +120,21 @@ async def init_db():
                 FOREIGN KEY (mission_id) REFERENCES missions (id)
             )
         """)
+
+        # Optimization: Global indexes for performance
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_missions_status ON missions(status)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_mission_id ON tasks(mission_id)")
+
+        # MIGRATION: Use user_version PRAGMA with sequential migration map
+        async with db.execute("PRAGMA user_version") as cursor:
+            user_version = (await cursor.fetchone())[0]
+
+        # Check for necessary migrations
+        # Current highest version is 4 (meaning 0, 1, 2, 3 have been run)
+        if user_version < 4:
+            new_version = await _run_migrations(db, user_version)
+            await db.execute(f"PRAGMA user_version = {new_version}")
 
         # 3. Approvals Table
         await db.execute("""
