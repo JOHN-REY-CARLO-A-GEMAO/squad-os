@@ -129,7 +129,8 @@ class DesktopControlTool(BaseTool):
     async def _screenshot(self, description: str = None) -> str:
         import pyautogui
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        desc = description or "screenshot"
+        # Security: Sanitize description to prevent path traversal
+        desc = os.path.basename(description or "screenshot")
         filename = f"{timestamp}_{desc.replace(' ', '_')}.png"
         filepath = os.path.join(self.output_dir, filename)
         screenshot = pyautogui.screenshot()

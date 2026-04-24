@@ -2,7 +2,9 @@ import asyncio
 import os
 from squad_os.tools.visual import BrowserControlTool, VisionAnalysisTool
 from squad_os.agents.base import BaseAgent
+import pytest
 
+@pytest.mark.asyncio
 async def test_visual_tools():
     # Test BrowserControlTool directly
     browser_tool = BrowserControlTool()

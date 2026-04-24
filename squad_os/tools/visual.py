@@ -87,7 +87,8 @@ class BrowserControlTool(BaseTool):
                 return f"Typed '{text}' into {selector}"
 
             elif action == "screenshot":
-                desc = description or "screenshot"
+                # Security: Sanitize description to prevent path traversal
+                desc = os.path.basename(description or "screenshot")
                 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                 filename = f"{timestamp}_{desc.replace(' ', '_')}.png"
                 filepath = os.path.join(self.output_dir, filename)
@@ -113,7 +114,8 @@ class BrowserControlTool(BaseTool):
                 video_path = await video_obj.path()
                 if video_path and os.path.exists(video_path):
                     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                    desc = description or "demo"
+                    # Security: Sanitize description to prevent path traversal
+                    desc = os.path.basename(description or "demo")
                     mp4_filename = f"{timestamp}_{desc.replace(' ', '_')}.mp4"
                     mp4_filepath = os.path.join(self.output_dir, mp4_filename)
 

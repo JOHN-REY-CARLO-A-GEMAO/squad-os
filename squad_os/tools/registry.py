@@ -69,29 +69,38 @@ def _validate_terminal_command(command: str) -> tuple[bool, str]:
     if _is_dangerous_command(command):
         return False, "Command contains dangerous patterns and is blocked for security"
 
-    # Parse command to get base command
+    # Security: Use shlex with punctuation_chars to properly handle shell operators
     try:
-        parts = shlex.split(command)
-        if not parts:
-            return False, "Could not parse command"
-        base_cmd = parts[0].lower()
-    except ValueError:
-        # If shlex fails, do basic check
-        base_cmd = command.strip().split()[0].lower()
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError as e:
+        return False, f"Could not parse command: {str(e)}"
 
-    # Check if base command is in allowlist
-    # Also check first part of piped commands
-    for subcmd in command.split('|'):
-        subcmd_parts = subcmd.strip().split()
-        if subcmd_parts:
-            sub_base = subcmd_parts[0].lower().strip()
-            # Allow common shell built-ins and safe commands
-            if sub_base not in ALLOWED_COMMANDS and not sub_base.startswith('./'):
+    if not tokens:
+        return False, "Empty command not allowed"
+
+    # Shell operators that can be used to chain commands
+    operators = {';', '&&', '||', '|', '&'}
+    next_is_cmd = True
+
+    for token in tokens:
+        if token in operators:
+            next_is_cmd = True
+            continue
+
+        if next_is_cmd:
+            cmd = token.lower()
+            # Allow relative execution and common shell built-ins
+            if not cmd.startswith('./') and cmd not in ALLOWED_COMMANDS:
                 # Special case: check for qualified paths like /bin/ls
-                if '/' in sub_base:
-                    sub_base = os.path.basename(sub_base)
-                    if sub_base not in ALLOWED_COMMANDS:
-                        return False, f"Command '{sub_base}' not in allowed command list"
+                if '/' in cmd or '\\' in cmd:
+                    base_cmd = os.path.basename(cmd)
+                    if not base_cmd or base_cmd not in ALLOWED_COMMANDS:
+                        return False, f"Command '{cmd}' not in allowed command list"
+                else:
+                    return False, f"Command '{cmd}' not in allowed command list"
+            next_is_cmd = False
 
     return True, ""
 
