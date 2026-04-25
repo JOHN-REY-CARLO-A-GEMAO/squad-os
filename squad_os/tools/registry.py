@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 import shlex
+import io
 from typing import Dict, Any, Optional, List, Set
 
 try:
@@ -51,7 +52,8 @@ ALLOWED_COMMANDS: Set[str] = {
 
 def _is_dangerous_command(command: str) -> bool:
     """Check if command contains dangerous patterns."""
-    cmd_lower = command.lower().strip()
+    # Normalize whitespace to prevent bypass via extra spaces
+    cmd_lower = re.sub(r'\s+', ' ', command.lower()).strip()
     for pattern in DANGEROUS_PATTERNS:
         if pattern.lower() in cmd_lower:
             return True
@@ -69,29 +71,44 @@ def _validate_terminal_command(command: str) -> tuple[bool, str]:
     if _is_dangerous_command(command):
         return False, "Command contains dangerous patterns and is blocked for security"
 
-    # Parse command to get base command
+    # Robust tokenization using shlex with punctuation_chars=True
+    # to handle shell operators (; && || | &)
     try:
-        parts = shlex.split(command)
-        if not parts:
-            return False, "Could not parse command"
-        base_cmd = parts[0].lower()
-    except ValueError:
-        # If shlex fails, do basic check
-        base_cmd = command.strip().split()[0].lower()
+        lexer = shlex.shlex(io.StringIO(command), posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError as e:
+        return False, f"Could not parse command: {str(e)}"
 
-    # Check if base command is in allowlist
-    # Also check first part of piped commands
-    for subcmd in command.split('|'):
-        subcmd_parts = subcmd.strip().split()
-        if subcmd_parts:
-            sub_base = subcmd_parts[0].lower().strip()
-            # Allow common shell built-ins and safe commands
-            if sub_base not in ALLOWED_COMMANDS and not sub_base.startswith('./'):
-                # Special case: check for qualified paths like /bin/ls
-                if '/' in sub_base:
-                    sub_base = os.path.basename(sub_base)
-                    if sub_base not in ALLOWED_COMMANDS:
-                        return False, f"Command '{sub_base}' not in allowed command list"
+    if not tokens:
+        return False, "Empty command after parsing"
+
+    # Define shell operators that separate commands
+    operators = {';', '&&', '||', '|', '&'}
+
+    # Every token that follows an operator or is at the start must be in ALLOWED_COMMANDS
+    expect_base_cmd = True
+    for token in tokens:
+        if expect_base_cmd:
+            # Check if this is a redirection target or operator (unlikely at start but for safety)
+            if token in operators or token in {'>', '>>', '<'}:
+                 # If it's an operator, we still expect a base command next
+                 # If it's a redirection, it's weird but let's check it anyway if it were allowed
+                 pass
+            else:
+                base_cmd = token.lower()
+                # Handle relative paths like ./myscript.py
+                if not base_cmd.startswith('./'):
+                    # Check for qualified paths like /bin/ls
+                    if '/' in base_cmd:
+                        base_cmd = os.path.basename(base_cmd)
+
+                    if base_cmd not in ALLOWED_COMMANDS:
+                        return False, f"Command '{token}' not in allowed command list"
+                expect_base_cmd = False
+
+        if token in operators:
+            expect_base_cmd = True
 
     return True, ""
 
