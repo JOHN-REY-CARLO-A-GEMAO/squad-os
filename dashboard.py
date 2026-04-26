@@ -184,7 +184,7 @@ with st.sidebar:
             st.session_state.is_active = False
             st.rerun()
 
-    if st.button("Reset View (Go to Chat)", width="stretch"):
+    if st.button("Reset View (Go to Chat)", width="stretch", help="Return to the main chat interface", shortcut="Esc"):
         st.session_state.selected_proj = None
 
     # Global Stats
@@ -264,7 +264,7 @@ else:
     with col1:
         st.header(f"Project: `{selected_project}`")
     with col2:
-        if st.button("🔙 Back to Chat"):
+        if st.button("🔙 Back to Chat", help="Return to the main chat interface", shortcut="Esc"):
             st.session_state.selected_proj = None
             st.rerun()
 
@@ -309,7 +309,7 @@ else:
                                 width="stretch"
                             )
             else:
-                st.write("No visual artifacts found.")
+                st.info("No visual artifacts found.", icon="🖼️")
         else:
             st.error("Visuals directory missing.")
 
@@ -335,17 +335,22 @@ else:
             except Exception as e:
                 st.error(f"Error reading .json log: {e}")
         else:
-            st.write("No `session_log.jsonl` or `session_log.json` found.")
+            st.info("No logs found.", icon="📜")
 
         if logs:
             for entry in reversed(logs):
-                with st.expander(f"🛠️ {entry.get('tool')} @ {entry.get('timestamp')}", expanded=(entry == logs[-1])):
+                ts = entry.get('timestamp', '')
+                try:
+                    ts_formatted = datetime.fromisoformat(ts).strftime("%H:%M:%S")
+                except Exception:
+                    ts_formatted = ts
+                with st.expander(f"🛠️ {entry.get('tool')} @ {ts_formatted}", expanded=(entry == logs[-1])):
                     st.write("**Inputs:**")
                     st.code(json.dumps(entry.get('inputs'), indent=2), language="json")
                     st.write("**Output:**")
                     st.code(entry.get('output'))
         elif os.path.exists(log_jsonl) or os.path.exists(log_json):
-            st.write("Log is empty.")
+            st.info("No logs found.", icon="📜")
 
     with tab3:
         st.subheader("Project Context & Learnings")
@@ -354,7 +359,7 @@ else:
             with open(memory_path, "r") as f:
                 st.markdown(f.read())
         else:
-            st.write("No `project_memory.md` found.")
+            st.info("No project memory found.", icon="🧠")
 
     with tab4:
         st.subheader("Pending Commit Reviewer")
@@ -368,4 +373,4 @@ else:
             except Exception as e:
                 st.error(f"Error parsing artifacts.json: {e}")
         else:
-            st.write("Manifest will appear when the project is ready for commit.")
+            st.info("Manifest will appear when the project is ready for commit.", icon="✅")
