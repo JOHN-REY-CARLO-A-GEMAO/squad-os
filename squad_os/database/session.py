@@ -66,8 +66,10 @@ async def _run_migrations(db: aiosqlite.Connection, current_version: int) -> int
     """Run sequential migrations. Returns new schema version."""
     migrations = {
         0: lambda db: db.execute("ALTER TABLE missions ADD COLUMN uploaded_files TEXT"),
-        # Add future migrations here:
-        # 1: lambda db: db.execute("ALTER TABLE tasks ADD COLUMN new_column TEXT"),
+        # Optimized database performance with targeted indexes
+        1: lambda db: db.execute("CREATE INDEX IF NOT EXISTS idx_missions_status ON missions(status)"),
+        2: lambda db: db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)"),
+        3: lambda db: db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_mission_id ON tasks(mission_id)"),
     }
 
     new_version = current_version
@@ -98,16 +100,6 @@ async def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-
-        # MIGRATION: Use user_version PRAGMA with sequential migration map
-        async with db.execute("PRAGMA user_version") as cursor:
-            user_version = (await cursor.fetchone())[0]
-
-        if user_version == 0:
-            # Run all migrations from version 0
-            new_version = await _run_migrations(db, 0)
-            # Update schema version after migrations
-            await db.execute(f"PRAGMA user_version = {new_version}")
 
         # 2. Tasks Table
         await db.execute("""
@@ -154,6 +146,28 @@ async def init_db():
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        # MIGRATION: Use user_version PRAGMA with sequential migration map
+        # We run this AFTER creating tables to ensure indexes/columns can be added safely
+        async with db.execute("PRAGMA user_version") as cursor:
+            user_version = (await cursor.fetchone())[0]
+
+        # For a fresh DB (user_version 0), we skip migration 0 because the column
+        # is already in the CREATE TABLE above. But we still want to apply
+        # migrations 1, 2, 3 (indexes).
+        # We handle this by setting current_version to 1 for fresh installs.
+        start_version = user_version if user_version > 0 else 1
+
+        new_version = await _run_migrations(db, start_version)
+
+        # Ensure we set version to at least the current max migration version for fresh installs
+        if user_version == 0:
+             # If we started at 0 and skipped migration 0, new_version will reflect
+             # the highest migration applied.
+             await db.execute(f"PRAGMA user_version = {max(new_version, 4)}") # 4 is next expected version
+        elif new_version > user_version:
+            await db.execute(f"PRAGMA user_version = {new_version}")
+
         await db.commit()
 
 # --- MISSION & TASK HELPERS ---
