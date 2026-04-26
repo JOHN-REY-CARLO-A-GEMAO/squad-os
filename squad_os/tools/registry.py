@@ -61,7 +61,7 @@ def _is_dangerous_command(command: str) -> bool:
     return False
 
 
-def _validate_terminal_command(command: str) -> tuple[bool, str]:
+def _validate_terminal_command(command: str, workspace: Optional[str] = None) -> tuple[bool, str]:
     """Validate terminal command against allowlist and dangerous patterns."""
     if not command or not command.strip():
         return False, "Empty command not allowed"
@@ -72,12 +72,18 @@ def _validate_terminal_command(command: str) -> tuple[bool, str]:
     # Parse command to get base command
     try:
         parts = shlex.split(command)
-        if not parts:
-            return False, "Could not parse command"
-        base_cmd = parts[0].lower()
     except ValueError:
-        # If shlex fails, do basic check
-        base_cmd = command.strip().split()[0].lower()
+        parts = command.split()
+
+    if not parts:
+        return False, "Could not parse command"
+
+    # Security: Prevent path traversal in command arguments
+    if workspace:
+        for part in parts:
+            if '..' in part or os.path.isabs(part):
+                if not is_safe_path(workspace, part):
+                    return False, f"Access denied. Path traversal detected in argument: '{part}'"
 
     # Check if base command is in allowlist
     # Also check first part of piped commands
@@ -200,7 +206,7 @@ class TerminalTool(BaseTool):
 
     async def execute(self, command: str) -> str:
         # Security: Validate command before execution
-        is_valid, error_msg = _validate_terminal_command(command)
+        is_valid, error_msg = _validate_terminal_command(command, self.workspace)
         if not is_valid:
             return f"SECURITY_ERROR: {error_msg}"
 
