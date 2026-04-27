@@ -22,6 +22,11 @@ st_autorefresh(interval=5000, key="datarefresh")
 os.makedirs(PROJECTS_DIR, exist_ok=True)
 os.makedirs(ARCHIVES_DIR, exist_ok=True)
 
+# Handle mission submission feedback
+if st.session_state.get("mission_submitted"):
+    st.toast("Mission successfully dispatched! 🚀", icon="✅")
+    st.session_state.mission_submitted = False
+
 def get_active_db_path():
     for path in DB_PATHS:
         if os.path.exists(path):
@@ -166,7 +171,7 @@ with st.sidebar:
 
     st.write("**Active Projects**")
     if not active_projects:
-        st.write("No active projects.")
+        st.info("No active projects.", icon="🚀")
     for proj in active_projects:
         label = f"📍 {proj}" if proj == st.session_state.selected_proj else f"🚀 {proj}"
         if st.button(label, key=f"btn_act_{proj}", width="stretch"):
@@ -176,7 +181,7 @@ with st.sidebar:
 
     st.write("**Archived Projects**")
     if not archived_projects:
-        st.write("No archived projects.")
+        st.info("No archived projects.", icon="📦")
     for proj in archived_projects:
         label = f"📍 {proj}" if proj == st.session_state.selected_proj else f"📦 {proj}"
         if st.button(label, key=f"btn_arc_{proj}", width="stretch"):
@@ -184,7 +189,7 @@ with st.sidebar:
             st.session_state.is_active = False
             st.rerun()
 
-    if st.button("Reset View (Go to Chat)", width="stretch"):
+    if st.button("Reset View (Go to Chat)", width="stretch", help="Return to the main mission control chat", shortcut="Esc"):
         st.session_state.selected_proj = None
 
     # Global Stats
@@ -245,7 +250,7 @@ if not selected_project:
                     else:
                         st.write(f"Status: {status}")
         else:
-            st.write("No missions found. Send a message below to start!")
+            st.info("No missions found. Send a message below to start!", icon="💬")
 
     # Chat Input Box
     with st.container():
@@ -254,6 +259,7 @@ if not selected_project:
             files_json = save_uploaded_files(uploaded_files)
             if files_json != "ERROR_SIZE":
                 submit_new_mission(prompt, files_json)
+                st.session_state.mission_submitted = True
                 st.rerun()
 
 else:
@@ -264,7 +270,7 @@ else:
     with col1:
         st.header(f"Project: `{selected_project}`")
     with col2:
-        if st.button("🔙 Back to Chat"):
+        if st.button("🔙 Back to Chat", help="Return to the main mission control chat", shortcut="Esc"):
             st.session_state.selected_proj = None
             st.rerun()
 
@@ -291,7 +297,7 @@ else:
                         st.write(f"**{v_file}**")
                         if v_file.lower().endswith(img_exts):
                             try:
-                                st.image(v_path, use_container_width=True)
+                                st.image(v_path, width="stretch")
                             except Exception:
                                 st.warning(f"Could not load image: {v_file}")
                         elif v_file.lower().endswith(vid_exts):
@@ -309,7 +315,7 @@ else:
                                 width="stretch"
                             )
             else:
-                st.write("No visual artifacts found.")
+                st.info("No visual artifacts found yet. They will appear here once the mission starts generating outputs.", icon="🖼️")
         else:
             st.error("Visuals directory missing.")
 
@@ -335,7 +341,7 @@ else:
             except Exception as e:
                 st.error(f"Error reading .json log: {e}")
         else:
-            st.write("No `session_log.jsonl` or `session_log.json` found.")
+            st.info("No logs found. Start a mission to see real-time tool execution logs.", icon="📜")
 
         if logs:
             for entry in reversed(logs):
@@ -345,7 +351,7 @@ else:
                     st.write("**Output:**")
                     st.code(entry.get('output'))
         elif os.path.exists(log_jsonl) or os.path.exists(log_json):
-            st.write("Log is empty.")
+            st.info("Log is empty.", icon="📜")
 
     with tab3:
         st.subheader("Project Context & Learnings")
@@ -354,7 +360,7 @@ else:
             with open(memory_path, "r") as f:
                 st.markdown(f.read())
         else:
-            st.write("No `project_memory.md` found.")
+            st.info("No project memory found. The agent will document its learnings here.", icon="🧠")
 
     with tab4:
         st.subheader("Pending Commit Reviewer")
@@ -368,4 +374,4 @@ else:
             except Exception as e:
                 st.error(f"Error parsing artifacts.json: {e}")
         else:
-            st.write("Manifest will appear when the project is ready for commit.")
+            st.info("The manifest will appear here once the agent is ready for you to review and commit the results.", icon="✅")
