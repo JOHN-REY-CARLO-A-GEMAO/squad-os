@@ -135,8 +135,12 @@ def load_global_stats():
     return (0, 0, 0.0)
 
 def list_projects():
-    active = sorted([d for d in os.listdir(PROJECTS_DIR) if os.path.isdir(os.path.join(PROJECTS_DIR, d))], reverse=True)
-    archived = sorted([d for d in os.listdir(ARCHIVES_DIR) if os.path.isdir(os.path.join(ARCHIVES_DIR, d))], reverse=True)
+    # Performance Optimization: Use os.scandir to reduce system calls (O(N) vs O(2N))
+    # It retrieves metadata during the initial scan, avoiding separate is_dir() checks.
+    with os.scandir(PROJECTS_DIR) as entries:
+        active = sorted([entry.name for entry in entries if entry.is_dir()], reverse=True)
+    with os.scandir(ARCHIVES_DIR) as entries:
+        archived = sorted([entry.name for entry in entries if entry.is_dir()], reverse=True)
     return active, archived
 
 def get_project_status(project_id, is_active):
@@ -278,7 +282,9 @@ else:
         st.subheader("Visual Artifacts")
         visuals_path = os.path.join(project_root, "visuals")
         if os.path.exists(visuals_path):
-            files = os.listdir(visuals_path)
+            # Performance Optimization: Use os.scandir for directory listing
+            with os.scandir(visuals_path) as entries:
+                files = [entry.name for entry in entries]
             img_exts = ('.png', '.jpg', '.jpeg', '.webp')
             vid_exts = ('.mp4', '.webm')
 
