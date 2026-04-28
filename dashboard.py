@@ -147,9 +147,23 @@ def get_project_status(project_id, is_active):
         return "Awaiting Commit"
     return "Exploring"
 
+def format_timestamp(ts_string):
+    """Safely format an ISO timestamp to HH:MM:SS."""
+    if not ts_string:
+        return "Unknown"
+    try:
+        dt = datetime.fromisoformat(ts_string)
+        return dt.strftime("%H:%M:%S")
+    except (ValueError, TypeError):
+        return ts_string
+
 # --- UI ---
 
 st.title("🛡️ SquadOS: Project Command Center")
+
+if st.session_state.get("mission_submitted"):
+    st.toast("Mission dispatched! 🚀", icon="✅")
+    st.session_state.mission_submitted = False
 
 # Sidebar
 st.sidebar.header("🕹️ Control Panel")
@@ -184,7 +198,7 @@ with st.sidebar:
             st.session_state.is_active = False
             st.rerun()
 
-    if st.button("Reset View (Go to Chat)", width="stretch"):
+    if st.button("Reset View (Go to Chat)", width="stretch", help="Return to the main mission control chat", shortcut="Esc"):
         st.session_state.selected_proj = None
 
     # Global Stats
@@ -254,6 +268,7 @@ if not selected_project:
             files_json = save_uploaded_files(uploaded_files)
             if files_json != "ERROR_SIZE":
                 submit_new_mission(prompt, files_json)
+                st.session_state.mission_submitted = True
                 st.rerun()
 
 else:
@@ -264,7 +279,7 @@ else:
     with col1:
         st.header(f"Project: `{selected_project}`")
     with col2:
-        if st.button("🔙 Back to Chat"):
+        if st.button("🔙 Back to Chat", help="Return to the main mission control chat", shortcut="Esc"):
             st.session_state.selected_proj = None
             st.rerun()
 
@@ -339,7 +354,8 @@ else:
 
         if logs:
             for entry in reversed(logs):
-                with st.expander(f"🛠️ {entry.get('tool')} @ {entry.get('timestamp')}", expanded=(entry == logs[-1])):
+                ts = format_timestamp(entry.get('timestamp'))
+                with st.expander(f"🛠️ {entry.get('tool')} @ {ts}", expanded=(entry == logs[-1])):
                     st.write("**Inputs:**")
                     st.code(json.dumps(entry.get('inputs'), indent=2), language="json")
                     st.write("**Output:**")
