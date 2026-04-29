@@ -1,6 +1,7 @@
 import os
 import sqlite3
 import aiosqlite
+import asyncio
 import json
 from datetime import datetime
 from enum import Enum
@@ -64,17 +65,23 @@ class ApprovalRecord(BaseModel):
 
 async def _run_migrations(db: aiosqlite.Connection, current_version: int) -> int:
     """Run sequential migrations. Returns new schema version."""
+    async def create_indexes(db):
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_missions_status ON missions(status)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_mission_id ON tasks(mission_id)")
+
     migrations = {
         0: lambda db: db.execute("ALTER TABLE missions ADD COLUMN uploaded_files TEXT"),
-        # Add future migrations here:
-        # 1: lambda db: db.execute("ALTER TABLE tasks ADD COLUMN new_column TEXT"),
+        1: create_indexes,
     }
 
     new_version = current_version
     for version, migration in sorted(migrations.items()):
         if version >= current_version:
             try:
-                await migration(db)
+                res = migration(db)
+                if asyncio.iscoroutine(res):
+                    await res
                 new_version = version + 1
             except aiosqlite.Error as e:
                 # Migration may fail if column already exists, etc.
@@ -98,16 +105,6 @@ async def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-
-        # MIGRATION: Use user_version PRAGMA with sequential migration map
-        async with db.execute("PRAGMA user_version") as cursor:
-            user_version = (await cursor.fetchone())[0]
-
-        if user_version == 0:
-            # Run all migrations from version 0
-            new_version = await _run_migrations(db, 0)
-            # Update schema version after migrations
-            await db.execute(f"PRAGMA user_version = {new_version}")
 
         # 2. Tasks Table
         await db.execute("""
@@ -154,6 +151,22 @@ async def init_db():
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        # 5. Indexes for performance
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_missions_status ON missions(status)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_mission_id ON tasks(mission_id)")
+
+        # MIGRATION: Use user_version PRAGMA with sequential migration map
+        async with db.execute("PRAGMA user_version") as cursor:
+            user_version = (await cursor.fetchone())[0]
+
+        # Check if migrations are needed (latest version is 2, since migrations 0 and 1 exist)
+        LATEST_VERSION = 2
+        if user_version < LATEST_VERSION:
+            new_version = await _run_migrations(db, user_version)
+            await db.execute(f"PRAGMA user_version = {new_version}")
+
         await db.commit()
 
 # --- MISSION & TASK HELPERS ---
