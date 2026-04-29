@@ -166,7 +166,7 @@ with st.sidebar:
 
     st.write("**Active Projects**")
     if not active_projects:
-        st.write("No active projects.")
+        st.info("No active projects.", icon="📜")
     for proj in active_projects:
         label = f"📍 {proj}" if proj == st.session_state.selected_proj else f"🚀 {proj}"
         if st.button(label, key=f"btn_act_{proj}", width="stretch"):
@@ -176,7 +176,7 @@ with st.sidebar:
 
     st.write("**Archived Projects**")
     if not archived_projects:
-        st.write("No archived projects.")
+        st.info("No archived projects.", icon="📦")
     for proj in archived_projects:
         label = f"📍 {proj}" if proj == st.session_state.selected_proj else f"📦 {proj}"
         if st.button(label, key=f"btn_arc_{proj}", width="stretch"):
@@ -184,8 +184,9 @@ with st.sidebar:
             st.session_state.is_active = False
             st.rerun()
 
-    if st.button("Reset View (Go to Chat)", width="stretch"):
+    if st.button("Reset View (Go to Chat)", width="stretch", help="Return to the main mission control chat.", shortcut="Esc"):
         st.session_state.selected_proj = None
+        st.rerun()
 
     # Global Stats
     stats = load_global_stats()
@@ -199,6 +200,11 @@ selected_project = st.session_state.selected_proj
 is_selected_active = st.session_state.is_active
 
 if not selected_project:
+    # Mission success toast
+    if st.session_state.get('mission_submitted'):
+        st.toast("Mission submitted successfully!", icon="✅")
+        st.session_state.mission_submitted = False
+
     st.info("👋 Welcome to SquadOS. Dispatch a new mission below, or click a project on the left to view details.")
 
     # --- CHAT GPT LIKE INTERFACE ---
@@ -254,6 +260,7 @@ if not selected_project:
             files_json = save_uploaded_files(uploaded_files)
             if files_json != "ERROR_SIZE":
                 submit_new_mission(prompt, files_json)
+                st.session_state.mission_submitted = True
                 st.rerun()
 
 else:
@@ -264,7 +271,7 @@ else:
     with col1:
         st.header(f"Project: `{selected_project}`")
     with col2:
-        if st.button("🔙 Back to Chat"):
+        if st.button("🔙 Back to Chat", help="Return to the mission control chat.", shortcut="Esc"):
             st.session_state.selected_proj = None
             st.rerun()
 
@@ -339,7 +346,13 @@ else:
 
         if logs:
             for entry in reversed(logs):
-                with st.expander(f"🛠️ {entry.get('tool')} @ {entry.get('timestamp')}", expanded=(entry == logs[-1])):
+                ts_raw = entry.get('timestamp')
+                try:
+                    ts_display = datetime.fromisoformat(ts_raw).strftime("%H:%M:%S")
+                except (ValueError, TypeError):
+                    ts_display = ts_raw
+
+                with st.expander(f"🛠️ {entry.get('tool')} @ {ts_display}", expanded=(entry == logs[-1])):
                     st.write("**Inputs:**")
                     st.code(json.dumps(entry.get('inputs'), indent=2), language="json")
                     st.write("**Output:**")
