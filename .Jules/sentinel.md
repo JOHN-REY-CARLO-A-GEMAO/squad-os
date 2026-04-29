@@ -1,0 +1,4 @@
+## 2026-04-29 - [Command Injection via Shell Operators]
+**Vulnerability:** Command injection was possible in `TerminalTool` by chaining an allowed command with an unallowed one using shell operators like `;`, `&&`, or `||`.
+**Learning:** The previous validation only checked the first segment of the command string (or parts split by `|`). It didn't account for other shell operators that can start new commands. `shlex.split` or simple string splitting is insufficient for identifying all command starts in a shell-like string.
+**Prevention:** Use `shlex.shlex` with `punctuation_chars=True` to properly tokenize the command string and identify all shell operators. Iterate through the tokens and ensure every token that follows an operator (which indicates the start of a new sub-command) is validated against the allowlist.

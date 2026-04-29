@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 import shlex
+import io
 from typing import Dict, Any, Optional, List, Set
 
 try:
@@ -69,29 +70,40 @@ def _validate_terminal_command(command: str) -> tuple[bool, str]:
     if _is_dangerous_command(command):
         return False, "Command contains dangerous patterns and is blocked for security"
 
-    # Parse command to get base command
-    try:
-        parts = shlex.split(command)
-        if not parts:
-            return False, "Could not parse command"
-        base_cmd = parts[0].lower()
-    except ValueError:
-        # If shlex fails, do basic check
-        base_cmd = command.strip().split()[0].lower()
+    # Shell operators that separate commands
+    operators = {';', '&&', '||', '|', '&'}
 
-    # Check if base command is in allowlist
-    # Also check first part of piped commands
-    for subcmd in command.split('|'):
-        subcmd_parts = subcmd.strip().split()
-        if subcmd_parts:
-            sub_base = subcmd_parts[0].lower().strip()
-            # Allow common shell built-ins and safe commands
-            if sub_base not in ALLOWED_COMMANDS and not sub_base.startswith('./'):
-                # Special case: check for qualified paths like /bin/ls
-                if '/' in sub_base:
-                    sub_base = os.path.basename(sub_base)
-                    if sub_base not in ALLOWED_COMMANDS:
-                        return False, f"Command '{sub_base}' not in allowed command list"
+    try:
+        # Use shlex with punctuation_chars to correctly identify shell operators
+        lexer = shlex.shlex(io.StringIO(command), posix=True, punctuation_chars=True)
+        tokens = list(lexer)
+
+        if not tokens:
+            return False, "Could not parse command"
+
+        # The first token is always a command
+        is_next_command = True
+
+        for token in tokens:
+            if token in operators:
+                is_next_command = True
+                continue
+
+            if is_next_command:
+                base_cmd = token.lower()
+                # Allow relative execution and common shell built-ins
+                if base_cmd not in ALLOWED_COMMANDS and not base_cmd.startswith('./'):
+                    # Check for absolute/qualified paths
+                    if '/' in base_cmd:
+                        base_cmd = os.path.basename(base_cmd)
+                        if base_cmd not in ALLOWED_COMMANDS:
+                            return False, f"Command '{token}' not in allowed command list"
+                    else:
+                        return False, f"Command '{token}' not in allowed command list"
+                is_next_command = False
+    except Exception as e:
+        # Fallback for complex commands that might trip up shlex
+        return False, f"Command parsing error: {str(e)}"
 
     return True, ""
 
