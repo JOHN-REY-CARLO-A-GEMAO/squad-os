@@ -69,29 +69,39 @@ def _validate_terminal_command(command: str) -> tuple[bool, str]:
     if _is_dangerous_command(command):
         return False, "Command contains dangerous patterns and is blocked for security"
 
-    # Parse command to get base command
+    # Use shlex to tokenize with support for shell operators
+    import io
     try:
-        parts = shlex.split(command)
-        if not parts:
-            return False, "Could not parse command"
-        base_cmd = parts[0].lower()
-    except ValueError:
-        # If shlex fails, do basic check
-        base_cmd = command.strip().split()[0].lower()
+        s = shlex.shlex(io.StringIO(command), punctuation_chars=True)
+        s.whitespace_split = True
+        tokens = list(s)
+        if not tokens:
+            return False, "Empty command not allowed"
+    except Exception as e:
+        return False, f"Command parsing error: {str(e)}"
 
-    # Check if base command is in allowlist
-    # Also check first part of piped commands
-    for subcmd in command.split('|'):
-        subcmd_parts = subcmd.strip().split()
-        if subcmd_parts:
-            sub_base = subcmd_parts[0].lower().strip()
-            # Allow common shell built-ins and safe commands
-            if sub_base not in ALLOWED_COMMANDS and not sub_base.startswith('./'):
-                # Special case: check for qualified paths like /bin/ls
-                if '/' in sub_base:
-                    sub_base = os.path.basename(sub_base)
-                    if sub_base not in ALLOWED_COMMANDS:
-                        return False, f"Command '{sub_base}' not in allowed command list"
+    # Identify shell operators that start a new command
+    command_separators = {';', '&&', '||', '|', '&'}
+
+    # Every token after a separator (or the first token) must be in ALLOWED_COMMANDS
+    is_new_command = True
+    for token in tokens:
+        if is_new_command:
+            if token in command_separators:
+                return False, f"Unexpected operator '{token}' at start of command"
+
+            base_cmd = token.lower()
+            if base_cmd not in ALLOWED_COMMANDS:
+                if '/' in base_cmd:
+                    base_cmd = os.path.basename(base_cmd)
+
+                if base_cmd not in ALLOWED_COMMANDS:
+                    return False, f"Command '{token}' is not in the allowed list"
+
+            is_new_command = False
+
+        elif token in command_separators:
+            is_new_command = True
 
     return True, ""
 
