@@ -7,6 +7,16 @@ import mimetypes
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
 
+def format_timestamp(ts_str):
+    """Safely converts ISO timestamp to HH:MM:SS format."""
+    if not ts_str:
+        return "Unknown"
+    try:
+        dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+        return dt.strftime("%H:%M:%S")
+    except (ValueError, TypeError):
+        return str(ts_str)
+
 # Configuration
 DB_PATHS = ["shared_memory.db", "instance/shared_memory.db"]
 WORKSPACE_DIR = "workspace"
@@ -14,6 +24,11 @@ PROJECTS_DIR = os.path.join(WORKSPACE_DIR, "projects")
 ARCHIVES_DIR = os.path.join(WORKSPACE_DIR, "archives")
 
 st.set_page_config(page_title="SquadOS: Project Command Center", layout="wide", page_icon="🛡️")
+
+# Success notification after mission submission
+if st.session_state.get("mission_submitted"):
+    st.toast("Mission dispatched successfully!", icon="✅")
+    st.session_state.mission_submitted = False
 
 # Auto-refresh every 5 seconds
 st_autorefresh(interval=5000, key="datarefresh")
@@ -97,29 +112,33 @@ def save_uploaded_files(uploaded_files):
     return json.dumps(files_metadata)
 
 def submit_new_mission(prompt, uploaded_files_json=None):
-    """Smart inserter that handles both older and newer database schemas."""
-    for path in DB_PATHS:
-        if os.path.exists(path):
-            try:
-                conn = sqlite3.connect(path)
-                cursor = conn.cursor()
-                cursor.execute("PRAGMA table_info(missions)")
-                columns = [c[1] for c in cursor.fetchall()]
-                
-                if 'goal' in columns:
-                    if 'uploaded_files' in columns:
-                        cursor.execute("INSERT INTO missions (goal, status, uploaded_files) VALUES (?, ?, ?)", (prompt, "QUEUED", uploaded_files_json))
-                    else:
-                        cursor.execute("INSERT INTO missions (goal, status) VALUES (?, ?)", (prompt, "QUEUED"))
-                elif 'name' in columns and 'description' in columns:
-                    # Create a unique name based on timestamp
-                    task_name = f"ChatTask_{datetime.now().strftime('%H%M%S')}"
-                    cursor.execute("INSERT INTO missions (name, description, status) VALUES (?, ?, ?)", (task_name, prompt, "QUEUED"))
-                
-                conn.commit()
-                conn.close()
-            except Exception as e:
-                st.error(f"Failed to push to {path}: {e}")
+    """Smart inserter that handles both older and newer database schemas. Returns True if successful."""
+    success = False
+    with st.spinner("Dispatching mission..."):
+        for path in DB_PATHS:
+            if os.path.exists(path):
+                try:
+                    conn = sqlite3.connect(path)
+                    cursor = conn.cursor()
+                    cursor.execute("PRAGMA table_info(missions)")
+                    columns = [c[1] for c in cursor.fetchall()]
+
+                    if 'goal' in columns:
+                        if 'uploaded_files' in columns:
+                            cursor.execute("INSERT INTO missions (goal, status, uploaded_files) VALUES (?, ?, ?)", (prompt, "QUEUED", uploaded_files_json))
+                        else:
+                            cursor.execute("INSERT INTO missions (goal, status) VALUES (?, ?)", (prompt, "QUEUED"))
+                    elif 'name' in columns and 'description' in columns:
+                        # Create a unique name based on timestamp
+                        task_name = f"ChatTask_{datetime.now().strftime('%H%M%S')}"
+                        cursor.execute("INSERT INTO missions (name, description, status) VALUES (?, ?, ?)", (task_name, prompt, "QUEUED"))
+
+                    conn.commit()
+                    conn.close()
+                    success = True
+                except Exception as e:
+                    st.error(f"Failed to push to {path}: {e}")
+    return success
 
 def load_global_stats():
     conn = get_db_connection()
@@ -169,7 +188,7 @@ with st.sidebar:
         st.write("No active projects.")
     for proj in active_projects:
         label = f"📍 {proj}" if proj == st.session_state.selected_proj else f"🚀 {proj}"
-        if st.button(label, key=f"btn_act_{proj}", width="stretch"):
+        if st.button(label, key=f"btn_act_{proj}", width="stretch", help=f"View details for active project: {proj}"):
             st.session_state.selected_proj = proj
             st.session_state.is_active = True
             st.rerun()
@@ -179,12 +198,12 @@ with st.sidebar:
         st.write("No archived projects.")
     for proj in archived_projects:
         label = f"📍 {proj}" if proj == st.session_state.selected_proj else f"📦 {proj}"
-        if st.button(label, key=f"btn_arc_{proj}", width="stretch"):
+        if st.button(label, key=f"btn_arc_{proj}", width="stretch", help=f"View details for archived project: {proj}"):
             st.session_state.selected_proj = proj
             st.session_state.is_active = False
             st.rerun()
 
-    if st.button("Reset View (Go to Chat)", width="stretch"):
+    if st.button("Reset View (Go to Chat)", width="stretch", shortcut="Esc", help="Clear selection and return to global chat view"):
         st.session_state.selected_proj = None
 
     # Global Stats
@@ -245,7 +264,7 @@ if not selected_project:
                     else:
                         st.write(f"Status: {status}")
         else:
-            st.write("No missions found. Send a message below to start!")
+            st.info("No missions found. Send a message below to start!", icon="💬")
 
     # Chat Input Box
     with st.container():
@@ -253,8 +272,9 @@ if not selected_project:
         if prompt := st.chat_input("Ask SquadOS to do something... (e.g., 'Analyze this document for me')"):
             files_json = save_uploaded_files(uploaded_files)
             if files_json != "ERROR_SIZE":
-                submit_new_mission(prompt, files_json)
-                st.rerun()
+                if submit_new_mission(prompt, files_json):
+                    st.session_state.mission_submitted = True
+                    st.rerun()
 
 else:
     # --- INDIVIDUAL PROJECT VIEW ---
@@ -264,7 +284,7 @@ else:
     with col1:
         st.header(f"Project: `{selected_project}`")
     with col2:
-        if st.button("🔙 Back to Chat"):
+        if st.button("🔙 Back to Chat", shortcut="Esc", help="Return to global chat view", width="stretch"):
             st.session_state.selected_proj = None
             st.rerun()
 
@@ -309,9 +329,9 @@ else:
                                 width="stretch"
                             )
             else:
-                st.write("No visual artifacts found.")
+                st.info("No visual artifacts found.", icon="🖼️")
         else:
-            st.error("Visuals directory missing.")
+            st.info("Visuals directory missing or not yet created.", icon="🖼️")
 
     with tab2:
         st.subheader("Real-time Tool Execution")
@@ -335,17 +355,18 @@ else:
             except Exception as e:
                 st.error(f"Error reading .json log: {e}")
         else:
-            st.write("No `session_log.jsonl` or `session_log.json` found.")
+            st.info("No `session_log.jsonl` or `session_log.json` found.", icon="📜")
 
         if logs:
             for entry in reversed(logs):
-                with st.expander(f"🛠️ {entry.get('tool')} @ {entry.get('timestamp')}", expanded=(entry == logs[-1])):
+                formatted_time = format_timestamp(entry.get('timestamp'))
+                with st.expander(f"🛠️ {entry.get('tool')} @ {formatted_time}", expanded=(entry == logs[-1])):
                     st.write("**Inputs:**")
                     st.code(json.dumps(entry.get('inputs'), indent=2), language="json")
                     st.write("**Output:**")
                     st.code(entry.get('output'))
         elif os.path.exists(log_jsonl) or os.path.exists(log_json):
-            st.write("Log is empty.")
+            st.info("Log is empty.", icon="📜")
 
     with tab3:
         st.subheader("Project Context & Learnings")
@@ -354,7 +375,7 @@ else:
             with open(memory_path, "r") as f:
                 st.markdown(f.read())
         else:
-            st.write("No `project_memory.md` found.")
+            st.info("No `project_memory.md` found.", icon="🧠")
 
     with tab4:
         st.subheader("Pending Commit Reviewer")
@@ -363,9 +384,9 @@ else:
             try:
                 with open(manifest_path, "r") as f:
                     manifest = json.load(f)
-                st.info("The agent has nominated these artifacts as 'Final Outputs'.")
+                st.info("The agent has nominated these artifacts as 'Final Outputs'.", icon="✅")
                 # Manifest rendering logic...
             except Exception as e:
                 st.error(f"Error parsing artifacts.json: {e}")
         else:
-            st.write("Manifest will appear when the project is ready for commit.")
+            st.info("Manifest will appear when the project is ready for commit.", icon="✅")
