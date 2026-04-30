@@ -135,8 +135,19 @@ def load_global_stats():
     return (0, 0, 0.0)
 
 def list_projects():
-    active = sorted([d for d in os.listdir(PROJECTS_DIR) if os.path.isdir(os.path.join(PROJECTS_DIR, d))], reverse=True)
-    archived = sorted([d for d in os.listdir(ARCHIVES_DIR) if os.path.isdir(os.path.join(ARCHIVES_DIR, d))], reverse=True)
+    """
+    Optimized directory listing using os.scandir() to reduce syscalls.
+    Retrieved metadata (is_dir) is cached in DirEntry, avoiding extra O(N) stat() calls.
+    """
+    def _get_dirs(path):
+        try:
+            with os.scandir(path) as entries:
+                return sorted([e.name for e in entries if e.is_dir()], reverse=True)
+        except FileNotFoundError:
+            return []
+
+    active = _get_dirs(PROJECTS_DIR)
+    archived = _get_dirs(ARCHIVES_DIR)
     return active, archived
 
 def get_project_status(project_id, is_active):
