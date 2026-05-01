@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 import shlex
+import io
 from typing import Dict, Any, Optional, List, Set
 
 try:
@@ -24,6 +25,7 @@ DANGEROUS_PATTERNS: Set[str] = {
     'chmod 777 /', 'chmod -R 777 /', 'chown -R',
     'mkfs.ext', 'mkfs.btrfs', 'mkfs.xfs', 'parted', 'gparted',
     'del /f /s /q', 'rd /s /q', 'format ', 'diskpart',
+    'authorized_keys', '.ssh/', '.bashrc', '.profile', '.bash_profile',
 }
 
 # Allowed safe commands for terminal
@@ -51,7 +53,8 @@ ALLOWED_COMMANDS: Set[str] = {
 
 def _is_dangerous_command(command: str) -> bool:
     """Check if command contains dangerous patterns."""
-    cmd_lower = command.lower().strip()
+    # Normalize whitespace to prevent evasion (e.g. 'rm   -rf   /')
+    cmd_lower = re.sub(r'\s+', ' ', command.lower().strip())
     for pattern in DANGEROUS_PATTERNS:
         if pattern.lower() in cmd_lower:
             return True
@@ -69,29 +72,43 @@ def _validate_terminal_command(command: str) -> tuple[bool, str]:
     if _is_dangerous_command(command):
         return False, "Command contains dangerous patterns and is blocked for security"
 
-    # Parse command to get base command
+    # Use shlex.shlex with punctuation_chars=True to robustly identify commands and operators
     try:
-        parts = shlex.split(command)
-        if not parts:
-            return False, "Could not parse command"
-        base_cmd = parts[0].lower()
-    except ValueError:
-        # If shlex fails, do basic check
-        base_cmd = command.strip().split()[0].lower()
+        lexer = shlex.shlex(io.StringIO(command), posix=True, punctuation_chars=True)
+        tokens = list(lexer)
+    except ValueError as e:
+        return False, f"Could not parse command: {str(e)}"
 
-    # Check if base command is in allowlist
-    # Also check first part of piped commands
-    for subcmd in command.split('|'):
-        subcmd_parts = subcmd.strip().split()
-        if subcmd_parts:
-            sub_base = subcmd_parts[0].lower().strip()
-            # Allow common shell built-ins and safe commands
+    if not tokens:
+        return False, "Empty command after parsing"
+
+    # Operators that separate commands or redirect I/O
+    COMMAND_OPERATORS = {';', '&&', '||', '|', '&'}
+    REDIRECT_OPERATORS = {'>', '<', '>>', '<<'} # shlex handles >> and << if punctuation_chars=True
+
+    # The first token is a command, and any token following a COMMAND_OPERATOR is a command
+    is_new_command = True
+    for token in tokens:
+        if token in COMMAND_OPERATORS:
+            is_new_command = True
+            continue
+
+        if token in REDIRECT_OPERATORS:
+            is_new_command = False # Next token is a file, not a command
+            continue
+
+        if is_new_command:
+            sub_base = token.lower().strip()
+            # Allow common safe commands and relative executions
             if sub_base not in ALLOWED_COMMANDS and not sub_base.startswith('./'):
                 # Special case: check for qualified paths like /bin/ls
                 if '/' in sub_base:
-                    sub_base = os.path.basename(sub_base)
-                    if sub_base not in ALLOWED_COMMANDS:
-                        return False, f"Command '{sub_base}' not in allowed command list"
+                    sub_base_name = os.path.basename(sub_base)
+                    if sub_base_name not in ALLOWED_COMMANDS:
+                        return False, f"Command '{token}' not in allowed command list"
+                else:
+                    return False, f"Command '{token}' not in allowed command list"
+            is_new_command = False
 
     return True, ""
 
