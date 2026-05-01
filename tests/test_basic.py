@@ -17,7 +17,7 @@ async def test_agent_tool():
         model_name="gpt-4o-mini"
     )
 
-    result = await agent.execute_task("Write 'Hello SquadOS' to a file named 'hello_async.txt' in the workspace.")
+    result = await agent.execute_task("Write 'Hello SquadOS' to a file named 'hello_async.txt' in the workspace.", context="")
     assert result is not None
 
     file_path = "workspace/hello_async.txt"
