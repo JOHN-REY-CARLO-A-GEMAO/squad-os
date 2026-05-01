@@ -135,8 +135,13 @@ def load_global_stats():
     return (0, 0, 0.0)
 
 def list_projects():
-    active = sorted([d for d in os.listdir(PROJECTS_DIR) if os.path.isdir(os.path.join(PROJECTS_DIR, d))], reverse=True)
-    archived = sorted([d for d in os.listdir(ARCHIVES_DIR) if os.path.isdir(os.path.join(ARCHIVES_DIR, d))], reverse=True)
+    """Optimized directory listing using os.scandir for O(N) performance."""
+    def get_dirs(path):
+        with os.scandir(path) as entries:
+            return sorted([e.name for e in entries if e.is_dir()], reverse=True)
+
+    active = get_dirs(PROJECTS_DIR)
+    archived = get_dirs(ARCHIVES_DIR)
     return active, archived
 
 def get_project_status(project_id, is_active):
