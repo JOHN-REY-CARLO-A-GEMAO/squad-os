@@ -98,6 +98,7 @@ def save_uploaded_files(uploaded_files):
 
 def submit_new_mission(prompt, uploaded_files_json=None):
     """Smart inserter that handles both older and newer database schemas."""
+    success = False
     for path in DB_PATHS:
         if os.path.exists(path):
             try:
@@ -118,8 +119,10 @@ def submit_new_mission(prompt, uploaded_files_json=None):
                 
                 conn.commit()
                 conn.close()
+                success = True
             except Exception as e:
                 st.error(f"Failed to push to {path}: {e}")
+    return success
 
 def load_global_stats():
     conn = get_db_connection()
@@ -169,7 +172,7 @@ with st.sidebar:
         st.write("No active projects.")
     for proj in active_projects:
         label = f"📍 {proj}" if proj == st.session_state.selected_proj else f"🚀 {proj}"
-        if st.button(label, key=f"btn_act_{proj}", width="stretch"):
+        if st.button(label, key=f"btn_act_{proj}", width="stretch", help=f"Open active project: {proj}"):
             st.session_state.selected_proj = proj
             st.session_state.is_active = True
             st.rerun()
@@ -179,7 +182,7 @@ with st.sidebar:
         st.write("No archived projects.")
     for proj in archived_projects:
         label = f"📍 {proj}" if proj == st.session_state.selected_proj else f"📦 {proj}"
-        if st.button(label, key=f"btn_arc_{proj}", width="stretch"):
+        if st.button(label, key=f"btn_arc_{proj}", width="stretch", help=f"Open archived project: {proj}"):
             st.session_state.selected_proj = proj
             st.session_state.is_active = False
             st.rerun()
@@ -249,12 +252,19 @@ if not selected_project:
 
     # Chat Input Box
     with st.container():
-        uploaded_files = st.file_uploader("📎 Attach documents, images, videos, etc.", accept_multiple_files=True, label_visibility="collapsed")
+        uploaded_files = st.file_uploader(
+            "📎 Attach documents, images, videos, etc.",
+            accept_multiple_files=True,
+            label_visibility="collapsed",
+            help="Upload files for the mission (Max 200MB per file, 500MB total)"
+        )
         if prompt := st.chat_input("Ask SquadOS to do something... (e.g., 'Analyze this document for me')"):
-            files_json = save_uploaded_files(uploaded_files)
-            if files_json != "ERROR_SIZE":
-                submit_new_mission(prompt, files_json)
-                st.rerun()
+            with st.spinner("Dispatching mission..."):
+                files_json = save_uploaded_files(uploaded_files)
+                if files_json != "ERROR_SIZE":
+                    if submit_new_mission(prompt, files_json):
+                        st.toast("Mission dispatched successfully! 🚀")
+                        st.rerun()
 
 else:
     # --- INDIVIDUAL PROJECT VIEW ---
@@ -309,7 +319,7 @@ else:
                                 width="stretch"
                             )
             else:
-                st.write("No visual artifacts found.")
+                st.info("No visual artifacts found.", icon="🖼️")
         else:
             st.error("Visuals directory missing.")
 
@@ -345,7 +355,7 @@ else:
                     st.write("**Output:**")
                     st.code(entry.get('output'))
         elif os.path.exists(log_jsonl) or os.path.exists(log_json):
-            st.write("Log is empty.")
+            st.info("Log is empty.", icon="📜")
 
     with tab3:
         st.subheader("Project Context & Learnings")
@@ -354,7 +364,7 @@ else:
             with open(memory_path, "r") as f:
                 st.markdown(f.read())
         else:
-            st.write("No `project_memory.md` found.")
+            st.info("No `project_memory.md` found.", icon="🧠")
 
     with tab4:
         st.subheader("Pending Commit Reviewer")
@@ -368,4 +378,4 @@ else:
             except Exception as e:
                 st.error(f"Error parsing artifacts.json: {e}")
         else:
-            st.write("Manifest will appear when the project is ready for commit.")
+            st.info("Manifest will appear when the project is ready for commit.", icon="✅")
