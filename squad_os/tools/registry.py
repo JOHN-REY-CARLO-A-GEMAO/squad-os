@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 import shlex
+import io
 from typing import Dict, Any, Optional, List, Set
 
 try:
@@ -25,6 +26,10 @@ DANGEROUS_PATTERNS: Set[str] = {
     'mkfs.ext', 'mkfs.btrfs', 'mkfs.xfs', 'parted', 'gparted',
     'del /f /s /q', 'rd /s /q', 'format ', 'diskpart',
 }
+
+# Shell operators and redirection
+COMMAND_OPERATORS: Set[str] = {';', '&&', '||', '|', '&'}
+REDIRECT_OPERATORS: Set[str] = {'>', '<', '>>', '<<'}
 
 # Allowed safe commands for terminal
 ALLOWED_COMMANDS: Set[str] = {
@@ -61,6 +66,7 @@ def _is_dangerous_command(command: str) -> bool:
     return False
 
 
+
 def _validate_terminal_command(command: str) -> tuple[bool, str]:
     """Validate terminal command against allowlist and dangerous patterns."""
     if not command or not command.strip():
@@ -69,29 +75,43 @@ def _validate_terminal_command(command: str) -> tuple[bool, str]:
     if _is_dangerous_command(command):
         return False, "Command contains dangerous patterns and is blocked for security"
 
-    # Parse command to get base command
+    # Robust parsing of chained commands using shlex
     try:
-        parts = shlex.split(command)
-        if not parts:
-            return False, "Could not parse command"
-        base_cmd = parts[0].lower()
-    except ValueError:
-        # If shlex fails, do basic check
-        base_cmd = command.strip().split()[0].lower()
+        lexer = shlex.shlex(io.StringIO(command), punctuation_chars=True)
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError as e:
+        return False, f"Could not parse command: {str(e)}"
 
-    # Check if base command is in allowlist
-    # Also check first part of piped commands
-    for subcmd in command.split('|'):
-        subcmd_parts = subcmd.strip().split()
-        if subcmd_parts:
-            sub_base = subcmd_parts[0].lower().strip()
-            # Allow common shell built-ins and safe commands
-            if sub_base not in ALLOWED_COMMANDS and not sub_base.startswith('./'):
-                # Special case: check for qualified paths like /bin/ls
-                if '/' in sub_base:
-                    sub_base = os.path.basename(sub_base)
-                    if sub_base not in ALLOWED_COMMANDS:
-                        return False, f"Command '{sub_base}' not in allowed command list"
+    if not tokens:
+        return False, "Empty command not allowed"
+
+    is_new_command = True
+    for token in tokens:
+        # If we see a shell operator, the next non-operator token must be a valid command
+        if token in COMMAND_OPERATORS:
+            is_new_command = True
+            continue
+
+        # Redirection targets are not commands
+        if token in REDIRECT_OPERATORS:
+            is_new_command = False
+            continue
+
+        if is_new_command:
+            base_cmd = token.lower()
+            # Allow commands in allowlist or local executables
+            if base_cmd not in ALLOWED_COMMANDS and not base_cmd.startswith('./'):
+                # Handle absolute/relative paths (e.g., /bin/ls)
+                if '/' in base_cmd:
+                    base_cmd = os.path.basename(base_cmd)
+                    if base_cmd not in ALLOWED_COMMANDS:
+                        return False, f"Command '{token}' not in allowed command list"
+                else:
+                    return False, f"Command '{token}' not in allowed command list"
+
+            # After the command name, subsequent tokens are arguments, not new commands
+            is_new_command = False
 
     return True, ""
 
