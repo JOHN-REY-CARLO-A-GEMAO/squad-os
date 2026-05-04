@@ -135,8 +135,12 @@ def load_global_stats():
     return (0, 0, 0.0)
 
 def list_projects():
-    active = sorted([d for d in os.listdir(PROJECTS_DIR) if os.path.isdir(os.path.join(PROJECTS_DIR, d))], reverse=True)
-    archived = sorted([d for d in os.listdir(ARCHIVES_DIR) if os.path.isdir(os.path.join(ARCHIVES_DIR, d))], reverse=True)
+    # Performance optimization: use os.scandir to reduce syscalls (O(N) vs O(2N))
+    # This is critical as the dashboard auto-refreshes every 5 seconds.
+    with os.scandir(PROJECTS_DIR) as it:
+        active = sorted([entry.name for entry in it if entry.is_dir()], reverse=True)
+    with os.scandir(ARCHIVES_DIR) as it:
+        archived = sorted([entry.name for entry in it if entry.is_dir()], reverse=True)
     return active, archived
 
 def get_project_status(project_id, is_active):
