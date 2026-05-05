@@ -1,0 +1,4 @@
+## 2026-05-05 - Path Traversal in TerminalTool
+**Vulnerability:** The `TerminalTool` allowed executing commands with relative paths (e.g., `cat ../../../secret.txt`), enabling access to files outside the project workspace. It also lacked robust validation for chained commands using shell operators like `;`, `&&`, and `||`.
+**Learning:** Simple string splitting is insufficient for validating shell commands. Shell operators and redirection can be used to bypass naive security checks that only inspect the first word of a command string.
+**Prevention:** Use a proper lexer like `shlex` with `punctuation_chars=True` to identify all subcommands and arguments. Explicitly validate every path-like token against the authorized workspace using `is_safe_path`. Ensure all command operators are identified and the subsequent tokens are re-validated against the command allowlist.
