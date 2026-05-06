@@ -1,0 +1,4 @@
+## 2025-05-15 - Shell Command Injection via Chained Commands
+**Vulnerability:** Command allowlists can be bypassed using shell operators (`;`, `&&`, `||`, `|`, `&`) if the validation only checks the first token of the input string.
+**Learning:** `shlex.split()` or basic `.split()` is insufficient for validating multi-command shell inputs because they don't explicitly distinguish between command tokens and shell operators. An attacker can append a malicious command after a legitimate one (e.g., `ls && rm -rf /`).
+**Prevention:** Use `shlex.shlex(punctuation_chars=True)` to properly tokenize the full command string, including shell operators. Iterate through all tokens and reset the "new command" validation state whenever a shell operator is encountered, ensuring EVERY sub-command in the chain is validated against the allowlist. Additionally, validate every path-like token for path traversal relative to the workspace.
