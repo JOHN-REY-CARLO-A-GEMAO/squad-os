@@ -1,0 +1,4 @@
+## 2026-05-07 - Terminal Command Injection and Path Traversal
+**Vulnerability:** The `TerminalTool` command validation was bypassable via shell operators (`;`, `&&`, `||`, `|`, `&`) because it only checked the first part of the entire command string. Additionally, command arguments were not checked for path traversal, allowing access to files outside the workspace.
+**Learning:** Simple string splitting is insufficient for validating shell commands. `shlex.shlex` with `punctuation_chars=True` is necessary to properly tokenize shell commands and identify sub-commands separated by operators.
+**Prevention:** Always tokenize shell commands using a proper lexer and validate every sub-command against an allowlist. When providing a workspace context, use `is_safe_path` to validate all command arguments that look like file paths.
