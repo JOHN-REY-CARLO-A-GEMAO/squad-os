@@ -135,8 +135,10 @@ def load_global_stats():
     return (0, 0, 0.0)
 
 def list_projects():
-    active = sorted([d for d in os.listdir(PROJECTS_DIR) if os.path.isdir(os.path.join(PROJECTS_DIR, d))], reverse=True)
-    archived = sorted([d for d in os.listdir(ARCHIVES_DIR) if os.path.isdir(os.path.join(ARCHIVES_DIR, d))], reverse=True)
+    """Returns lists of active and archived project names, optimized with os.scandir."""
+    # os.scandir is O(N) vs os.listdir O(2N) because it avoids separate stat calls for is_dir()
+    active = sorted([entry.name for entry in os.scandir(PROJECTS_DIR) if entry.is_dir()], reverse=True)
+    archived = sorted([entry.name for entry in os.scandir(ARCHIVES_DIR) if entry.is_dir()], reverse=True)
     return active, archived
 
 def get_project_status(project_id, is_active):
