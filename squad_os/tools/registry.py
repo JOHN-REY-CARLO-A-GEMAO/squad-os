@@ -26,6 +26,11 @@ DANGEROUS_PATTERNS: Set[str] = {
     'del /f /s /q', 'rd /s /q', 'format ', 'diskpart',
 }
 
+# Security: Shell operators that separate commands
+COMMAND_OPERATORS: Set[str] = {';', '&&', '||', '|', '&'}
+# Security: Shell redirection operators
+REDIRECT_OPERATORS: Set[str] = {'>', '<', '>>', '<<', '>&', '<&', '&>', '>&'}
+
 # Allowed safe commands for terminal
 ALLOWED_COMMANDS: Set[str] = {
     'ls', 'dir', 'pwd', 'cd', 'cat', 'type', 'head', 'tail', 'less', 'more',
@@ -69,29 +74,48 @@ def _validate_terminal_command(command: str) -> tuple[bool, str]:
     if _is_dangerous_command(command):
         return False, "Command contains dangerous patterns and is blocked for security"
 
-    # Parse command to get base command
+    # Parse command to get tokens including shell operators
     try:
-        parts = shlex.split(command)
-        if not parts:
-            return False, "Could not parse command"
-        base_cmd = parts[0].lower()
-    except ValueError:
-        # If shlex fails, do basic check
-        base_cmd = command.strip().split()[0].lower()
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except Exception as e:
+        return False, f"Could not parse command: {str(e)}"
 
-    # Check if base command is in allowlist
-    # Also check first part of piped commands
-    for subcmd in command.split('|'):
-        subcmd_parts = subcmd.strip().split()
-        if subcmd_parts:
-            sub_base = subcmd_parts[0].lower().strip()
+    if not tokens:
+        return False, "Empty command not allowed"
+
+    is_new_command = True
+    skip_next = False
+    for i, token in enumerate(tokens):
+        if skip_next:
+            skip_next = False
+            continue
+
+        if token in COMMAND_OPERATORS:
+            is_new_command = True
+            continue
+
+        if token in REDIRECT_OPERATORS:
+            skip_next = True
+            continue
+
+        # Handle file descriptor redirection (e.g., 2> or 2>&1)
+        if token.isdigit() and i + 1 < len(tokens) and tokens[i+1] in REDIRECT_OPERATORS:
+            continue
+
+        if is_new_command:
+            base_cmd = token.lower()
             # Allow common shell built-ins and safe commands
-            if sub_base not in ALLOWED_COMMANDS and not sub_base.startswith('./'):
+            if base_cmd not in ALLOWED_COMMANDS and not base_cmd.startswith('./'):
                 # Special case: check for qualified paths like /bin/ls
-                if '/' in sub_base:
-                    sub_base = os.path.basename(sub_base)
-                    if sub_base not in ALLOWED_COMMANDS:
-                        return False, f"Command '{sub_base}' not in allowed command list"
+                if '/' in base_cmd:
+                    base_cmd = os.path.basename(base_cmd)
+                    if base_cmd not in ALLOWED_COMMANDS:
+                        return False, f"Command '{token}' not in allowed command list"
+                else:
+                    return False, f"Command '{token}' not in allowed command list"
+            is_new_command = False
 
     return True, ""
 
