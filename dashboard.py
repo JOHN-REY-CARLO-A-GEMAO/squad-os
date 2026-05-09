@@ -135,9 +135,15 @@ def load_global_stats():
     return (0, 0, 0.0)
 
 def list_projects():
-    active = sorted([d for d in os.listdir(PROJECTS_DIR) if os.path.isdir(os.path.join(PROJECTS_DIR, d))], reverse=True)
-    archived = sorted([d for d in os.listdir(ARCHIVES_DIR) if os.path.isdir(os.path.join(ARCHIVES_DIR, d))], reverse=True)
-    return active, archived
+    """Returns sorted lists of active and archived project directories using optimized scandir."""
+    def _get_dirs(path):
+        try:
+            with os.scandir(path) as it:
+                # Optimized: e.is_dir() uses cached metadata from the same syscall
+                return sorted([e.name for e in it if e.is_dir()], reverse=True)
+        except FileNotFoundError:
+            return []
+    return _get_dirs(PROJECTS_DIR), _get_dirs(ARCHIVES_DIR)
 
 def get_project_status(project_id, is_active):
     if not is_active:
@@ -278,11 +284,19 @@ else:
         st.subheader("Visual Artifacts")
         visuals_path = os.path.join(project_root, "visuals")
         if os.path.exists(visuals_path):
-            files = os.listdir(visuals_path)
             img_exts = ('.png', '.jpg', '.jpeg', '.webp')
             vid_exts = ('.mp4', '.webm')
+            all_exts = img_exts + vid_exts
 
-            visual_files = sorted([f for f in files if f.lower().endswith(img_exts + vid_exts)], reverse=True)
+            # Optimized: Using os.scandir to reduce syscalls when filtering files by extension
+            try:
+                with os.scandir(visuals_path) as it:
+                    visual_files = sorted(
+                        [e.name for e in it if e.is_file() and e.name.lower().endswith(all_exts)],
+                        reverse=True
+                    )
+            except FileNotFoundError:
+                visual_files = []
             if visual_files:
                 cols = st.columns(2)
                 for idx, v_file in enumerate(visual_files):
