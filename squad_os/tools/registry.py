@@ -31,14 +31,14 @@ ALLOWED_COMMANDS: Set[str] = {
     'ls', 'dir', 'pwd', 'cd', 'cat', 'type', 'head', 'tail', 'less', 'more',
     'echo', 'grep', 'find', 'wc', 'sort', 'uniq', 'diff', 'cmp',
     'mkdir', 'touch', 'cp', 'copy', 'mv', 'move', 'rm', 'del', 'rmdir', 'rd',
-    'python', 'python3', 'pip', 'pip3', 'node', 'npm', 'yarn',
+    'python', 'python3', 'pip', 'pip3', 'node', 'npm', 'yarn', 'pnpm',
     'git', 'git clone', 'git status', 'git log', 'git diff', 'git show',
     'curl', 'wget', 'tar', 'zip', 'unzip', 'gzip', 'gunzip',
     'make', 'cmake', 'gcc', 'g++', 'javac', 'java', 'go', 'rustc',
     'docker', 'kubectl', 'terraform', 'ansible-playbook',
     'pytest', 'unittest', 'test', 'coverage',
     'black', 'flake8', 'pylint', 'mypy', 'isort',
-    'cat', 'cut', 'awk', 'sed', 'tr', 'xargs', 'tee',
+    'cut', 'awk', 'sed', 'tr', 'xargs', 'tee',
     'ssh', 'scp', 'sftp', 'rsync', 'nc', 'netcat',
     'ping', 'traceroute', 'tracert', 'nslookup', 'dig', 'host',
     'ps', 'top', 'htop', 'df', 'du', 'free', 'uptime', 'whoami', 'id',
@@ -61,7 +61,7 @@ def _is_dangerous_command(command: str) -> bool:
     return False
 
 
-def _validate_terminal_command(command: str) -> tuple[bool, str]:
+def _validate_terminal_command(command: str, workspace: Optional[str] = None) -> tuple[bool, str]:
     """Validate terminal command against allowlist and dangerous patterns."""
     if not command or not command.strip():
         return False, "Empty command not allowed"
@@ -69,29 +69,51 @@ def _validate_terminal_command(command: str) -> tuple[bool, str]:
     if _is_dangerous_command(command):
         return False, "Command contains dangerous patterns and is blocked for security"
 
-    # Parse command to get base command
+    # Parse command to get tokens, including punctuation as separate tokens
     try:
-        parts = shlex.split(command)
-        if not parts:
-            return False, "Could not parse command"
-        base_cmd = parts[0].lower()
-    except ValueError:
-        # If shlex fails, do basic check
-        base_cmd = command.strip().split()[0].lower()
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        tokens = list(lexer)
+    except ValueError as e:
+        return False, f"Invalid command syntax: {str(e)}"
 
-    # Check if base command is in allowlist
-    # Also check first part of piped commands
-    for subcmd in command.split('|'):
-        subcmd_parts = subcmd.strip().split()
-        if subcmd_parts:
-            sub_base = subcmd_parts[0].lower().strip()
-            # Allow common shell built-ins and safe commands
-            if sub_base not in ALLOWED_COMMANDS and not sub_base.startswith('./'):
-                # Special case: check for qualified paths like /bin/ls
-                if '/' in sub_base:
-                    sub_base = os.path.basename(sub_base)
-                    if sub_base not in ALLOWED_COMMANDS:
-                        return False, f"Command '{sub_base}' not in allowed command list"
+    if not tokens:
+        return False, "No tokens found in command"
+
+    # Command operators that start a new execution context
+    COMMAND_OPERATORS = {';', '&&', '||', '|', '&'}
+
+    expect_command = True
+    for token in tokens:
+        # If we see an operator, the next non-operator token must be a command
+        if token in COMMAND_OPERATORS:
+            expect_command = True
+            continue
+
+        if expect_command:
+            base_cmd = token.lower()
+
+            # Check if base command is in allowlist
+            if base_cmd in ALLOWED_COMMANDS:
+                expect_command = False
+                continue
+
+            # Check for qualified paths like /bin/ls or ./script.sh
+            if '/' in token:
+                if token.startswith('./'):
+                    # Check if relative path stays within workspace
+                    if workspace and not is_safe_path(workspace, token):
+                        return False, f"Command '{token}' is outside the safe workspace"
+                    expect_command = False
+                    continue
+
+                basename = os.path.basename(token).lower()
+                if basename in ALLOWED_COMMANDS:
+                    expect_command = False
+                    continue
+
+                return False, f"Command '{token}' not in allowed command list"
+
+            return False, f"Command '{token}' not in allowed command list"
 
     return True, ""
 
@@ -200,7 +222,7 @@ class TerminalTool(BaseTool):
 
     async def execute(self, command: str) -> str:
         # Security: Validate command before execution
-        is_valid, error_msg = _validate_terminal_command(command)
+        is_valid, error_msg = _validate_terminal_command(command, self.workspace)
         if not is_valid:
             return f"SECURITY_ERROR: {error_msg}"
 
