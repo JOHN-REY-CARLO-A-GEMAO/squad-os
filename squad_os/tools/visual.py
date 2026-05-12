@@ -67,6 +67,14 @@ class BrowserControlTool(BaseTool):
 
             if action == "navigate":
                 if not url: return "Error: URL is required for navigate action."
+                if url.startswith("file://"):
+                    path = url[7:]
+                    # Validate against a broader workspace root or specific project dir
+                    # Since this tool can be used with or without branch_id,
+                    # we should ideally use a common base.
+                    base_workspace = "workspace"
+                    if not is_safe_path(base_workspace, path):
+                        return f"Error: Access denied. Local file path '{path}' is outside the workspace."
                 await self._page.goto(url)
                 if wait_for:
                     await self._page.wait_for_selector(wait_for)
@@ -87,7 +95,7 @@ class BrowserControlTool(BaseTool):
                 return f"Typed '{text}' into {selector}"
 
             elif action == "screenshot":
-                desc = description or "screenshot"
+                desc = os.path.basename(description or "screenshot")
                 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                 filename = f"{timestamp}_{desc.replace(' ', '_')}.png"
                 filepath = os.path.join(self.output_dir, filename)
@@ -113,7 +121,7 @@ class BrowserControlTool(BaseTool):
                 video_path = await video_obj.path()
                 if video_path and os.path.exists(video_path):
                     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                    desc = description or "demo"
+                    desc = os.path.basename(description or "demo")
                     mp4_filename = f"{timestamp}_{desc.replace(' ', '_')}.mp4"
                     mp4_filepath = os.path.join(self.output_dir, mp4_filename)
 

@@ -61,37 +61,66 @@ def _is_dangerous_command(command: str) -> bool:
     return False
 
 
-def _validate_terminal_command(command: str) -> tuple[bool, str]:
-    """Validate terminal command against allowlist and dangerous patterns."""
+def _validate_terminal_command(command: str, workspace: str = "workspace") -> tuple[bool, str]:
+    """Validate terminal command against allowlist, dangerous patterns, and path traversal."""
     if not command or not command.strip():
         return False, "Empty command not allowed"
 
     if _is_dangerous_command(command):
         return False, "Command contains dangerous patterns and is blocked for security"
 
-    # Parse command to get base command
-    try:
-        parts = shlex.split(command)
-        if not parts:
-            return False, "Could not parse command"
-        base_cmd = parts[0].lower()
-    except ValueError:
-        # If shlex fails, do basic check
-        base_cmd = command.strip().split()[0].lower()
+    # Robust splitting by shell operators while respecting quotes
+    COMMAND_OPERATORS = {';', '&&', '||', '|', '&'}
 
-    # Check if base command is in allowlist
-    # Also check first part of piped commands
-    for subcmd in command.split('|'):
-        subcmd_parts = subcmd.strip().split()
-        if subcmd_parts:
-            sub_base = subcmd_parts[0].lower().strip()
-            # Allow common shell built-ins and safe commands
-            if sub_base not in ALLOWED_COMMANDS and not sub_base.startswith('./'):
-                # Special case: check for qualified paths like /bin/ls
-                if '/' in sub_base:
-                    sub_base = os.path.basename(sub_base)
-                    if sub_base not in ALLOWED_COMMANDS:
-                        return False, f"Command '{sub_base}' not in allowed command list"
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError as e:
+        return False, f"Command parsing error: {str(e)}"
+
+    current_segment = []
+    segments = []
+
+    for token in tokens:
+        if token in COMMAND_OPERATORS:
+            if current_segment:
+                segments.append(current_segment)
+                current_segment = []
+        else:
+            current_segment.append(token)
+    if current_segment:
+        segments.append(current_segment)
+
+    for parts in segments:
+        if not parts:
+            continue
+
+        base_cmd = parts[0].lower()
+
+        # Validate base command
+        if base_cmd.startswith('./'):
+            if not is_safe_path(workspace, base_cmd):
+                return False, f"Access denied. Command path '{base_cmd}' is outside the workspace."
+        else:
+            # Check if base command is in allowlist
+            # Allow absolute paths if the basename is in ALLOWED_COMMANDS
+            check_cmd = os.path.basename(base_cmd) if '/' in base_cmd else base_cmd
+            if check_cmd not in ALLOWED_COMMANDS:
+                return False, f"Command '{check_cmd}' not in allowed command list"
+
+        # Validate all parts for path traversal
+        for i, part in enumerate(parts):
+            # Check any part that looks like a path or contains traversal patterns
+            if '/' in part or '..' in part:
+                # If it's the base command and it's absolute, we allow it if its basename is allowed
+                if i == 0 and os.path.isabs(part):
+                    check_cmd = os.path.basename(part)
+                    if check_cmd in ALLOWED_COMMANDS:
+                        continue
+
+                if not is_safe_path(workspace, part):
+                    return False, f"Access denied. Path '{part}' is outside the workspace."
 
     return True, ""
 
@@ -200,7 +229,7 @@ class TerminalTool(BaseTool):
 
     async def execute(self, command: str) -> str:
         # Security: Validate command before execution
-        is_valid, error_msg = _validate_terminal_command(command)
+        is_valid, error_msg = _validate_terminal_command(command, workspace=self.workspace)
         if not is_valid:
             return f"SECURITY_ERROR: {error_msg}"
 
