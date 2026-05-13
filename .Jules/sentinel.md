@@ -1,0 +1,4 @@
+## 2025-05-15 - Terminal Command Injection and Path Traversal
+**Vulnerability:** `TerminalTool` allowed command chaining (e.g., `ls ; whoami`) and path traversal via arguments (e.g., `ls ../..`). The validator only checked the first command and ignored arguments.
+**Learning:** Simple string splitting or regex for command validation is insufficient for shell commands. Shell operators like `;`, `&&`, `||`, and `|` can be used to bypass single-command checks. Arguments must also be validated if they interact with the filesystem.
+**Prevention:** Use `shlex.shlex` with `punctuation_chars=True` to properly tokenize shell commands. Iterate through all tokens, identifying command separators, and validate every base command and every path-like argument against a strict allowlist and safety utility.
