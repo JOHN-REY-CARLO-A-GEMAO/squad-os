@@ -61,7 +61,7 @@ def _is_dangerous_command(command: str) -> bool:
     return False
 
 
-def _validate_terminal_command(command: str) -> tuple[bool, str]:
+def _validate_terminal_command(command: str, workspace: str) -> tuple[bool, str]:
     """Validate terminal command against allowlist and dangerous patterns."""
     if not command or not command.strip():
         return False, "Empty command not allowed"
@@ -69,15 +69,20 @@ def _validate_terminal_command(command: str) -> tuple[bool, str]:
     if _is_dangerous_command(command):
         return False, "Command contains dangerous patterns and is blocked for security"
 
-    # Parse command to get base command
+    # Parse command to check all arguments for path traversal
     try:
         parts = shlex.split(command)
         if not parts:
             return False, "Could not parse command"
-        base_cmd = parts[0].lower()
+
+        # Check all parts for path traversal
+        for part in parts:
+            # If it looks like a path or has traversal patterns
+            if '/' in part or '\\' in part or '..' in part:
+                if not is_safe_path(workspace, part):
+                    return False, f"Access denied. Path '{part}' is outside the workspace."
     except ValueError:
-        # If shlex fails, do basic check
-        base_cmd = command.strip().split()[0].lower()
+        return False, "Could not parse command"
 
     # Check if base command is in allowlist
     # Also check first part of piped commands
@@ -89,9 +94,11 @@ def _validate_terminal_command(command: str) -> tuple[bool, str]:
             if sub_base not in ALLOWED_COMMANDS and not sub_base.startswith('./'):
                 # Special case: check for qualified paths like /bin/ls
                 if '/' in sub_base:
-                    sub_base = os.path.basename(sub_base)
-                    if sub_base not in ALLOWED_COMMANDS:
+                    sub_base_name = os.path.basename(sub_base)
+                    if sub_base_name not in ALLOWED_COMMANDS:
                         return False, f"Command '{sub_base}' not in allowed command list"
+                else:
+                    return False, f"Command '{sub_base}' not in allowed command list"
 
     return True, ""
 
@@ -200,7 +207,7 @@ class TerminalTool(BaseTool):
 
     async def execute(self, command: str) -> str:
         # Security: Validate command before execution
-        is_valid, error_msg = _validate_terminal_command(command)
+        is_valid, error_msg = _validate_terminal_command(command, self.workspace)
         if not is_valid:
             return f"SECURITY_ERROR: {error_msg}"
 
