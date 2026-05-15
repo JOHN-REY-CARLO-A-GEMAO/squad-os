@@ -184,8 +184,9 @@ with st.sidebar:
             st.session_state.is_active = False
             st.rerun()
 
-    if st.button("Reset View (Go to Chat)", width="stretch"):
+    if st.button("Reset View (Go to Chat)", width="stretch", help="Return to the main mission control chat"):
         st.session_state.selected_proj = None
+        st.rerun()
 
     # Global Stats
     stats = load_global_stats()
@@ -264,7 +265,7 @@ else:
     with col1:
         st.header(f"Project: `{selected_project}`")
     with col2:
-        if st.button("🔙 Back to Chat"):
+        if st.button("🔙 Back to Chat", shortcut="Esc", help="Return to the main mission control chat (Esc)"):
             st.session_state.selected_proj = None
             st.rerun()
 
