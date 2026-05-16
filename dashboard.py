@@ -121,6 +121,7 @@ def submit_new_mission(prompt, uploaded_files_json=None):
             except Exception as e:
                 st.error(f"Failed to push to {path}: {e}")
 
+@st.cache_data(ttl=60)
 def load_global_stats():
     conn = get_db_connection()
     if conn:
@@ -129,14 +130,22 @@ def load_global_stats():
             cursor.execute("SELECT SUM(prompt_tokens), SUM(completion_tokens), SUM(cost_usd) FROM tasks")
             stats = cursor.fetchone()
             conn.close()
-            return stats
+            if stats:
+                # Convert sqlite3.Row to tuple for serializability
+                return tuple(stats)
         except Exception:
             pass
     return (0, 0, 0.0)
 
 def list_projects():
-    active = sorted([d for d in os.listdir(PROJECTS_DIR) if os.path.isdir(os.path.join(PROJECTS_DIR, d))], reverse=True)
-    archived = sorted([d for d in os.listdir(ARCHIVES_DIR) if os.path.isdir(os.path.join(ARCHIVES_DIR, d))], reverse=True)
+    def get_dirs(path):
+        if not os.path.exists(path):
+            return []
+        with os.scandir(path) as entries:
+            return sorted([e.name for e in entries if e.is_dir()], reverse=True)
+
+    active = get_dirs(PROJECTS_DIR)
+    archived = get_dirs(ARCHIVES_DIR)
     return active, archived
 
 def get_project_status(project_id, is_active):
@@ -278,11 +287,15 @@ else:
         st.subheader("Visual Artifacts")
         visuals_path = os.path.join(project_root, "visuals")
         if os.path.exists(visuals_path):
-            files = os.listdir(visuals_path)
             img_exts = ('.png', '.jpg', '.jpeg', '.webp')
             vid_exts = ('.mp4', '.webm')
+            allowed_exts = img_exts + vid_exts
 
-            visual_files = sorted([f for f in files if f.lower().endswith(img_exts + vid_exts)], reverse=True)
+            with os.scandir(visuals_path) as entries:
+                visual_files = sorted(
+                    [e.name for e in entries if e.is_file() and e.name.lower().endswith(allowed_exts)],
+                    reverse=True
+                )
             if visual_files:
                 cols = st.columns(2)
                 for idx, v_file in enumerate(visual_files):

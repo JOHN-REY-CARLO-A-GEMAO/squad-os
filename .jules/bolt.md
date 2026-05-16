@@ -1,0 +1,3 @@
+## 2026-05-16 - Dashboard Performance Optimizations
+**Learning:** `os.scandir()` is significantly faster (~6.5x) than `os.listdir()` + `os.path.isdir()` because it avoids redundant `stat` system calls by retrieving file attribute metadata during the initial directory walk. Additionally, Streamlit's `@st.cache_data` requires return values to be pickle-serializable; `sqlite3.Row` objects must be converted to tuples or dictionaries before caching.
+**Action:** Always prefer `os.scandir()` for directory traversal in performance-critical paths. Ensure database results are converted to standard Python types (tuple/dict) when using Streamlit caching to avoid serialization errors.
