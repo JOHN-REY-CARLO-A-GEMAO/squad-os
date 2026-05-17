@@ -1,0 +1,3 @@
+## 2024-05-17 - Database Indexing & Migration Optimization
+**Learning:** SQLite queries on status columns and foreign keys (like mission_id) are major bottlenecks without explicit indexes, showing up to 200x performance degradation on large datasets. Additionally, the initial migration logic ran before all tables were created, preventing migrations from targeting tables defined later in the initialization sequence.
+**Action:** Always include indexes for frequently filtered/joined columns. Ensure migration logic runs after the full schema is initialized to avoid "no such table" errors during schema updates.
