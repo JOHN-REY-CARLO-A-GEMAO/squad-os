@@ -264,7 +264,7 @@ else:
     with col1:
         st.header(f"Project: `{selected_project}`")
     with col2:
-        if st.button("🔙 Back to Chat"):
+        if st.button("🔙 Back to Chat", shortcut="Esc"):
             st.session_state.selected_proj = None
             st.rerun()
 
