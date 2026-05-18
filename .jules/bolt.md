@@ -1,0 +1,3 @@
+## 2026-05-18 - Optimized directory traversal and stat caching in dashboard
+**Learning:** In Python, `os.scandir()` is significantly more efficient than `os.listdir()` when combined with file type checks (like `os.path.isdir`), as it avoids redundant system calls by returning `DirEntry` objects that already contain file attributes. Caching database aggregates in Streamlit with `@st.cache_data` is essential to prevent performance degradation as the database grows, especially with frequent auto-refresh cycles.
+**Action:** Always prefer `os.scandir()` for directory traversal when file metadata is needed. Use `@st.cache_data` for read-only database operations that don't require real-time accuracy on every single refresh.
