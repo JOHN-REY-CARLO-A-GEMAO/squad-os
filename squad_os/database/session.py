@@ -154,6 +154,39 @@ async def init_db():
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        # 5. HITL Recovery Table
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS mission_interrupts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                mission_id INTEGER NOT NULL,
+                task_idx INTEGER,
+                context TEXT,
+                error_message TEXT,
+                user_guidance TEXT,
+                status TEXT DEFAULT 'PENDING',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (mission_id) REFERENCES missions (id) ON DELETE CASCADE
+            )
+        """)
+        await db.commit()
+
+async def init_interrupts_table():
+    """Create the mission_interrupts table if it doesn't exist."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS mission_interrupts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                mission_id INTEGER NOT NULL,
+                task_idx INTEGER,
+                context TEXT,
+                error_message TEXT,
+                user_guidance TEXT,
+                status TEXT DEFAULT 'PENDING',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (mission_id) REFERENCES missions (id) ON DELETE CASCADE
+            )
+        """)
         await db.commit()
 
 # --- MISSION & TASK HELPERS ---
@@ -270,3 +303,35 @@ async def read_blackboard(key: str):
         async with db.execute("SELECT value FROM blackboard WHERE key = ?", (key,)) as cursor:
             row = await cursor.fetchone()
             return row[0] if row else None
+
+# --- HITL INTERRUPT HELPERS ---
+
+async def create_interrupt(mission_id: int, task_idx: Optional[int] = None, context: Optional[str] = None, error_message: Optional[str] = None) -> int:
+    """Create a new PENDING interrupt for a mission. Returns the new interrupt id."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "INSERT INTO mission_interrupts (mission_id, task_idx, context, error_message, status) VALUES (?, ?, ?, ?, 'PENDING')",
+            (mission_id, task_idx, context, error_message)
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+async def get_pending_interrupt(mission_id: int) -> Optional[Dict[str, Any]]:
+    """Return the oldest PENDING interrupt for the given mission_id, or None if no pending interrupt exists."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM mission_interrupts WHERE mission_id = ? AND status = 'PENDING' ORDER BY id ASC LIMIT 1",
+            (mission_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+async def update_interrupt_guidance(interrupt_id: int, user_guidance: str):
+    """Store user guidance for an interrupt and mark it RESOLVED."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE mission_interrupts SET user_guidance = ?, status = 'RESOLVED' WHERE id = ?",
+            (user_guidance, interrupt_id)
+        )
+        await db.commit()

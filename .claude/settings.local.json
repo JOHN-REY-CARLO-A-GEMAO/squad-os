@@ -2,7 +2,11 @@
   "permissions": {
     "allow": [
       "WebSearch",
-      "Bash(python:-m streamlit run dashboard.py)"
+      "Bash(python:-m streamlit run dashboard.py)",
+      "Bash(git add:*)",
+      "Bash(git commit -m 'docs: add design spec for SquadOS reliability and performance upgrades':*)",
+      "Bash(python3:-m pytest)",
+      "Bash(python3:test_hitl_db.py)"
     ]
   }
 }
