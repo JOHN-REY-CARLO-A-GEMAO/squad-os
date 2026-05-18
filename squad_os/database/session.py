@@ -6,6 +6,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
+from squad_os.core.db_pool import retry_on_locked
 
 DB_PATH = "shared_memory.db"
 
@@ -34,6 +35,9 @@ class MissionRecord(BaseModel):
     goal: str
     status: str = MissionStatus.PENDING.value
     uploaded_files: Optional[str] = None  # JSON string containing file metadata
+    max_tokens: int = 0  # 0 = unlimited
+    max_turns: int = 0  # 0 = unlimited
+    max_cost_usd: float = 0.0  # 0.0 = unlimited
     created_at: datetime = Field(default_factory=datetime.now)
 
 class TaskRecord(BaseModel):
@@ -66,8 +70,9 @@ async def _run_migrations(db: aiosqlite.Connection, current_version: int) -> int
     """Run sequential migrations. Returns new schema version."""
     migrations = {
         0: lambda db: db.execute("ALTER TABLE missions ADD COLUMN uploaded_files TEXT"),
-        # Add future migrations here:
-        # 1: lambda db: db.execute("ALTER TABLE tasks ADD COLUMN new_column TEXT"),
+        1: lambda db: db.execute("ALTER TABLE missions ADD COLUMN max_tokens INTEGER DEFAULT 0"),
+        2: lambda db: db.execute("ALTER TABLE missions ADD COLUMN max_turns INTEGER DEFAULT 0"),
+        3: lambda db: db.execute("ALTER TABLE missions ADD COLUMN max_cost_usd REAL DEFAULT 0.0"),
     }
 
     new_version = current_version
@@ -95,6 +100,9 @@ async def init_db():
                 goal TEXT NOT NULL,
                 status TEXT NOT NULL,
                 uploaded_files TEXT,
+                max_tokens INTEGER DEFAULT 0,
+                max_turns INTEGER DEFAULT 0,
+                max_cost_usd REAL DEFAULT 0.0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -103,9 +111,9 @@ async def init_db():
         async with db.execute("PRAGMA user_version") as cursor:
             user_version = (await cursor.fetchone())[0]
 
-        if user_version == 0:
-            # Run all migrations from version 0
-            new_version = await _run_migrations(db, 0)
+        if user_version < 4:
+            # Run all migrations from current version
+            new_version = await _run_migrations(db, user_version)
             # Update schema version after migrations
             await db.execute(f"PRAGMA user_version = {new_version}")
 
@@ -191,15 +199,23 @@ async def init_interrupts_table():
 
 # --- MISSION & TASK HELPERS ---
 
-async def create_mission(goal: str, uploaded_files: Optional[str] = None) -> int:
+@retry_on_locked()
+async def create_mission(
+    goal: str,
+    uploaded_files: Optional[str] = None,
+    max_tokens: int = 0,
+    max_turns: int = 0,
+    max_cost_usd: float = 0.0,
+) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
-            "INSERT INTO missions (goal, status, uploaded_files) VALUES (?, ?, ?)",
-            (goal, MissionStatus.IN_PROGRESS.value, uploaded_files)
+            "INSERT INTO missions (goal, status, uploaded_files, max_tokens, max_turns, max_cost_usd) VALUES (?, ?, ?, ?, ?, ?)",
+            (goal, MissionStatus.IN_PROGRESS.value, uploaded_files, max_tokens, max_turns, max_cost_usd),
         )
         await db.commit()
         return cursor.lastrowid
 
+@retry_on_locked()
 async def create_task(mission_id: int, description: str, assigned_agent: str) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
@@ -209,6 +225,7 @@ async def create_task(mission_id: int, description: str, assigned_agent: str) ->
         await db.commit()
         return cursor.lastrowid
 
+@retry_on_locked()
 async def update_task(task_id: int, **kwargs):
     allowed_columns = {
         "mission_id", "description", "assigned_agent", "status",
@@ -228,6 +245,7 @@ async def update_task(task_id: int, **kwargs):
         await db.execute(f"UPDATE tasks SET {keys} WHERE id = ?", values)
         await db.commit()
 
+@retry_on_locked()
 async def update_mission(mission_id: int, status: str):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE missions SET status = ? WHERE id = ?", (status, mission_id))
@@ -235,6 +253,7 @@ async def update_mission(mission_id: int, status: str):
 
 # --- DASHBOARD & INTERACTIVITY HELPERS ---
 
+@retry_on_locked()
 async def create_approval_request(mission_id: int, task_id: int, message: str) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
@@ -268,6 +287,7 @@ async def search_past_memory(query: str) -> List[Dict[str, Any]]:
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
 
+@retry_on_locked()
 async def add_to_queue(goal: str, uploaded_files: Optional[str] = None):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
@@ -288,6 +308,7 @@ async def get_next_queued_mission():
 
 # --- NEW: BLACKBOARD HELPERS (Agent-to-Agent Communication) ---
 
+@retry_on_locked()
 async def update_blackboard(key: str, value: str):
     """Save or update a piece of shared information."""
     async with aiosqlite.connect(DB_PATH) as db:
@@ -306,6 +327,7 @@ async def read_blackboard(key: str):
 
 # --- HITL INTERRUPT HELPERS ---
 
+@retry_on_locked()
 async def create_interrupt(mission_id: int, task_idx: Optional[int] = None, context: Optional[str] = None, error_message: Optional[str] = None) -> int:
     """Create a new PENDING interrupt for a mission. Returns the new interrupt id."""
     async with aiosqlite.connect(DB_PATH) as db:
@@ -327,6 +349,7 @@ async def get_pending_interrupt(mission_id: int) -> Optional[Dict[str, Any]]:
             row = await cursor.fetchone()
             return dict(row) if row else None
 
+@retry_on_locked()
 async def update_interrupt_guidance(interrupt_id: int, user_guidance: str):
     """Store user guidance for an interrupt and mark it RESOLVED."""
     async with aiosqlite.connect(DB_PATH) as db:
@@ -334,4 +357,74 @@ async def update_interrupt_guidance(interrupt_id: int, user_guidance: str):
             "UPDATE mission_interrupts SET user_guidance = ?, status = 'RESOLVED' WHERE id = ?",
             (user_guidance, interrupt_id)
         )
+        await db.commit()
+
+async def get_pending_interrupt_by_id(interrupt_id: int) -> Optional[Dict[str, Any]]:
+    """Fetch a specific interrupt by ID."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM mission_interrupts WHERE id = ?",
+            (interrupt_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+
+# --- BUDGET HELPERS ---
+
+async def get_mission_budget(mission_id: int) -> Optional[Dict[str, Any]]:
+    """Return budget configuration and current usage for a mission."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT max_tokens, max_turns, max_cost_usd FROM missions WHERE id = ?",
+            (mission_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            budget = dict(row)
+
+        # Calculate cumulative token usage across all tasks
+        async with db.execute(
+            "SELECT COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(cost_usd), 0.0) FROM tasks WHERE mission_id = ?",
+            (mission_id,)
+        ) as cursor:
+            usage_row = await cursor.fetchone()
+            if usage_row:
+                budget["prompt_tokens"] = usage_row[0]
+                budget["completion_tokens"] = usage_row[1]
+                budget["current_cost_usd"] = usage_row[2]
+            else:
+                budget["prompt_tokens"] = 0
+                budget["completion_tokens"] = 0
+                budget["current_cost_usd"] = 0.0
+
+        return budget
+
+
+@retry_on_locked()
+async def top_up_mission_budget(
+    mission_id: int,
+    max_tokens: Optional[int] = None,
+    max_turns: Optional[int] = None,
+    max_cost_usd: Optional[float] = None,
+):
+    """Increase budget limits for a paused mission. Only increases, never decreases."""
+    updates = {}
+    if max_tokens is not None:
+        updates["max_tokens"] = max_tokens
+    if max_turns is not None:
+        updates["max_turns"] = max_turns
+    if max_cost_usd is not None:
+        updates["max_cost_usd"] = max_cost_usd
+
+    if not updates:
+        return
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        keys = ", ".join([f"{k} = ?" for k in updates.keys()])
+        values = list(updates.values()) + [mission_id]
+        await db.execute(f"UPDATE missions SET {keys} WHERE id = ?", values)
         await db.commit()

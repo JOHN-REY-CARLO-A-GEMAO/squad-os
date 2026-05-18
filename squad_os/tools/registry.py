@@ -13,6 +13,7 @@ except ImportError:
 
 from squad_os.tools.base import BaseTool
 from squad_os.core.utils import is_safe_path
+from squad_os.core.sandbox import DockerExecutor, SandboxConfig, SandboxResult
 
 # Security: Dangerous command patterns that are blocked
 DANGEROUS_PATTERNS: Set[str] = {
@@ -134,6 +135,7 @@ class WebSearchTool(BaseTool):
     name = "web_search"
     description = "Search the internet for real-time information and trends."
     parameters = {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}
+    risk_tier = 0
 
     async def execute(self, query: str) -> str:
         try:
@@ -146,6 +148,7 @@ class FileWriterTool(BaseTool):
     name = "write_file"
     description = "Write content to a file. Restricted to the current project branch."
     parameters = {"type": "object", "properties": {"filename": {"type": "string"}, "content": {"type": "string"}}, "required": ["filename", "content"]}
+    risk_tier = 1
     def __init__(self, branch_id: Optional[str] = None):
         self.workspace = os.path.join("workspace", "projects", branch_id) if branch_id else "workspace"
 
@@ -166,6 +169,7 @@ class ReadFileTool(BaseTool):
     name = "read_file"
     description = "Read the content of a file. Can read from project root or uploads/ subdirectory."
     parameters = {"type": "object", "properties": {"filename": {"type": "string"}}, "required": ["filename"]}
+    risk_tier = 0
     def __init__(self, branch_id: Optional[str] = None):
         self.workspace = os.path.join("workspace", "projects", branch_id) if branch_id else "workspace"
 
@@ -195,8 +199,19 @@ class TerminalTool(BaseTool):
     name = "terminal"
     description = "Execute shell commands. Restricted to the current project branch."
     parameters = {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}
-    def __init__(self, branch_id: Optional[str] = None):
+    risk_tier = 3
+
+    def __init__(self, branch_id: Optional[str] = None, use_sandbox: bool = True):
         self.workspace = os.path.realpath(os.path.join("workspace", "projects", branch_id)) if branch_id else os.path.realpath("workspace")
+        self.use_sandbox = use_sandbox
+        self._sandbox = DockerExecutor(SandboxConfig(
+            image="alpine:3.19",
+            timeout=30,
+            memory_mb=512,
+            cpus=1.0,
+            max_pids=64,
+            network_enabled=False,
+        ))
 
     async def execute(self, command: str) -> str:
         # Security: Validate command before execution
@@ -205,6 +220,12 @@ class TerminalTool(BaseTool):
             return f"SECURITY_ERROR: {error_msg}"
 
         if not os.path.exists(self.workspace): os.makedirs(self.workspace, exist_ok=True)
+
+        if self.use_sandbox:
+            result = await self._sandbox.execute_command(command, self.workspace)
+            return f"STDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+
+        # Fallback: host execution (Docker unavailable)
         process = await asyncio.create_subprocess_shell(
             command,
             stdout=asyncio.subprocess.PIPE,
@@ -218,8 +239,19 @@ class PythonRunnerTool(BaseTool):
     name = "python_runner"
     description = "Execute Python code. Restricted to the current project branch."
     parameters = {"type": "object", "properties": {"code": {"type": "string"}, "filename": {"type": "string"}}, "required": ["code", "filename"]}
-    def __init__(self, branch_id: Optional[str] = None):
+    risk_tier = 3
+
+    def __init__(self, branch_id: Optional[str] = None, use_sandbox: bool = True):
         self.workspace = os.path.join("workspace", "projects", branch_id) if branch_id else "workspace"
+        self.use_sandbox = use_sandbox
+        self._sandbox = DockerExecutor(SandboxConfig(
+            image="python:3.11-slim",
+            timeout=30,
+            memory_mb=512,
+            cpus=1.0,
+            max_pids=64,
+            network_enabled=False,
+        ))
 
     async def execute(self, code: str, filename: str) -> str:
         # Security check: Prevent path traversal
@@ -232,6 +264,17 @@ class PythonRunnerTool(BaseTool):
             return f"SECURITY_ERROR: {error_msg}"
 
         if not os.path.exists(self.workspace): os.makedirs(self.workspace, exist_ok=True)
+
+        if self.use_sandbox:
+            result = await self._sandbox.execute_python(code, self.workspace, filename)
+            err = result.stderr.strip()
+            if result.timed_out:
+                return f"EXECUTION_TIMEOUT: {err}"
+            if err:
+                return f"EXECUTION_ERROR:\n{err}"
+            return f"SUCCESS:\n{result.stdout.strip()}"
+
+        # Fallback: host execution (Docker unavailable)
         filepath = os.path.join(self.workspace, os.path.basename(filename))
         with open(filepath, "w", encoding="utf-8") as f: f.write(code)
         process = await asyncio.create_subprocess_exec(
@@ -249,6 +292,7 @@ class DashboardApprovalTool(BaseTool):
     name = "dashboard_approval"
     description = "Request human permission via the Dashboard."
     parameters = {"type": "object", "properties": {"message": {"type": "string"}}, "required": ["message"]}
+    risk_tier = 3
     async def execute(self, message: str) -> str:
         from squad_os.database.session import create_approval_request, get_approval_status
         approval_id = await create_approval_request(mission_id=0, task_id=0, message=message)
@@ -263,6 +307,7 @@ class MemorySearchTool(BaseTool):
     name = "memory_search"
     description = "Search long-term memory for past mission data."
     parameters = {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}
+    risk_tier = 0
     async def execute(self, query: str) -> str:
         from squad_os.database.session import search_past_memory
         results = await search_past_memory(query)
@@ -273,6 +318,7 @@ class SetSharedValueTool(BaseTool):
     name = "set_shared_value"
     description = "Store data on the Global Blackboard for other agents to see."
     parameters = {"type": "object", "properties": {"key": {"type": "string"}, "value": {"type": "string"}}, "required": ["key", "value"]}
+    risk_tier = 1
     async def execute(self, key: str, value: str) -> str:
         from squad_os.database.session import update_blackboard
         await update_blackboard(key, value)
@@ -282,6 +328,7 @@ class GetSharedValueTool(BaseTool):
     name = "get_shared_value"
     description = "Read data from the Global Blackboard."
     parameters = {"type": "object", "properties": {"key": {"type": "string"}}, "required": ["key"]}
+    risk_tier = 0
     async def execute(self, key: str) -> str:
         from squad_os.database.session import read_blackboard
         val = await read_blackboard(key)
@@ -304,7 +351,8 @@ class CommitProjectTool(BaseTool):
 
     def __init__(self, agent=None):
         self.agent = agent
-        self.active_branch = None  # Injected by BaseAgent at runtime
+        self.active_branch = None
+        self.risk_tier = 4
 
     async def execute(self, artifacts: List[str]) -> str:
         branch = self.active_branch or (self.agent.active_branch if self.agent else None)
@@ -324,6 +372,7 @@ class DelegateTaskTool(BaseTool):
         "properties": {"specialist_role": {"type": "string"}, "task_description": {"type": "string"}},
         "required": ["specialist_role", "task_description"]
     }
+    risk_tier = 2
     async def execute(self, specialist_role: str, task_description: str) -> str:
         from squad_os.agents.base import BaseAgent
         print(f"🤝 [Handshake]: Delegating to a temporary '{specialist_role}'...")
@@ -341,3 +390,13 @@ class DelegateTaskTool(BaseTool):
         result = await sub_agent.execute_task(task_description, "Context: Working as a specialist.")
         output = result.get("output") or "No output returned."
         return f"DELEGATED RESULT FROM {specialist_role}: {output}"
+
+class RequestHumanInputTool(BaseTool):
+    name = "request_human_input"
+    description = "Pause execution and request guidance from a human operator. Use when you are stuck, need clarification, or the task requires human approval."
+    parameters = {"type": "object", "properties": {"reason": {"type": "string"}}, "required": ["reason"]}
+    risk_tier = 1
+
+    async def execute(self, reason: str) -> str:
+        from squad_os.core.exceptions import AgentInterruptException
+        raise AgentInterruptException(reason=reason)

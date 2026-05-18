@@ -51,8 +51,9 @@ class BaseTool:
     name: str = ""
     description: str = ""
     parameters: Optional[Dict[str, Any]] = None
-    fallback_name: Optional[str] = None  # Name of fallback tool; resolved by agent through tool_inventory
-    fallback_tool: Optional[Any] = None  # Direct tool instance; used if set
+    fallback_name: Optional[str] = None
+    fallback_tool: Optional[Any] = None
+    risk_tier: int = 3
 
     def __init__(self, parameters: Optional[Dict[str, Any]] = None):
         if parameters is None:
