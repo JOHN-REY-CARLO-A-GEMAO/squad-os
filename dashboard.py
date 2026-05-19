@@ -147,6 +147,14 @@ def get_project_status(project_id, is_active):
         return "Awaiting Commit"
     return "Exploring"
 
+def format_log_timestamp(ts_str):
+    """Converts ISO timestamp to a human-readable format (HH:MM:SS)."""
+    try:
+        dt = datetime.fromisoformat(ts_str)
+        return dt.strftime("%H:%M:%S")
+    except Exception:
+        return ts_str
+
 # --- UI ---
 
 st.title("🛡️ SquadOS: Project Command Center")
@@ -339,7 +347,8 @@ else:
 
         if logs:
             for entry in reversed(logs):
-                with st.expander(f"🛠️ {entry.get('tool')} @ {entry.get('timestamp')}", expanded=(entry == logs[-1])):
+                ts = format_log_timestamp(entry.get('timestamp'))
+                with st.expander(f"🛠️ {entry.get('tool')} @ {ts}", expanded=(entry == logs[-1])):
                     st.write("**Inputs:**")
                     st.code(json.dumps(entry.get('inputs'), indent=2), language="json")
                     st.write("**Output:**")
