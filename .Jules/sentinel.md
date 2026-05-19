@@ -1,0 +1,4 @@
+## 2025-05-19 - Terminal Command Validation Bypass
+**Vulnerability:** Terminal command validation was easily bypassed using shell operators like `;`, `&&`, and `||`. Additionally, path traversal was possible through command arguments because they weren't checked against the workspace.
+**Learning:** Simple string splitting on pipes (`|`) is insufficient for validating shell commands. Every part of a command string that could be interpreted as a separate command by the shell must be isolated and validated. Every token that looks like a path must also be verified for traversal.
+**Prevention:** Use a robust regex to split on all common shell operators (`re.split(r'\|\||&&|[|;]', command)`) and use `shlex.split` for safe tokenization of each part. Always pass the workspace context to the validator to enable path traversal checks on arguments.
