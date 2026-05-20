@@ -1,0 +1,4 @@
+## 2025-05-22 - Terminal Command Bypass and Path Traversal
+**Vulnerability:** The `TerminalTool` was vulnerable to command chaining using shell operators (`;`, `&&`, `||`, `|`) because it only validated the first command in the input string. Additionally, it did not check command arguments for path traversal, allowing access to files outside the workspace.
+**Learning:** Naive string splitting or only checking the start of a command string is insufficient for security validation of shell commands. Attackers can use standard shell features to execute arbitrary unallowed commands or access restricted files.
+**Prevention:** Use `shlex.split` to parse the entire command string while respecting quotes. Iterate through all tokens to identify shell operators and ensure every subsequent command segment is re-validated against the allowlist. Check every token that looks like a path against `is_safe_path` to prevent traversal.

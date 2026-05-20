@@ -61,37 +61,50 @@ def _is_dangerous_command(command: str) -> bool:
     return False
 
 
-def _validate_terminal_command(command: str) -> tuple[bool, str]:
-    """Validate terminal command against allowlist and dangerous patterns."""
+def _validate_terminal_command(command: str, workspace: str = None) -> tuple[bool, str]:
+    """Validate terminal command against allowlist, dangerous patterns, and path traversal."""
     if not command or not command.strip():
         return False, "Empty command not allowed"
 
     if _is_dangerous_command(command):
         return False, "Command contains dangerous patterns and is blocked for security"
 
-    # Parse command to get base command
     try:
-        parts = shlex.split(command)
-        if not parts:
-            return False, "Could not parse command"
-        base_cmd = parts[0].lower()
-    except ValueError:
-        # If shlex fails, do basic check
-        base_cmd = command.strip().split()[0].lower()
+        # Use shlex to parse the full command while respecting quotes
+        all_tokens = shlex.split(command)
+        if not all_tokens:
+            return False, "Empty command after parsing"
+    except ValueError as e:
+        return False, f"Invalid command syntax: {str(e)}"
 
-    # Check if base command is in allowlist
-    # Also check first part of piped commands
-    for subcmd in command.split('|'):
-        subcmd_parts = subcmd.strip().split()
-        if subcmd_parts:
-            sub_base = subcmd_parts[0].lower().strip()
-            # Allow common shell built-ins and safe commands
-            if sub_base not in ALLOWED_COMMANDS and not sub_base.startswith('./'):
-                # Special case: check for qualified paths like /bin/ls
-                if '/' in sub_base:
-                    sub_base = os.path.basename(sub_base)
-                    if sub_base not in ALLOWED_COMMANDS:
-                        return False, f"Command '{sub_base}' not in allowed command list"
+    # Identify command segments based on shell operators
+    operators = {'|', '||', '&&', ';'}
+
+    # We want to validate the first token, and any token immediately following an operator
+    check_next_is_base = True
+
+    for token in all_tokens:
+        if token in operators:
+            check_next_is_base = True
+            continue
+
+        if check_next_is_base:
+            base_cmd = token.lower()
+            if base_cmd not in ALLOWED_COMMANDS and not base_cmd.startswith('./'):
+                # Check for qualified paths like /bin/ls
+                if '/' in base_cmd or '\\' in base_cmd:
+                    cmd_name = os.path.basename(base_cmd.replace('\\', '/'))
+                    if cmd_name not in ALLOWED_COMMANDS:
+                        return False, f"Command '{base_cmd}' not in allowed command list"
+                else:
+                    return False, f"Command '{base_cmd}' not in allowed command list"
+            check_next_is_base = False
+
+        # Check all non-operator tokens for path traversal if workspace is provided
+        if workspace:
+            if any(c in token for c in ['/', '\\', '..']):
+                if not is_safe_path(workspace, token):
+                    return False, f"Access denied. Path '{token}' is outside the workspace."
 
     return True, ""
 
@@ -200,7 +213,7 @@ class TerminalTool(BaseTool):
 
     async def execute(self, command: str) -> str:
         # Security: Validate command before execution
-        is_valid, error_msg = _validate_terminal_command(command)
+        is_valid, error_msg = _validate_terminal_command(command, self.workspace)
         if not is_valid:
             return f"SECURITY_ERROR: {error_msg}"
 
