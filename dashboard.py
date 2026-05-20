@@ -134,6 +134,17 @@ def load_global_stats():
             pass
     return (0, 0, 0.0)
 
+def format_log_timestamp(ts_str):
+    """Safely convert ISO timestamp strings to HH:MM:SS for cleaner UI."""
+    if not ts_str:
+        return "Unknown"
+    try:
+        # Expected format: 2024-03-27T10:00:00.000000
+        dt = datetime.fromisoformat(str(ts_str).replace('Z', '+00:00'))
+        return dt.strftime("%H:%M:%S")
+    except (ValueError, TypeError):
+        return ts_str
+
 def list_projects():
     active = sorted([d for d in os.listdir(PROJECTS_DIR) if os.path.isdir(os.path.join(PROJECTS_DIR, d))], reverse=True)
     archived = sorted([d for d in os.listdir(ARCHIVES_DIR) if os.path.isdir(os.path.join(ARCHIVES_DIR, d))], reverse=True)
@@ -339,7 +350,8 @@ else:
 
         if logs:
             for entry in reversed(logs):
-                with st.expander(f"🛠️ {entry.get('tool')} @ {entry.get('timestamp')}", expanded=(entry == logs[-1])):
+                ts = format_log_timestamp(entry.get('timestamp'))
+                with st.expander(f"🛠️ {entry.get('tool')} @ {ts}", expanded=(entry == logs[-1])):
                     st.write("**Inputs:**")
                     st.code(json.dumps(entry.get('inputs'), indent=2), language="json")
                     st.write("**Output:**")
