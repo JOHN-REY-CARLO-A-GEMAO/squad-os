@@ -155,6 +155,10 @@ def get_project_status(project_id, is_active):
 
 st.title("🛡️ SquadOS: Project Command Center")
 
+if st.session_state.get("mission_submitted"):
+    st.toast("✅ Mission dispatched successfully!")
+    st.session_state.mission_submitted = False
+
 # Sidebar
 st.sidebar.header("🕹️ Control Panel")
 
@@ -259,6 +263,7 @@ if not selected_project:
             files_json = save_uploaded_files(uploaded_files)
             if files_json != "ERROR_SIZE":
                 submit_new_mission(prompt, files_json)
+                st.session_state.mission_submitted = True
                 st.rerun()
 
 else:
