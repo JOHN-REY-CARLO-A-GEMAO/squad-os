@@ -169,7 +169,7 @@ with st.sidebar:
         st.write("No active projects.")
     for proj in active_projects:
         label = f"📍 {proj}" if proj == st.session_state.selected_proj else f"🚀 {proj}"
-        if st.button(label, key=f"btn_act_{proj}", width="stretch"):
+        if st.button(label, key=f"btn_act_{proj}", width="stretch", help=f"Open active project: {proj}"):
             st.session_state.selected_proj = proj
             st.session_state.is_active = True
             st.rerun()
@@ -179,13 +179,14 @@ with st.sidebar:
         st.write("No archived projects.")
     for proj in archived_projects:
         label = f"📍 {proj}" if proj == st.session_state.selected_proj else f"📦 {proj}"
-        if st.button(label, key=f"btn_arc_{proj}", width="stretch"):
+        if st.button(label, key=f"btn_arc_{proj}", width="stretch", help=f"Open archived project: {proj}"):
             st.session_state.selected_proj = proj
             st.session_state.is_active = False
             st.rerun()
 
-    if st.button("Reset View (Go to Chat)", width="stretch"):
+    if st.button("Reset View (Go to Chat)", width="stretch", shortcut="Esc", help="Return to the main chat interface"):
         st.session_state.selected_proj = None
+        st.rerun()
 
     # Global Stats
     stats = load_global_stats()
@@ -249,7 +250,7 @@ if not selected_project:
 
     # Chat Input Box
     with st.container():
-        uploaded_files = st.file_uploader("📎 Attach documents, images, videos, etc.", accept_multiple_files=True, label_visibility="collapsed")
+        uploaded_files = st.file_uploader("📎 Attach documents, images, videos, etc.", accept_multiple_files=True, label_visibility="collapsed", help="Total upload limit: 500MB (200MB per file)")
         if prompt := st.chat_input("Ask SquadOS to do something... (e.g., 'Analyze this document for me')"):
             files_json = save_uploaded_files(uploaded_files)
             if files_json != "ERROR_SIZE":
@@ -264,7 +265,7 @@ else:
     with col1:
         st.header(f"Project: `{selected_project}`")
     with col2:
-        if st.button("🔙 Back to Chat"):
+        if st.button("🔙 Back to Chat", shortcut="Esc", help="Return to the main chat interface"):
             st.session_state.selected_proj = None
             st.rerun()
 
@@ -339,7 +340,12 @@ else:
 
         if logs:
             for entry in reversed(logs):
-                with st.expander(f"🛠️ {entry.get('tool')} @ {entry.get('timestamp')}", expanded=(entry == logs[-1])):
+                ts = entry.get('timestamp')
+                try:
+                    ts = datetime.fromisoformat(ts).strftime('%Y-%m-%d %H:%M:%S')
+                except Exception:
+                    pass
+                with st.expander(f"🛠️ {entry.get('tool')} @ {ts}", expanded=(entry == logs[-1])):
                     st.write("**Inputs:**")
                     st.code(json.dumps(entry.get('inputs'), indent=2), language="json")
                     st.write("**Output:**")
