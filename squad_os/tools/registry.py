@@ -167,6 +167,16 @@ class WebSearchTool(BaseTool):
     parameters = {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}
 
     async def execute(self, query: str) -> str:
+        # Security enhancement: Input validation and sanitization
+        query = query.strip()
+        if not query:
+            return "Error: Empty search query."
+
+        # Prevent DoS/abuse by limiting query length
+        MAX_QUERY_LENGTH = 200
+        if len(query) > MAX_QUERY_LENGTH:
+            query = query[:MAX_QUERY_LENGTH]
+
         try:
             with DDGS() as ddgs:
                 results = list(ddgs.text(query, max_results=5))
