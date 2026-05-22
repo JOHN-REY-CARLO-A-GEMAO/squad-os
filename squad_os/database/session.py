@@ -155,7 +155,34 @@ async def init_db():
             )
         """)
 
-        # 5. HITL Recovery Table
+        # 5. Schedule Tables (for cron-like scheduling)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS schedules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                mission_goal TEXT NOT NULL,
+                schedule_type TEXT NOT NULL,
+                schedule_value TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_run TIMESTAMP,
+                next_run TIMESTAMP,
+                status TEXT DEFAULT 'ACTIVE',
+                mission_id INTEGER,
+                metadata TEXT
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS schedule_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                schedule_id INTEGER,
+                mission_id INTEGER,
+                executed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                status TEXT,
+                output TEXT,
+                FOREIGN KEY (schedule_id) REFERENCES schedules(id)
+            )
+        """)
+
+        # 6. HITL Recovery Table
         await db.execute("""
             CREATE TABLE IF NOT EXISTS mission_interrupts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,

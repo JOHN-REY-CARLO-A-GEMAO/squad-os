@@ -35,6 +35,16 @@ from squad_os.tools.email import EmailSendTool, EmailReceiveTool
 # MARKETPLACE
 from squad_os.tools.marketplace import SkillMarketplaceTool, InstallSkillTool, GetToolInfoTool
 
+# SCHEDULING
+from squad_os.tools.scheduler import (
+    ScheduleMissionTool,
+    ListSchedulesTool,
+    CancelScheduleTool,
+    PauseScheduleTool,
+    ResumeScheduleTool,
+    ScheduleManager
+)
+
 from squad_os.database.session import init_db, get_next_queued_mission, update_mission
 
 # Clean up terminal warnings
@@ -75,7 +85,14 @@ async def run_worker():
         # MARKETPLACE:
         SkillMarketplaceTool(),
         InstallSkillTool(),
-        GetToolInfoTool()
+        GetToolInfoTool(),
+        
+        # SCHEDULING:
+        ScheduleMissionTool(),
+        ListSchedulesTool(),
+        CancelScheduleTool(),
+        PauseScheduleTool(),
+        ResumeScheduleTool()
     ]
     
     # 3. Initialize the Manager with the full toolset
@@ -84,10 +101,28 @@ async def run_worker():
 
     print("\n🛰️  SquadOS 'Integrated Ecosystem' Worker is ONLINE.")
     print("🚀 Level 6 Capabilities Active: Dynamic Hiring + Agent-to-Agent Delegation.")
+    print("📅 Scheduling Engine Active: Cron-like mission scheduling enabled.")
     print("--- Waiting for missions ---")
 
     # 4. The Polling Loop
     while True:
+        # Check for scheduled missions first
+        try:
+            due_schedules = await ScheduleManager.get_due_schedules()
+            for schedule in due_schedules:
+                print(f"\n📅 SCHEDULE TRIGGER: Running scheduled mission (ID: {schedule['id']})")
+                await update_mission(schedule['id'], "IN_PROGRESS")
+                try:
+                    await manager.run_mission(schedule['mission_goal'], None)
+                    await ScheduleManager.update_schedule_after_run(schedule['id'], schedule['id'], "COMPLETED")
+                    print(f"✅ SCHEDULED MISSION #{schedule['id']} COMPLETE.")
+                except Exception as e:
+                    print(f"❌ SCHEDULED MISSION #{schedule['id']} FAILED: {e}")
+                    await ScheduleManager.update_schedule_after_run(schedule['id'], schedule['id'], "FAILED")
+        except Exception as e:
+            print(f"⚠️ [Worker]: Schedule check error: {e}")
+        
+        # Check for queued missions
         mission = await get_next_queued_mission()
         
         if mission:

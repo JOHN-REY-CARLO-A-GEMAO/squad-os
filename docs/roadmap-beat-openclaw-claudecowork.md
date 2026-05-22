@@ -29,12 +29,12 @@
 - **Desktop UI understanding** (accessibility tree extraction via `UIInspectorTool` on Windows/macOS/Linux)
 - **Native integrations** (Telegram, Discord, Email via dedicated tools)
 - **Skill marketplace** (tool discovery, dynamic loading, and marketplace browsing)
+- **Scheduling/cron workflows** (recurring missions, timed task execution, schedule management)
 
 ### 🔄 In Progress
-- **Scheduling/cron workflows** (recurring missions, timed task execution)
+- **Self-healing agents** (error detection, automatic recovery, retry strategies)
 
 ###  Planned
-- Self-healing agents
 - Rich HITL (WebSocket notifications, structured forms)
 
 ---
@@ -98,7 +98,7 @@
 | **Human-in-the-Loop** | ✅ Dashboard approvals | ⚠️ Limited | ✅ Basic |
 | **Native Integrations** | ✅ Telegram, Discord, Email | ✅ 25+ channels | ❌ Desktop only |
 | **Skill Marketplace** | ✅ Tool discovery and dynamic loading | ✅ ClawMart | ❌ None |
-| **Scheduling** | ❌ None | ✅ Cron | ✅ Basic |
+| **Scheduling** | ✅ Cron-like scheduling with recurring missions | ✅ Cron | ✅ Basic |
 
 **Key Differentiators:**
 1. **Security-first design** — Command validation, path traversal protection, audit logging
