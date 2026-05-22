@@ -20,9 +20,12 @@
 - **Tool-level retry handlers** with fallback chains
 - **Role validation** in mission planning (prevents fake agent roles)
 - **Duplicate filename handling** (directory-aware naming in commits)
+- **DAG-based parallel execution** (wave-based task scheduling with dependency resolution)
+- **Blackboard integration** (task result sharing between agents)
+- **Circular dependency detection** (graceful handling of invalid dependency graphs)
 
 ### 🔄 In Progress
-- **Multi-agent concurrency** (sequential → DAG-based parallel execution)
+- **Agent swarm coordination** (dynamic task reassignment, load balancing)
 
 ###  Planned
 - Desktop UI understanding (accessibility tree extraction)
@@ -88,7 +91,7 @@
 | **Security** | ✅ Command allowlist + path traversal |  All-or-nothing | ❌ Trusts model blindly |
 | **Open Source** | ✅ Full transparency | ✅ | ❌ Proprietary |
 | **Cost** | ✅ Free self-hosted | ~$20/mo + API | $17-200/mo |
-| **Multi-Agent** | 🔄 Sequential working, parallel in progress | ✅ Parallel | ❌ Single agent |
+| **Multi-Agent** | ✅ DAG-based parallel execution | ✅ Parallel | ❌ Single agent |
 | **Browser Automation** | ✅ Playwright | ❌ | ❌ |
 | **Human-in-the-Loop** | ✅ Dashboard approvals | ⚠️ Limited | ✅ Basic |
 | **Native Integrations** | ❌ None | ✅ 25+ channels | ❌ Desktop only |
