@@ -121,7 +121,6 @@ def submit_new_mission(prompt, uploaded_files_json=None):
             except Exception as e:
                 st.error(f"Failed to push to {path}: {e}")
 
-@st.cache_data(ttl=60) # Cache aggregate stats to reduce DB load during 5s auto-refresh
 def load_global_stats():
     conn = get_db_connection()
     if conn:
