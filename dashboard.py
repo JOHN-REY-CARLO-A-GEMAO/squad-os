@@ -281,47 +281,93 @@ else:
 
     project_root = os.path.join(PROJECTS_DIR if is_selected_active else ARCHIVES_DIR, selected_project)
 
-    tab1, tab2, tab3, tab4 = st.tabs(["🖼️ Gallery", "📜 Live Logs", "🧠 Memory", "✅ Commit Review"])
+    tab1, tab2, tab3, tab4 = st.tabs(["🖼️ Project Files", "📜 Live Logs", "🧠 Memory", "✅ Commit Review"])
 
     with tab1:
-        st.subheader("Visual Artifacts")
-        visuals_path = os.path.join(project_root, "visuals")
-        if os.path.exists(visuals_path):
-            img_exts = ('.png', '.jpg', '.jpeg', '.webp')
-            vid_exts = ('.mp4', '.webm')
+        st.subheader("All Project Files")
+        EXTENSIONS_CODE = {'.py', '.js', '.ts', '.html', '.css', '.json', '.md', '.yaml', '.yml', '.toml', '.cfg', '.ini', '.sh', '.bat', '.ps1', '.sql', '.txt', '.env.example', '.gitignore'}
+        EXTENSIONS_IMG = {'.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg', '.bmp'}
+        EXTENSIONS_VID = {'.mp4', '.webm', '.avi', '.mov'}
 
-            # Optimize visual listing by using entry.is_file() from scandir result
-            with os.scandir(visuals_path) as entries:
-                visual_files = sorted([entry.name for entry in entries if entry.is_file() and entry.name.lower().endswith(img_exts + vid_exts)], reverse=True)
-            if visual_files:
-                cols = st.columns(2)
-                for idx, v_file in enumerate(visual_files):
-                    v_path = os.path.join(visuals_path, v_file)
-                    with cols[idx % 2]:
-                        st.write(f"**{v_file}**")
-                        if v_file.lower().endswith(img_exts):
-                            try:
-                                st.image(v_path, use_container_width=True)
-                            except Exception:
-                                st.warning(f"Could not load image: {v_file}")
-                        elif v_file.lower().endswith(vid_exts):
-                            st.video(v_path)
+        all_files = []
+        for root, dirs, files in os.walk(project_root):
+            dirs[:] = [d for d in dirs if not d.startswith('.') and d != '__pycache__']
+            for f in files:
+                if f.startswith('.'):
+                    continue
+                rel = os.path.relpath(os.path.join(root, f), project_root)
+                all_files.append(rel)
 
-                        # Add a download button for accessibility/usability
-                        mime_type, _ = mimetypes.guess_type(v_path)
-                        with open(v_path, "rb") as f:
-                            st.download_button(
-                                label=f"💾 Download {v_file}",
-                                data=f,
-                                file_name=v_file,
-                                mime=mime_type or "application/octet-stream",
-                                key=f"dl_{v_file}",
-                                width="stretch"
-                            )
-            else:
-                st.info("No visual artifacts found. 🖼️")
+        if all_files:
+            view_filter = st.radio("Filter", ["All", "Code", "Images", "Documents"], horizontal=True, label_visibility="collapsed")
+
+            code_exts = EXTENSIONS_CODE
+            img_exts = EXTENSIONS_IMG
+            doc_exts = {'.md', '.txt', '.pdf'}
+
+            grouped = {}
+            for rel in all_files:
+                ext = os.path.splitext(rel)[1].lower()
+                if view_filter == "Code" and ext not in code_exts:
+                    continue
+                if view_filter == "Images" and ext not in img_exts:
+                    continue
+                if view_filter == "Documents" and ext not in doc_exts:
+                    continue
+                dirname = os.path.dirname(rel) or "."
+                grouped.setdefault(dirname, []).append(rel)
+
+            for dirname in sorted(grouped.keys()):
+                with st.expander(f"📁 {dirname}/", expanded=(dirname == ".")):
+                    for rel in sorted(grouped[dirname]):
+                        fpath = os.path.join(project_root, rel)
+                        ext = os.path.splitext(rel)[1].lower()
+                        col_a, col_b = st.columns([4, 1])
+                        with col_a:
+                            if ext in img_exts:
+                                try:
+                                    st.image(fpath, use_container_width=True)
+                                except Exception:
+                                    st.write(f"🖼️ {rel}")
+                            elif ext in code_exts:
+                                try:
+                                    with open(fpath, "r", encoding="utf-8", errors="ignore") as fh:
+                                        st.code(fh.read(), language="python" if ext == ".py" else None)
+                                except Exception:
+                                    st.write(f"📄 {rel}")
+                            else:
+                                st.write(f"📄 {rel}")
+                        with col_b:
+                            mime_type, _ = mimetypes.guess_type(fpath)
+                            with open(fpath, "rb") as fh:
+                                st.download_button("💾", data=fh, file_name=os.path.basename(rel), mime=mime_type or "application/octet-stream", key=f"dl1_{rel}", use_container_width=True)
+
+            # Also show visuals as a dedicated section if they exist
+            visuals_path = os.path.join(project_root, "visuals")
+            if os.path.exists(visuals_path):
+                img_vid_exts = EXTENSIONS_IMG | EXTENSIONS_VID
+                with os.scandir(visuals_path) as entries:
+                    visual_files = sorted([entry.name for entry in entries if entry.is_file() and entry.name.lower().endswith(tuple(img_vid_exts))], reverse=True)
+                if visual_files:
+                    st.markdown("---")
+                    st.subheader("🖼️ Visuals")
+                    cols = st.columns(2)
+                    for idx, v_file in enumerate(visual_files):
+                        v_path = os.path.join(visuals_path, v_file)
+                        with cols[idx % 2]:
+                            st.write(f"**{v_file}**")
+                            if v_file.lower().endswith(tuple(EXTENSIONS_IMG)):
+                                try:
+                                    st.image(v_path, use_container_width=True)
+                                except Exception:
+                                    st.warning(f"Could not load image: {v_file}")
+                            elif v_file.lower().endswith(tuple(EXTENSIONS_VID)):
+                                st.video(v_path)
+                            mime_type, _ = mimetypes.guess_type(v_path)
+                            with open(v_path, "rb") as fh:
+                                st.download_button("💾 Download", data=fh, file_name=v_file, mime=mime_type or "application/octet-stream", key=f"dl_vis_{v_file}", use_container_width=True)
         else:
-            st.info("Visuals directory missing. 🖼️")
+            st.info("No files found in this project. 🗂️")
 
     with tab2:
         st.subheader("Real-time Tool Execution")
@@ -364,6 +410,7 @@ else:
 
     with tab3:
         st.subheader("Project Context & Learnings")
+        st.caption("Architecture decisions, execution notes, and agent observations recorded during this mission.")
         memory_path = os.path.join(project_root, "project_memory.md")
         if os.path.exists(memory_path):
             with open(memory_path, "r") as f:
@@ -372,15 +419,85 @@ else:
             st.info("No project memory found. 🧠")
 
     with tab4:
-        st.subheader("Pending Commit Reviewer")
-        manifest_path = os.path.join(project_root, "artifacts.json")
-        if os.path.exists(manifest_path):
-            try:
-                with open(manifest_path, "r") as f:
-                    manifest = json.load(f)
-                st.info("The agent has nominated these artifacts as 'Final Outputs'.")
-                # Manifest rendering logic...
-            except Exception as e:
-                st.error(f"Error parsing artifacts.json: {e}")
+        st.subheader("Final Output — Committed Artifacts")
+        st.caption("All files that were committed by the agent as the final deliverable.")
+
+        all_out = []
+        for root, dirs, files in os.walk(project_root):
+            dirs[:] = [d for d in dirs if not d.startswith('.') and d != '__pycache__']
+            for f in files:
+                if f.startswith('.'):
+                    continue
+                rel = os.path.relpath(os.path.join(root, f), project_root)
+                all_out.append(rel)
+
+        if not all_out:
+            st.info("No committed artifacts found. 📋")
         else:
-            st.info("Manifest will appear when the project is ready for commit. 📋")
+            st.success(f"**{len(all_out)} files** committed in this mission.")
+
+            # Show README.md first as a default overview
+            readme_files = [f for f in all_out if os.path.basename(f).lower() == 'readme.md']
+            if readme_files:
+                with st.expander("📖 README — Project Overview", expanded=True):
+                    for rf in readme_files:
+                        rpath = os.path.join(project_root, rf)
+                        try:
+                            with open(rpath, "r", encoding="utf-8", errors="ignore") as fh:
+                                st.markdown(fh.read())
+                        except Exception:
+                            st.write(f"Could not read {rf}")
+
+            # Everything else grouped by directory
+            code_preview_exts = {'.py', '.js', '.ts', '.html', '.css', '.json', '.md', '.yaml', '.yml', '.toml', '.sh', '.sql', '.txt', '.gitignore'}
+            grouped = {}
+            for rel in all_out:
+                dirname = os.path.dirname(rel) or "."
+                grouped.setdefault(dirname, []).append(rel)
+
+            # "Download All" button — create a zip in memory
+            import io
+            import zipfile
+            zip_buf = io.BytesIO()
+            with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                for root, dirs, files in os.walk(project_root):
+                    dirs[:] = [d for d in dirs if not d.startswith('.') and d != '__pycache__']
+                    for f in files:
+                        if f.startswith('.'):
+                            continue
+                        fpath = os.path.join(root, f)
+                        rel = os.path.relpath(fpath, project_root)
+                        zf.write(fpath, rel)
+            zip_buf.seek(0)
+
+            col_zip, _ = st.columns([1, 3])
+            with col_zip:
+                st.download_button(
+                    "📦 Download All as ZIP",
+                    data=zip_buf,
+                    file_name=f"{os.path.basename(project_root)}.zip",
+                    mime="application/zip",
+                    use_container_width=True
+                )
+
+            st.markdown("---")
+            for dirname in sorted(grouped.keys()):
+                label = "📁 Root" if dirname == "." else f"📁 {dirname}/"
+                with st.expander(label, expanded=(dirname == ".")):
+                    for rel in sorted(grouped[dirname]):
+                        fpath = os.path.join(project_root, rel)
+                        ext = os.path.splitext(rel)[1].lower()
+                        col_a, col_b = st.columns([4, 1])
+                        with col_a:
+                            if ext in code_preview_exts:
+                                try:
+                                    with open(fpath, "r", encoding="utf-8", errors="ignore") as fh:
+                                        st.code(fh.read(), language="python" if ext == ".py" else None)
+                                except Exception:
+                                    st.write(f"📄 {rel}")
+                            else:
+                                st.write(f"📄 {rel}")
+                        with col_b:
+                            mime_type, _ = mimetypes.guess_type(fpath)
+                            with open(fpath, "rb") as fh:
+                                st.download_button("💾", data=fh, file_name=os.path.basename(rel), mime=mime_type or "application/octet-stream", key=f"dl4_{rel}", use_container_width=True)
