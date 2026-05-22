@@ -273,7 +273,7 @@ else:
     with col1:
         st.header(f"Project: `{selected_project}`")
     with col2:
-        if st.button("🔙 Back to Chat", shortcut="Esc", help="Return to the main chat interface"):
+        if st.button("🔙 Back to Chat", help="Return to the main chat interface"):
             st.session_state.selected_proj = None
             st.rerun()
 
@@ -340,7 +340,7 @@ else:
                         with col_b:
                             mime_type, _ = mimetypes.guess_type(fpath)
                             with open(fpath, "rb") as fh:
-                                st.download_button("💾", data=fh, file_name=os.path.basename(rel), mime=mime_type or "application/octet-stream", key=f"dl1_{rel}", use_container_width=True)
+                                st.download_button("💾", data=fh, file_name=os.path.basename(rel), mime=mime_type or "application/octet-stream", key=f"dl1_{rel}", use_container_width=True, help="Download file")
 
             # Also show visuals as a dedicated section if they exist
             visuals_path = os.path.join(project_root, "visuals")
@@ -500,4 +500,4 @@ else:
                         with col_b:
                             mime_type, _ = mimetypes.guess_type(fpath)
                             with open(fpath, "rb") as fh:
-                                st.download_button("💾", data=fh, file_name=os.path.basename(rel), mime=mime_type or "application/octet-stream", key=f"dl4_{rel}", use_container_width=True)
+                                st.download_button("💾", data=fh, file_name=os.path.basename(rel), mime=mime_type or "application/octet-stream", key=f"dl4_{rel}", use_container_width=True, help="Download file")
