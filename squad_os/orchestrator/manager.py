@@ -16,6 +16,7 @@ from squad_os.core.projects import ProjectBranch
 class TaskPlan(BaseModel):
     description: str
     assigned_agent_role: str
+    depends_on: List[int] = Field(default_factory=list, description="List of task indices (0-based) this task depends on")
 
 class MissionPlan(BaseModel):
     tasks: List[TaskPlan]
@@ -120,8 +121,10 @@ RULES:
 2. If only "Assistant" is available, assign ALL tasks to "Assistant".
 3. Every task description MUST specify which TOOL to use.
 4. The LAST task MUST say: 'MUST use commit_project tool to commit all artifacts'.
-5. Return ONLY JSON. No other text.
-Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "..." }} ] }}"""
+5. Identify INDEPENDENT tasks that can run in PARALLEL and set their depends_on to [].
+6. Tasks that need results from other tasks MUST list those task indices in depends_on.
+7. Return ONLY JSON. No other text.
+Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", "depends_on": [0, 1] }} ] }}"""
 
         for attempt in range(self.max_retries):
             try:
@@ -136,13 +139,13 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "..." }
                     raise ValueError(f"Invalid roles: {[t.assigned_agent_role for t in invalid]}. Must use: {valid_roles}")
                 return plan
             except Exception as e:
-                print(f"🔄 [Manager]: Planning JSON Error. Retrying... ({attempt+1}/{self.max_retries})")
+                print(f" [Manager]: Planning JSON Error. Retrying... ({attempt+1}/{self.max_retries})")
 
         # --- FATAL FALLBACK ---
-        print("⚠️ [Manager]: LLM failed to plan. Falling back to an auto-generated sequential plan.")
+        print("️ [Manager]: LLM failed to plan. Falling back to an auto-generated sequential plan.")
         fallback_tasks = []
-        for role in self.active_agents.keys():
-            fallback_tasks.append(TaskPlan(description=f"Execute your assigned goal: {self.active_agents[role].goal}", assigned_agent_role=role))
+        for i, role in enumerate(self.active_agents.keys()):
+            fallback_tasks.append(TaskPlan(description=f"Execute your assigned goal: {self.active_agents[role].goal}", assigned_agent_role=role, depends_on=[i-1] if i > 0 else []))
         return MissionPlan(tasks=fallback_tasks)
 
     async def run_mission(self, goal: str, uploaded_files_json: Optional[str] = None):
@@ -202,29 +205,26 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "..." }
             plan = await self.plan_mission(enriched_goal)
             tasks = plan.tasks
             for i, t in enumerate(tasks):
-                print(f"  📝 Task {i+1}: [{t.assigned_agent_role}] {t.description}")
+                deps = f" (depends on: {t.depends_on})" if t.depends_on else ""
+                print(f"  📝 Task {i}: [{t.assigned_agent_role}] {t.description}{deps}")
         except Exception as e:
             print(f"❌ [Manager]: Setup failed: {e}")
             await update_mission(mission_id, "FAILED")
             return
 
-        context = ""
-        task_idx = 0
-        backtrack_counts = {}
-        total_iteration_count = 0
-        max_total_iterations = len(tasks) * 3  # Cap total iterations to prevent infinite loops
-
-        while task_idx < len(tasks):
-            # Global iteration cap to prevent infinite loops
-            total_iteration_count += 1
-            if total_iteration_count > max_total_iterations:
-                print(f"⚠️ [Manager]: Maximum iteration count ({max_total_iterations}) exceeded. Aborting mission.")
-                await update_mission(mission_id, "FAILED")
-                return
-
+        # --- DAG-BASED PARALLEL EXECUTION ---
+        task_states = {}  # task_idx -> "PENDING" | "RUNNING" | "COMPLETED" | "FAILED"
+        task_results = {}  # task_idx -> output_text
+        task_ids = {}  # task_idx -> database task_id
+        
+        for i in range(len(tasks)):
+            task_states[i] = "PENDING"
+        
+        async def execute_task(task_idx: int, context: str) -> bool:
+            """Execute a single task. Returns True if successful."""
             task_data = tasks[task_idx]
             agent = self.active_agents.get(task_data.assigned_agent_role)
-
+            
             # Fuzzy match fallback
             if not agent:
                 target = str(task_data.assigned_agent_role).lower()
@@ -232,42 +232,109 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "..." }
                     if r.lower() in target or target in r.lower():
                         agent = a
                         break
-
+            
             if not agent:
-                print(f"⚠️ [Manager]: Skipping task, role '{task_data.assigned_agent_role}' not found.")
-                task_idx += 1
-                continue
-
-            print(f"\n🚀 [Manager]: Task {task_idx+1}/{len(tasks)} -> {agent.role}")
+                print(f"⚠️ [Manager]: Skipping task {task_idx}, role '{task_data.assigned_agent_role}' not found.")
+                task_states[task_idx] = "FAILED"
+                return False
+            
+            print(f"\n🚀 [Manager]: Task {task_idx}/{len(tasks)} -> {agent.role}")
             task_id = await create_task(mission_id, task_data.description, agent.role)
-
+            task_ids[task_idx] = task_id
+            
             result = await agent.execute_task(task_data.description, context)
             output_text = result.get("output", "Task completed without text summary.")
-
+            
             # --- TOOL ENFORCEMENT CHECK ---
             must_use = "must use" in task_data.description.lower() or "delegate_task" in task_data.description.lower()
             if must_use and len(output_text) < 20 and "DELEGATED" not in output_text:
-                print(f"⚠️ [Manager]: Agent {agent.role} skipped mandatory tool use. Forcing retry...")
-                context += f"\n\nERROR: You skipped a mandatory tool call. You MUST execute the tool now."
-                continue
-
-            # --- QA CHECK ---
-            if "qa" in agent.role.lower() and any(w in output_text.lower() for w in ["fail", "reject", "error"]):
-                backtrack_counts[task_idx] = backtrack_counts.get(task_idx, 0) + 1
-                if backtrack_counts[task_idx] <= self.max_retries:
-                    print(f"🔄 [Manager]: QA Failure detected. Sending previous agent back to fix it... (attempt {backtrack_counts[task_idx]}/{self.max_retries})")
-                    context += f"\n\n### QA FEEDBACK: {output_text}"
-                    task_idx = max(0, task_idx - 1)
-                    continue
-                else:
-                    print(f"⚠️ [Manager]: QA backtrack limit exceeded for task {task_idx + 1}. Proceeding anyway.")
-                    # Reset backtrack count for future QA checks on this task
-                    backtrack_counts[task_idx] = 0
-
+                print(f"️ [Manager]: Agent {agent.role} skipped mandatory tool use. Forcing retry...")
+                # Retry once with enforcement context
+                retry_context = context + f"\n\nERROR: You skipped a mandatory tool call. You MUST execute the tool now."
+                result = await agent.execute_task(task_data.description, retry_context)
+                output_text = result.get("output", "Task completed without text summary.")
+            
             # Success path
             await update_task(task_id, status="COMPLETED", output_data=output_text)
-            context += f"\n\nResult from {agent.role}: {output_text}"
-            task_idx += 1
-
-        await update_mission(mission_id, "COMPLETED")
-        print(f"\n✨ [Manager]: Mission #{mission_id} finished successfully.")
+            task_results[task_idx] = output_text
+            task_states[task_idx] = "COMPLETED"
+            
+            # Write result to blackboard for other tasks
+            await update_blackboard(f"task_{task_idx}_result", output_text)
+            
+            print(f"✅ [Manager]: Task {task_idx} completed.")
+            return True
+        
+        # Build dependency graph and execute in waves
+        max_waves = len(tasks) * 2  # Safety limit
+        wave = 0
+        
+        while any(state == "PENDING" for state in task_states.values()) and wave < max_waves:
+            wave += 1
+            
+            # Find tasks that are ready to execute (all dependencies completed)
+            ready_tasks = []
+            for i in range(len(tasks)):
+                if task_states[i] != "PENDING":
+                    continue
+                
+                # Check if all dependencies are completed
+                deps = tasks[i].depends_on
+                if all(task_states.get(dep) == "COMPLETED" for dep in deps):
+                    ready_tasks.append(i)
+            
+            if not ready_tasks:
+                # Check for circular dependencies or failed dependencies
+                pending_with_failed_deps = []
+                for i in range(len(tasks)):
+                    if task_states[i] == "PENDING":
+                        deps = tasks[i].depends_on
+                        if any(task_states.get(dep) == "FAILED" for dep in deps):
+                            pending_with_failed_deps.append(i)
+                
+                if pending_with_failed_deps:
+                    print(f"⚠️ [Manager]: Tasks {pending_with_failed_deps} have failed dependencies. Skipping.")
+                    for i in pending_with_failed_deps:
+                        task_states[i] = "FAILED"
+                    continue
+                else:
+                    print(f"⚠️ [Manager]: No tasks ready to execute. Possible circular dependency.")
+                    break
+            
+            # Execute ready tasks in parallel
+            print(f"\n🔄 [Manager]: Wave {wave} - Executing {len(ready_tasks)} tasks in parallel: {ready_tasks}")
+            
+            # Build context for each task from its dependencies
+            task_contexts = {}
+            for task_idx in ready_tasks:
+                context_parts = [f"Mission: {enriched_goal}"]
+                for dep_idx in tasks[task_idx].depends_on:
+                    if dep_idx in task_results:
+                        context_parts.append(f"Result from Task {dep_idx}: {task_results[dep_idx]}")
+                task_contexts[task_idx] = "\n\n".join(context_parts)
+            
+            # Execute in parallel
+            results = await asyncio.gather(
+                *[execute_task(idx, task_contexts[idx]) for idx in ready_tasks],
+                return_exceptions=True
+            )
+            
+            # Handle exceptions
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    task_idx = ready_tasks[i]
+                    print(f"❌ [Manager]: Task {task_idx} failed with exception: {result}")
+                    task_states[task_idx] = "FAILED"
+                    if task_idx in task_ids:
+                        await update_task(task_ids[task_idx], status="FAILED", output_data=str(result))
+        
+        # Final status
+        completed = sum(1 for s in task_states.values() if s == "COMPLETED")
+        failed = sum(1 for s in task_states.values() if s == "FAILED")
+        
+        if failed > 0:
+            print(f"\n⚠️ [Manager]: Mission #{mission_id} completed with {failed} failed task(s).")
+            await update_mission(mission_id, "COMPLETED_WITH_ERRORS")
+        else:
+            print(f"\n✨ [Manager]: Mission #{mission_id} finished successfully ({completed} tasks completed in {wave} waves).")
+            await update_mission(mission_id, "COMPLETED")
