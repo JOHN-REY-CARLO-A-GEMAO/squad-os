@@ -155,6 +155,10 @@ def get_project_status(project_id, is_active):
 
 st.title("🛡️ SquadOS: Project Command Center")
 
+if st.session_state.get("mission_submitted"):
+    st.toast("✅ Mission dispatched successfully!")
+    st.session_state.mission_submitted = False
+
 # Sidebar
 st.sidebar.header("🕹️ Control Panel")
 
@@ -259,6 +263,7 @@ if not selected_project:
             files_json = save_uploaded_files(uploaded_files)
             if files_json != "ERROR_SIZE":
                 submit_new_mission(prompt, files_json)
+                st.session_state.mission_submitted = True
                 st.rerun()
 
 else:
@@ -315,9 +320,9 @@ else:
                                 width="stretch"
                             )
             else:
-                st.write("No visual artifacts found.")
+                st.info("No visual artifacts found. 🖼️")
         else:
-            st.error("Visuals directory missing.")
+            st.info("Visuals directory missing. 🖼️")
 
     with tab2:
         st.subheader("Real-time Tool Execution")
@@ -341,7 +346,7 @@ else:
             except Exception as e:
                 st.error(f"Error reading .json log: {e}")
         else:
-            st.write("No `session_log.jsonl` or `session_log.json` found.")
+            st.info("No execution logs found. 📜")
 
         if logs:
             for entry in reversed(logs):
@@ -356,7 +361,7 @@ else:
                     st.write("**Output:**")
                     st.code(entry.get('output'))
         elif os.path.exists(log_jsonl) or os.path.exists(log_json):
-            st.write("Log is empty.")
+            st.info("Log is empty. 📜")
 
     with tab3:
         st.subheader("Project Context & Learnings")
@@ -365,7 +370,7 @@ else:
             with open(memory_path, "r") as f:
                 st.markdown(f.read())
         else:
-            st.write("No `project_memory.md` found.")
+            st.info("No project memory found. 🧠")
 
     with tab4:
         st.subheader("Pending Commit Reviewer")
@@ -379,4 +384,4 @@ else:
             except Exception as e:
                 st.error(f"Error parsing artifacts.json: {e}")
         else:
-            st.write("Manifest will appear when the project is ready for commit.")
+            st.info("Manifest will appear when the project is ready for commit. 📋")
