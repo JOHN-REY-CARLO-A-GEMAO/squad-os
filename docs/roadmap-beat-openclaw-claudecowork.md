@@ -30,12 +30,13 @@
 - **Native integrations** (Telegram, Discord, Email via dedicated tools)
 - **Skill marketplace** (tool discovery, dynamic loading, and marketplace browsing)
 - **Scheduling/cron workflows** (recurring missions, timed task execution, schedule management)
+- **Self-healing agents** (error classification, health monitoring, exponential backoff, automatic recovery strategies)
 
 ### 🔄 In Progress
-- **Self-healing agents** (error detection, automatic recovery, retry strategies)
+- **Rich HITL** (WebSocket notifications, structured forms)
 
 ###  Planned
-- Rich HITL (WebSocket notifications, structured forms)
+- (none)
 
 ---
 
@@ -99,6 +100,7 @@
 | **Native Integrations** | ✅ Telegram, Discord, Email | ✅ 25+ channels | ❌ Desktop only |
 | **Skill Marketplace** | ✅ Tool discovery and dynamic loading | ✅ ClawMart | ❌ None |
 | **Scheduling** | ✅ Cron-like scheduling with recurring missions | ✅ Cron | ✅ Basic |
+| **Self-Healing** | ✅ Error classification, health monitoring, exponential backoff | ❌ Not built-in | ❌ Not built-in |
 
 **Key Differentiators:**
 1. **Security-first design** — Command validation, path traversal protection, audit logging

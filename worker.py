@@ -45,6 +45,14 @@ from squad_os.tools.scheduler import (
     ScheduleManager
 )
 
+# SELF-HEALING
+from squad_os.tools.self_healing import (
+    SelfHealTool,
+    HealthCheckTool,
+    RetryWithBackoffTool,
+    health_monitor
+)
+
 from squad_os.database.session import init_db, get_next_queued_mission, update_mission
 
 # Clean up terminal warnings
@@ -92,7 +100,12 @@ async def run_worker():
         ListSchedulesTool(),
         CancelScheduleTool(),
         PauseScheduleTool(),
-        ResumeScheduleTool()
+        ResumeScheduleTool(),
+        
+        # SELF-HEALING:
+        SelfHealTool(),
+        HealthCheckTool(),
+        RetryWithBackoffTool()
     ]
     
     # 3. Initialize the Manager with the full toolset

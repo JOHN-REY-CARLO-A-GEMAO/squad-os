@@ -12,6 +12,7 @@ import aiosqlite
 from squad_os.agents.base import BaseAgent
 from squad_os.database.session import create_mission, create_task, update_task, update_mission, update_blackboard, DB_PATH
 from squad_os.core.projects import ProjectBranch
+from squad_os.tools.self_healing import health_monitor
 
 class TaskPlan(BaseModel):
     description: str
@@ -257,6 +258,7 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
                 task_states[task_idx] = "FAILED"
                 self.agent_metrics[task_data.assigned_agent_role]["tasks_failed"] += 1
                 self.agent_load[task_data.assigned_agent_role] -= 1
+                health_monitor.record_failure(task_data.assigned_agent_role, "Agent role not found in active agents")
                 return False
             
             print(f"\n🚀 [Manager]: Task {task_idx}/{len(tasks)} -> {agent.role}")
@@ -287,6 +289,7 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
             task_results[task_idx] = output_text
             task_states[task_idx] = "COMPLETED"
             self.agent_metrics[task_data.assigned_agent_role]["tasks_completed"] += 1
+            health_monitor.record_success(task_data.assigned_agent_role)
             
             # Write result to blackboard for other tasks
             await update_blackboard(f"task_{task_idx}_result", output_text)
@@ -370,6 +373,7 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
                         await update_task(task_ids[task_idx], status="FAILED", output_data=str(result))
                     if tasks[task_idx].assigned_agent_role in self.agent_metrics:
                         self.agent_metrics[tasks[task_idx].assigned_agent_role]["tasks_failed"] += 1
+                    health_monitor.record_failure(tasks[task_idx].assigned_agent_role, str(result))
         
         # --- DYNAMIC TASK REASSIGNMENT ---
         # Retry failed tasks with different agents if available
