@@ -7,9 +7,9 @@ import shlex
 from typing import Dict, Any, Optional, List, Set
 
 try:
-    from duckduckgo_search import DDGS
-except ImportError:
     from ddgs import DDGS
+except ImportError:
+    from duckduckgo_search import DDGS
 
 from squad_os.tools.base import BaseTool
 from squad_os.core.utils import is_safe_path
