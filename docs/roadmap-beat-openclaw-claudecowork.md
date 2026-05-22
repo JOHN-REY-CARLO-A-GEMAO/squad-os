@@ -26,13 +26,12 @@
 - **Agent swarm coordination** (dynamic task reassignment, load balancing, performance metrics)
 - **Priority-based scheduling** (tasks sorted by priority and dependency count)
 - **Adaptive concurrency** (suggested_parallelism from LLM planning)
+- **Desktop UI understanding** (accessibility tree extraction via `UIInspectorTool` on Windows/macOS/Linux)
 
 ### 🔄 In Progress
-- **Desktop UI understanding** (accessibility tree extraction)
+- **Native integrations** (Telegram, Discord, Email)
 
 ###  Planned
-- Desktop UI understanding (accessibility tree extraction)
-- Native integrations (Telegram, Discord, Email)
 - Skill marketplace
 - Scheduling/cron workflows
 - Self-healing agents
@@ -90,7 +89,7 @@
 
 | Dimension | SquadOS | OpenClaw | Claude Cowork |
 |-----------|---------|----------|---------------|
-| **Desktop Understanding** |  Accessibility tree (in progress) | ❌ Raw coordinates | ❌ Raw coordinates |
+| **Desktop Understanding** | ✅ Accessibility tree extraction | ❌ Raw coordinates | ❌ Raw coordinates |
 | **Security** | ✅ Command allowlist + path traversal |  All-or-nothing | ❌ Trusts model blindly |
 | **Open Source** | ✅ Full transparency | ✅ | ❌ Proprietary |
 | **Cost** | ✅ Free self-hosted | ~$20/mo + API | $17-200/mo |
