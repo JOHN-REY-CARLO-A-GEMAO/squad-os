@@ -1,4 +1,0 @@
-## 2026-05-11 - Terminal Path Traversal in Arguments and Redirection
-**Vulnerability:** Path traversal via shell command arguments and redirection targets in TerminalTool.
-**Learning:** Even with a restricted working directory (CWD), shell commands can access files outside the workspace via relative paths (e.g., `cat ../secret`) or absolute paths in arguments and redirection (e.g., `ls > /tmp/out`). Standard `shlex.split` doesn't recognize punctuation chars like `>` or `&&` as separate tokens without `punctuation_chars=True`.
-**Prevention:** Use `shlex.shlex(posix=True, punctuation_chars=True)` to tokenize shell commands. Validate every token against the workspace boundary using a robust path safety check like `is_safe_path`. Special-case command names to allow absolute paths (e.g., `/bin/ls`) if they are in the allowlist.
