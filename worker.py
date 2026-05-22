@@ -27,6 +27,11 @@ from squad_os.tools.visual import (
     VisionAnalysisTool    # <--- The Agent's Visual Analyzer
 )
 
+# NATIVE INTEGRATIONS
+from squad_os.tools.telegram import TelegramTool, TelegramReceiveTool
+from squad_os.tools.discord import DiscordTool, DiscordReceiveTool
+from squad_os.tools.email import EmailSendTool, EmailReceiveTool
+
 from squad_os.database.session import init_db, get_next_queued_mission, update_mission
 
 # Clean up terminal warnings
@@ -54,7 +59,15 @@ async def run_worker():
         
         # VISUAL CAPABILITIES ACTIVATED:
         BrowserControlTool(),
-        VisionAnalysisTool()
+        VisionAnalysisTool(),
+        
+        # NATIVE INTEGRATIONS:
+        TelegramTool(),
+        TelegramReceiveTool(),
+        DiscordTool(),
+        DiscordReceiveTool(),
+        EmailSendTool(),
+        EmailReceiveTool()
     ]
     
     # 3. Initialize the Manager with the full toolset

@@ -27,12 +27,12 @@
 - **Priority-based scheduling** (tasks sorted by priority and dependency count)
 - **Adaptive concurrency** (suggested_parallelism from LLM planning)
 - **Desktop UI understanding** (accessibility tree extraction via `UIInspectorTool` on Windows/macOS/Linux)
+- **Native integrations** (Telegram, Discord, Email via dedicated tools)
 
 ### 🔄 In Progress
-- **Native integrations** (Telegram, Discord, Email)
+- **Skill marketplace** (tool discovery and dynamic loading)
 
 ###  Planned
-- Skill marketplace
 - Scheduling/cron workflows
 - Self-healing agents
 - Rich HITL (WebSocket notifications, structured forms)
@@ -96,7 +96,7 @@
 | **Multi-Agent** | ✅ DAG parallel + swarm coordination | ✅ Parallel | ❌ Single agent |
 | **Browser Automation** | ✅ Playwright | ❌ | ❌ |
 | **Human-in-the-Loop** | ✅ Dashboard approvals | ⚠️ Limited | ✅ Basic |
-| **Native Integrations** | ❌ None | ✅ 25+ channels | ❌ Desktop only |
+| **Native Integrations** | ✅ Telegram, Discord, Email | ✅ 25+ channels | ❌ Desktop only |
 | **Skill Marketplace** |  None | ✅ ClawMart | ❌ None |
 | **Scheduling** | ❌ None | ✅ Cron | ✅ Basic |
 
