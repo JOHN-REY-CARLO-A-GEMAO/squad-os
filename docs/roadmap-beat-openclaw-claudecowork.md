@@ -23,9 +23,12 @@
 - **DAG-based parallel execution** (wave-based task scheduling with dependency resolution)
 - **Blackboard integration** (task result sharing between agents)
 - **Circular dependency detection** (graceful handling of invalid dependency graphs)
+- **Agent swarm coordination** (dynamic task reassignment, load balancing, performance metrics)
+- **Priority-based scheduling** (tasks sorted by priority and dependency count)
+- **Adaptive concurrency** (suggested_parallelism from LLM planning)
 
 ### 🔄 In Progress
-- **Agent swarm coordination** (dynamic task reassignment, load balancing)
+- **Desktop UI understanding** (accessibility tree extraction)
 
 ###  Planned
 - Desktop UI understanding (accessibility tree extraction)
@@ -91,7 +94,7 @@
 | **Security** | ✅ Command allowlist + path traversal |  All-or-nothing | ❌ Trusts model blindly |
 | **Open Source** | ✅ Full transparency | ✅ | ❌ Proprietary |
 | **Cost** | ✅ Free self-hosted | ~$20/mo + API | $17-200/mo |
-| **Multi-Agent** | ✅ DAG-based parallel execution | ✅ Parallel | ❌ Single agent |
+| **Multi-Agent** | ✅ DAG parallel + swarm coordination | ✅ Parallel | ❌ Single agent |
 | **Browser Automation** | ✅ Playwright | ❌ | ❌ |
 | **Human-in-the-Loop** | ✅ Dashboard approvals | ⚠️ Limited | ✅ Basic |
 | **Native Integrations** | ❌ None | ✅ 25+ channels | ❌ Desktop only |
