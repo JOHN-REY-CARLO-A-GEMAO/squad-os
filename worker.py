@@ -32,6 +32,9 @@ from squad_os.tools.telegram import TelegramTool, TelegramReceiveTool
 from squad_os.tools.discord import DiscordTool, DiscordReceiveTool
 from squad_os.tools.email import EmailSendTool, EmailReceiveTool
 
+# MARKETPLACE
+from squad_os.tools.marketplace import SkillMarketplaceTool, InstallSkillTool, GetToolInfoTool
+
 from squad_os.database.session import init_db, get_next_queued_mission, update_mission
 
 # Clean up terminal warnings
@@ -67,7 +70,12 @@ async def run_worker():
         DiscordTool(),
         DiscordReceiveTool(),
         EmailSendTool(),
-        EmailReceiveTool()
+        EmailReceiveTool(),
+        
+        # MARKETPLACE:
+        SkillMarketplaceTool(),
+        InstallSkillTool(),
+        GetToolInfoTool()
     ]
     
     # 3. Initialize the Manager with the full toolset

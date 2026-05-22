@@ -28,12 +28,12 @@
 - **Adaptive concurrency** (suggested_parallelism from LLM planning)
 - **Desktop UI understanding** (accessibility tree extraction via `UIInspectorTool` on Windows/macOS/Linux)
 - **Native integrations** (Telegram, Discord, Email via dedicated tools)
+- **Skill marketplace** (tool discovery, dynamic loading, and marketplace browsing)
 
 ### 🔄 In Progress
-- **Skill marketplace** (tool discovery and dynamic loading)
+- **Scheduling/cron workflows** (recurring missions, timed task execution)
 
 ###  Planned
-- Scheduling/cron workflows
 - Self-healing agents
 - Rich HITL (WebSocket notifications, structured forms)
 
@@ -97,7 +97,7 @@
 | **Browser Automation** | ✅ Playwright | ❌ | ❌ |
 | **Human-in-the-Loop** | ✅ Dashboard approvals | ⚠️ Limited | ✅ Basic |
 | **Native Integrations** | ✅ Telegram, Discord, Email | ✅ 25+ channels | ❌ Desktop only |
-| **Skill Marketplace** |  None | ✅ ClawMart | ❌ None |
+| **Skill Marketplace** | ✅ Tool discovery and dynamic loading | ✅ ClawMart | ❌ None |
 | **Scheduling** | ❌ None | ✅ Cron | ✅ Basic |
 
 **Key Differentiators:**
