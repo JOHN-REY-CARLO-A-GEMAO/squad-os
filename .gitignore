@@ -37,3 +37,17 @@ Thumbs.db
 *.db
 *.db-wal
 *.db-shm
+
+# Runtime data
+workspace/
+data/
+
+# IDE configs
+.windsurf/
+.claude/
+.openclaw/
+.Jules/
+
+# Analysis docs
+SQUAD_OS_ANALYSIS.md
+docs/superpowers/
