@@ -157,6 +157,79 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
             fallback_tasks.append(TaskPlan(description=f"Execute your assigned goal: {self.active_agents[role].goal}", assigned_agent_role=role, depends_on=[i-1] if i > 0 else []))
         return MissionPlan(tasks=fallback_tasks)
 
+    def _write_project_memory(self, branch, goal: str, tasks: List, task_results: Dict[int, str], waves: int):
+        """Auto-generate a comprehensive project_memory.md after mission completion."""
+        from datetime import datetime
+        import os
+
+        memory_path = os.path.join(branch.project_path, "project_memory.md")
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # Scan all generated files in the branch
+        all_files = []
+        total_size = 0
+        for root, dirs, files in os.walk(branch.project_path):
+            dirs[:] = [d for d in dirs if not d.startswith('.') and d != '__pycache__']
+            for f in files:
+                if f.startswith('.'):
+                    continue
+                rel = os.path.relpath(os.path.join(root, f), branch.project_path)
+                fpath = os.path.join(root, f)
+                size = os.path.getsize(fpath)
+                total_size += size
+                all_files.append((rel, size))
+
+        lines = []
+        lines.append(f"# Project Memory: {branch.branch_id}")
+        lines.append("")
+        lines.append(f"**Mission:** {goal}")
+        lines.append(f"**Completed:** {now}")
+        lines.append(f"**Waves executed:** {waves}")
+        lines.append(f"**Files generated:** {len(all_files)} ({total_size:,} bytes)")
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
+        # Task summary
+        lines.append("## Task Execution Summary")
+        lines.append("")
+        for i in sorted(task_results.keys()):
+            desc = tasks[i].description if i < len(tasks) else f"Task {i}"
+            result_preview = task_results[i][:300].replace("\n", " ")
+            lines.append(f"### Task {i}: {desc}")
+            lines.append(f"> {result_preview}")
+            lines.append("")
+
+        # File inventory
+        lines.append("## Generated Files")
+        lines.append("")
+        lines.append("| File | Size |")
+        lines.append("|------|------|")
+        for rel, size in sorted(all_files, key=lambda x: x[0]):
+            lines.append(f"| {rel} | {size:,} B |")
+        lines.append("")
+
+        # Agent performance
+        lines.append("## Agent Performance")
+        lines.append("")
+        lines.append("| Agent | Success Rate | Avg Time | Health |")
+        lines.append("|-------|-------------|----------|--------|")
+        for role, metrics in sorted(self.agent_metrics.items()):
+            total = metrics["tasks_completed"] + metrics["tasks_failed"]
+            if total > 0:
+                rate = f"{metrics['tasks_completed']}/{total} ({metrics['tasks_completed']/total*100:.0f}%)"
+                avg = f"{metrics['total_time'] / max(1, metrics['tasks_completed']):.1f}s"
+                health = "✅" if metrics['tasks_failed'] == 0 else "⚠️"
+                lines.append(f"| {role} | {rate} | {avg} | {health} |")
+        lines.append("")
+
+        content = "\n".join(lines)
+
+        with open(memory_path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+        print(f"📝 [Manager]: Auto-generated project_memory.md ({len(all_files)} files, {total_size:,} bytes)")
+
     async def run_mission(self, goal: str, uploaded_files_json: Optional[str] = None):
         mission_id = await create_mission(goal, uploaded_files_json)
 
@@ -408,6 +481,12 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
                     else:
                         print(f"❌ [Manager]: Task {task_idx} reassignment also failed.")
                     break  # Only try one reassignment per task
+        
+        # --- AUTO-GENERATE PROJECT MEMORY ---
+        try:
+            self._write_project_memory(shared_branch, enriched_goal, tasks, task_results, wave)
+        except Exception as e:
+            print(f"⚠️ [Manager]: Failed to write project memory: {e}")
         
         # Final status
         completed = sum(1 for s in task_states.values() if s == "COMPLETED")
