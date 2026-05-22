@@ -17,9 +17,12 @@ class TaskPlan(BaseModel):
     description: str
     assigned_agent_role: str
     depends_on: List[int] = Field(default_factory=list, description="List of task indices (0-based) this task depends on")
+    priority: int = Field(default=0, description="Task priority (higher = more urgent)")
+    estimated_complexity: str = Field(default="medium", description="low, medium, or high")
 
 class MissionPlan(BaseModel):
     tasks: List[TaskPlan]
+    suggested_parallelism: int = Field(default=2, description="Recommended number of concurrent tasks")
 
 class Manager:
     def __init__(self, tool_inventory: List[Any], model_name: str = "gpt-4o-mini"):
@@ -27,6 +30,8 @@ class Manager:
         self.model_name = model_name
         self.max_retries = 3
         self.active_agents = {}
+        self.agent_metrics = {}  # role -> {"tasks_completed": int, "tasks_failed": int, "avg_time": float}
+        self.agent_load = {}  # role -> current number of active tasks
 
     def _repair_json(self, content: str) -> str:
         """Deep clean JSON, handling severe LLM hallucinations."""
@@ -123,8 +128,11 @@ RULES:
 4. The LAST task MUST say: 'MUST use commit_project tool to commit all artifacts'.
 5. Identify INDEPENDENT tasks that can run in PARALLEL and set their depends_on to [].
 6. Tasks that need results from other tasks MUST list those task indices in depends_on.
-7. Return ONLY JSON. No other text.
-Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", "depends_on": [0, 1] }} ] }}"""
+7. Set priority (0-3) based on importance: 3=critical, 2=high, 1=normal, 0=low.
+8. Estimate complexity: "low" (simple command), "medium" (multi-step), "high" (creative/complex).
+9. Suggest how many tasks can run concurrently in suggested_parallelism.
+10. Return ONLY JSON. No other text.
+Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", "depends_on": [0, 1], "priority": 1, "estimated_complexity": "medium" }} ], "suggested_parallelism": 2 }}"""
 
         for attempt in range(self.max_retries):
             try:
@@ -225,6 +233,17 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
             task_data = tasks[task_idx]
             agent = self.active_agents.get(task_data.assigned_agent_role)
             
+            # Initialize agent metrics if not present
+            if task_data.assigned_agent_role not in self.agent_metrics:
+                self.agent_metrics[task_data.assigned_agent_role] = {
+                    "tasks_completed": 0,
+                    "tasks_failed": 0,
+                    "total_time": 0.0
+                }
+            
+            # Track load
+            self.agent_load[task_data.assigned_agent_role] = self.agent_load.get(task_data.assigned_agent_role, 0) + 1
+            
             # Fuzzy match fallback
             if not agent:
                 target = str(task_data.assigned_agent_role).lower()
@@ -236,13 +255,18 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
             if not agent:
                 print(f"⚠️ [Manager]: Skipping task {task_idx}, role '{task_data.assigned_agent_role}' not found.")
                 task_states[task_idx] = "FAILED"
+                self.agent_metrics[task_data.assigned_agent_role]["tasks_failed"] += 1
+                self.agent_load[task_data.assigned_agent_role] -= 1
                 return False
             
             print(f"\n🚀 [Manager]: Task {task_idx}/{len(tasks)} -> {agent.role}")
             task_id = await create_task(mission_id, task_data.description, agent.role)
             task_ids[task_idx] = task_id
             
+            start_time = datetime.now()
             result = await agent.execute_task(task_data.description, context)
+            elapsed = (datetime.now() - start_time).total_seconds()
+            
             output_text = result.get("output", "Task completed without text summary.")
             
             # --- TOOL ENFORCEMENT CHECK ---
@@ -254,15 +278,20 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
                 result = await agent.execute_task(task_data.description, retry_context)
                 output_text = result.get("output", "Task completed without text summary.")
             
+            # Update metrics
+            self.agent_metrics[task_data.assigned_agent_role]["total_time"] += elapsed
+            self.agent_load[task_data.assigned_agent_role] -= 1
+            
             # Success path
             await update_task(task_id, status="COMPLETED", output_data=output_text)
             task_results[task_idx] = output_text
             task_states[task_idx] = "COMPLETED"
+            self.agent_metrics[task_data.assigned_agent_role]["tasks_completed"] += 1
             
             # Write result to blackboard for other tasks
             await update_blackboard(f"task_{task_idx}_result", output_text)
             
-            print(f"✅ [Manager]: Task {task_idx} completed.")
+            print(f"✅ [Manager]: Task {task_idx} completed in {elapsed:.1f}s.")
             return True
         
         # Build dependency graph and execute in waves
@@ -282,6 +311,9 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
                 deps = tasks[i].depends_on
                 if all(task_states.get(dep) == "COMPLETED" for dep in deps):
                     ready_tasks.append(i)
+            
+            # Sort by priority (higher first), then by dependency count (fewer deps first)
+            ready_tasks.sort(key=lambda idx: (-tasks[idx].priority, len(tasks[idx].depends_on)))
             
             if not ready_tasks:
                 # Check for circular dependencies or failed dependencies
@@ -313,7 +345,16 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
                         context_parts.append(f"Result from Task {dep_idx}: {task_results[dep_idx]}")
                 task_contexts[task_idx] = "\n\n".join(context_parts)
             
-            # Execute in parallel
+            # Limit parallelism based on plan suggestion and agent load
+            max_concurrent = getattr(plan, 'suggested_parallelism', 2)
+            # Check if any agent is overloaded
+            for task_idx in ready_tasks:
+                role = tasks[task_idx].assigned_agent_role
+                current_load = self.agent_load.get(role, 0)
+                if current_load >= max_concurrent:
+                    print(f"⚠️ [Manager]: Agent '{role}' is at capacity ({current_load} tasks). Deferring task {task_idx}.")
+            
+            # Execute in parallel (all ready tasks, load tracking happens inside execute_task)
             results = await asyncio.gather(
                 *[execute_task(idx, task_contexts[idx]) for idx in ready_tasks],
                 return_exceptions=True
@@ -327,10 +368,55 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
                     task_states[task_idx] = "FAILED"
                     if task_idx in task_ids:
                         await update_task(task_ids[task_idx], status="FAILED", output_data=str(result))
+                    if tasks[task_idx].assigned_agent_role in self.agent_metrics:
+                        self.agent_metrics[tasks[task_idx].assigned_agent_role]["tasks_failed"] += 1
+        
+        # --- DYNAMIC TASK REASSIGNMENT ---
+        # Retry failed tasks with different agents if available
+        failed_tasks = [i for i, state in task_states.items() if state == "FAILED"]
+        if failed_tasks:
+            print(f"\n🔄 [Manager]: Attempting to reassign {len(failed_tasks)} failed task(s)...")
+            for task_idx in failed_tasks:
+                original_role = tasks[task_idx].assigned_agent_role
+                # Find alternative agents
+                for role, agent in self.active_agents.items():
+                    if role == original_role:
+                        continue
+                    # Skip if this agent is already heavily loaded
+                    if self.agent_load.get(role, 0) > 2:
+                        continue
+                    
+                    print(f"🔄 [Manager]: Reassigning task {task_idx} from '{original_role}' to '{role}'")
+                    task_states[task_idx] = "PENDING"
+                    tasks[task_idx].assigned_agent_role = role
+                    
+                    # Rebuild context
+                    context_parts = [f"Mission: {enriched_goal}"]
+                    for dep_idx in tasks[task_idx].depends_on:
+                        if dep_idx in task_results:
+                            context_parts.append(f"Result from Task {dep_idx}: {task_results[dep_idx]}")
+                    new_context = "\n\n".join(context_parts)
+                    
+                    # Retry
+                    success = await execute_task(task_idx, new_context)
+                    if success:
+                        print(f"✅ [Manager]: Task {task_idx} successfully reassigned and completed.")
+                    else:
+                        print(f"❌ [Manager]: Task {task_idx} reassignment also failed.")
+                    break  # Only try one reassignment per task
         
         # Final status
         completed = sum(1 for s in task_states.values() if s == "COMPLETED")
         failed = sum(1 for s in task_states.values() if s == "FAILED")
+        
+        # Agent performance report
+        print(f"\n📊 [Manager]: Agent Performance Report:")
+        for role, metrics in self.agent_metrics.items():
+            total = metrics["tasks_completed"] + metrics["tasks_failed"]
+            if total > 0:
+                avg_time = metrics["total_time"] / max(1, metrics["tasks_completed"])
+                success_rate = (metrics["tasks_completed"] / total) * 100
+                print(f"   {role}: {metrics['tasks_completed']}/{total} succeeded ({success_rate:.0f}%), avg {avg_time:.1f}s/task")
         
         if failed > 0:
             print(f"\n⚠️ [Manager]: Mission #{mission_id} completed with {failed} failed task(s).")
