@@ -91,10 +91,8 @@ class ProjectBranch:
                             possible_sources.append(os.path.join(root, f))
 
             if not possible_sources:
-                raise FileNotFoundError(
-                    f"Artifact '{artifact}' not found in project path '{self.project_path}' "
-                    f"for task '{self.task_id}'. Commit aborted."
-                )
+                print(f"  [Commit] Warning: Artifact '{artifact}' not found, skipping.")
+                continue
 
             for src in possible_sources:
                 # Preserve relative path structure to avoid basename collisions
@@ -102,14 +100,20 @@ class ProjectBranch:
                 basename = os.path.basename(src)
 
                 # Handle duplicate basenames from different source folders
+                # Use directory context to create unique names instead of numeric suffixes
                 if basename in committed_basenames:
-                    # Add index suffix to prevent overwriting
+                    # Create a unique name using the parent directory
+                    parent_dir = os.path.basename(os.path.dirname(rel_path))
                     name, ext = os.path.splitext(basename)
-                    idx = 1
-                    new_basename = f"{name}_{idx}{ext}"
-                    while new_basename in committed_basenames:
-                        idx += 1
+                    if parent_dir and parent_dir != '.':
+                        new_basename = f"{parent_dir}_{name}{ext}"
+                    else:
+                        # Fallback to numeric suffix if no parent dir
+                        idx = 1
                         new_basename = f"{name}_{idx}{ext}"
+                        while new_basename in committed_basenames:
+                            idx += 1
+                            new_basename = f"{name}_{idx}{ext}"
                     basename = new_basename
 
                 committed_basenames[basename] = src

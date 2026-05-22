@@ -1,5 +1,7 @@
 import asyncio
 import warnings
+from dotenv import load_dotenv
+load_dotenv()
 from squad_os.orchestrator.manager import Manager
 
 # CORE & REGISTRY TOOLS
@@ -56,8 +58,8 @@ async def run_worker():
     ]
     
     # 3. Initialize the Manager with the full toolset
-    # Using the powerful 671B model for complex orchestration
-    manager = Manager(tool_inventory=inventory, model_name="ollama/deepseek-v3.1:671b-cloud")
+    # Using free Ollama cloud model
+    manager = Manager(tool_inventory=inventory, model_name="ollama/glm-4.7")
 
     print("\n🛰️  SquadOS 'Integrated Ecosystem' Worker is ONLINE.")
     print("🚀 Level 6 Capabilities Active: Dynamic Hiring + Agent-to-Agent Delegation.")

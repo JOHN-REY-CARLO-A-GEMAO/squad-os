@@ -96,6 +96,34 @@ class BaseAgent:
 
             tool_calls = resp_dict.get("tool_calls")
 
+            # Fallback: Some models (glm-4.7) return tool calls as JSON in content
+            if not tool_calls:
+                content = resp_dict.get("content", "")
+                # Try to extract JSON tool call from content
+                if "```json" in content:
+                    import re
+                    json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', content, re.DOTALL)
+                    if json_match:
+                        try:
+                            tc_data = json.loads(json_match.group(1))
+                            if "name" in tc_data and "arguments" in tc_data:
+                                tool_calls = [{
+                                    "function": {"name": tc_data["name"], "arguments": json.dumps(tc_data["arguments"])},
+                                    "id": "fallback_id"
+                                }]
+                        except json.JSONDecodeError:
+                            pass
+                elif content.strip().startswith("{") and content.strip().endswith("}"):
+                    try:
+                        tc_data = json.loads(content.strip())
+                        if "name" in tc_data and "arguments" in tc_data:
+                            tool_calls = [{
+                                "function": {"name": tc_data["name"], "arguments": json.dumps(tc_data["arguments"])},
+                                "id": "fallback_id"
+                            }]
+                    except json.JSONDecodeError:
+                        pass
+
             if tool_calls:
                 all_succeeded = True
                 for tool_call in tool_calls:

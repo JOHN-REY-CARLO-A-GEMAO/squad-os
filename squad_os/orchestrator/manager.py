@@ -65,7 +65,7 @@ class Manager:
                 role="Assistant", 
                 goal="Respond politely to the user.", 
                 backstory="A helpful and concise assistant.",
-                tools=[], 
+                tools=list(self.tool_inventory.values()), 
                 model_name=self.model_name
             )
         }
@@ -113,13 +113,14 @@ Structure: {{ "squad": [ {{ "role": "...", "goal": "...", "backstory": "...", "t
         roles = ", ".join([f"{a.role}" for a in self.active_agents.values()])
 
         prompt = f"""Mission: {goal}
-Roles: {roles}
+Available Roles (EXACTLY these, do NOT invent others): {roles}
 
-RULES FOR PLANNING:
-1. Every task 'description' MUST specify which TOOL the agent should use.
-2. If the agent needs to hire someone, the description MUST explicitly say: 'MUST use delegate_task'.
-3. The LAST task MUST be assigned to one of the HIRED roles listed above and MUST explicitly say: 'MUST use commit_project tool to commit all artifacts'. Do NOT invent new roles not in the hired list.
-4. Return ONLY JSON. No other text.
+RULES:
+1. Assign tasks ONLY to roles listed above. NEVER invent new roles like Researcher, Analyst, Writer, Editor, etc.
+2. If only "Assistant" is available, assign ALL tasks to "Assistant".
+3. Every task description MUST specify which TOOL to use.
+4. The LAST task MUST say: 'MUST use commit_project tool to commit all artifacts'.
+5. Return ONLY JSON. No other text.
 Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "..." }} ] }}"""
 
         for attempt in range(self.max_retries):
@@ -127,7 +128,13 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "..." }
                 response = await acompletion(model=self.model_name, messages=[{"role": "user", "content": prompt}])
                 cleaned = self._repair_json(response.choices[0].message.content)
                 plan_dict = json.loads(cleaned)
-                return MissionPlan(**plan_dict)
+                plan = MissionPlan(**plan_dict)
+                # Validate all roles exist
+                valid_roles = set(a.role for a in self.active_agents.values())
+                invalid = [t for t in plan.tasks if t.assigned_agent_role not in valid_roles]
+                if invalid:
+                    raise ValueError(f"Invalid roles: {[t.assigned_agent_role for t in invalid]}. Must use: {valid_roles}")
+                return plan
             except Exception as e:
                 print(f"🔄 [Manager]: Planning JSON Error. Retrying... ({attempt+1}/{self.max_retries})")
 

@@ -61,6 +61,32 @@ def _is_dangerous_command(command: str) -> bool:
     return False
 
 
+def _looks_like_path(token: str) -> bool:
+    """Check if a token looks like a file/directory path rather than a command flag."""
+    # Command flags start with / or - and contain only alphanumeric chars
+    # Examples: /s, /b, -la, --verbose, -rf
+    if token.startswith('/') or token.startswith('-'):
+        # Windows flags: /s, /b, /q, etc. (single char after /)
+        # Unix flags: -la, --verbose, -rf (letters after - or --)
+        stripped = token.lstrip('/-')
+        if stripped.isalnum():
+            return False  # It's a flag, not a path
+    
+    # Tokens that look like paths:
+    # - Contain directory separators (/, \)
+    # - Start with . (., .., ./file)
+    # - Contain file extensions (.py, .txt)
+    # - Contain .. (path traversal attempt)
+    if any(c in token for c in ['/', '\\', '..']):
+        return True
+    if token.startswith('.'):
+        return True
+    if '.' in token and len(token.split('.')) > 1:
+        return True
+    
+    return False
+
+
 def _validate_terminal_command(command: str, workspace: str) -> tuple[bool, str]:
     """Validate terminal command against allowlist and dangerous patterns."""
     if not command or not command.strip():
@@ -118,10 +144,9 @@ def _validate_terminal_command(command: str, workspace: str) -> tuple[bool, str]
             expect_command = False
             continue
 
-        # Path Traversal Check: Every token that looks like a path or argument
-        # must stay within the workspace if it's pointing to a file.
-        # is_safe_path handles absolute paths and relative paths with ..
-        if not is_safe_path(workspace, token):
+        # Path Traversal Check: Only check tokens that look like actual paths
+        # Skip command flags (e.g., /s, /b, -la, --verbose) and simple arguments
+        if _looks_like_path(token) and not is_safe_path(workspace, token):
             return False, f"Access denied: Token '{token}' attempts to access path outside workspace"
 
     return True, ""
@@ -222,6 +247,92 @@ class ReadFileTool(BaseTool):
 
         return f"Error: File {filename} not found in {self.workspace} or its uploads/ folder."
 
+
+def _translate_unix_to_windows(command: str) -> str:
+    """Translate common Unix commands to Windows PowerShell equivalents."""
+    import re
+    
+    # Handle mkdir -p (create parent directories)
+    # Unix: mkdir -p project/src project/tests
+    # Windows: New-Item -ItemType Directory -Force -Path "project\src", "project\tests"
+    mkdir_p_match = re.match(r'mkdir\s+-p\s+(.+)', command)
+    if mkdir_p_match:
+        paths = mkdir_p_match.group(1).strip()
+        # Split by spaces but respect quoted paths
+        path_list = [p.strip() for p in re.split(r'\s+(?![^"]*"(?:\s+[^"]*")*$)', paths)]
+        # Convert forward slashes to backslashes for Windows
+        path_list = [p.replace('/', '\\') for p in path_list]
+        paths_str = ', '.join([f'"{p}"' for p in path_list])
+        return f'New-Item -ItemType Directory -Force -Path {paths_str}'
+    
+    # Handle touch (create empty files)
+    # Unix: touch file1.txt file2.txt
+    # Windows: New-Item -ItemType File -Force -Path "file1.txt", "file2.txt"
+    touch_match = re.match(r'touch\s+(.+)', command)
+    if touch_match:
+        files = touch_match.group(1).strip()
+        file_list = [f.strip() for f in re.split(r'\s+(?![^"]*"(?:\s+[^"]*")*$)', files)]
+        file_list = [f.replace('/', '\\') for f in file_list]
+        files_str = ', '.join([f'"{f}"' for f in file_list])
+        return f'New-Item -ItemType File -Force -Path {files_str}'
+    
+    # Handle ls (list directory contents)
+    # Unix: ls -la
+    # Windows: Get-ChildItem -Force
+    ls_match = re.match(r'ls(?:\s+\S+)?', command)
+    if ls_match:
+        return 'Get-ChildItem -Force'
+    
+    # Handle rm -rf (remove recursively)
+    # Unix: rm -rf folder
+    # Windows: Remove-Item -Recurse -Force -Path "folder"
+    rm_rf_match = re.match(r'rm\s+-rf\s+(.+)', command)
+    if rm_rf_match:
+        path = rm_rf_match.group(1).strip().replace('/', '\\')
+        return f'Remove-Item -Recurse -Force -Path "{path}"'
+    
+    # Handle cat (display file contents)
+    # Unix: cat file.txt
+    # Windows: Get-Content -Path "file.txt"
+    cat_match = re.match(r'cat\s+(.+)', command)
+    if cat_match:
+        path = cat_match.group(1).strip().replace('/', '\\')
+        return f'Get-Content -Path "{path}"'
+    
+    # Handle cp (copy files)
+    # Unix: cp source dest
+    # Windows: Copy-Item -Path "source" -Destination "dest"
+    cp_match = re.match(r'cp\s+(\S+)\s+(\S+)', command)
+    if cp_match:
+        src = cp_match.group(1).replace('/', '\\')
+        dest = cp_match.group(2).replace('/', '\\')
+        return f'Copy-Item -Path "{src}" -Destination "{dest}"'
+    
+    # Handle mv (move files)
+    # Unix: mv source dest
+    # Windows: Move-Item -Path "source" -Destination "dest"
+    mv_match = re.match(r'mv\s+(\S+)\s+(\S+)', command)
+    if mv_match:
+        src = mv_match.group(1).replace('/', '\\')
+        dest = mv_match.group(2).replace('/', '\\')
+        return f'Move-Item -Path "{src}" -Destination "{dest}"'
+    
+    # Handle pwd (print working directory)
+    if command.strip() == 'pwd':
+        return 'Get-Location'
+    
+    # Handle echo
+    # Unix: echo "text" > file.txt
+    # Windows: Set-Content -Path "file.txt" -Value "text"
+    echo_redirect_match = re.match(r'echo\s+"([^"]+)"\s*>\s*(\S+)', command)
+    if echo_redirect_match:
+        text = echo_redirect_match.group(1)
+        path = echo_redirect_match.group(2).replace('/', '\\')
+        return f'Set-Content -Path "{path}" -Value "{text}"'
+    
+    return command
+
+
 class TerminalTool(BaseTool):
     name = "terminal"
     description = "Execute shell commands. Restricted to the current project branch."
@@ -234,6 +345,10 @@ class TerminalTool(BaseTool):
         is_valid, error_msg = _validate_terminal_command(command, self.workspace)
         if not is_valid:
             return f"SECURITY_ERROR: {error_msg}"
+
+        # Cross-platform compatibility: Translate Unix commands to Windows equivalents
+        if os.name == 'nt':  # Windows
+            command = _translate_unix_to_windows(command)
 
         if not os.path.exists(self.workspace): os.makedirs(self.workspace, exist_ok=True)
         process = await asyncio.create_subprocess_shell(
@@ -367,7 +482,7 @@ class DelegateTaskTool(BaseTool):
             goal=task_description,
             backstory=f"You are a sub-contracted expert helping with: {task_description}",
             tools=expert_kit,
-            model_name="ollama/deepseek-v3.1:671b-cloud"
+            model_name="ollama/glm-4.7"
         )
         result = await sub_agent.execute_task(task_description, "Context: Working as a specialist.")
         output = result.get("output") or "No output returned."

@@ -130,7 +130,7 @@ def load_global_stats():
             cursor.execute("SELECT SUM(prompt_tokens), SUM(completion_tokens), SUM(cost_usd) FROM tasks")
             stats = cursor.fetchone()
             conn.close()
-            return stats
+            return (stats[0], stats[1], stats[2]) if stats else (0, 0, 0.0)
         except Exception:
             pass
     return (0, 0, 0.0)
