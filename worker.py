@@ -53,6 +53,14 @@ from squad_os.tools.self_healing import (
     health_monitor
 )
 
+# RICH HITL
+from squad_os.tools.hitl import (
+    RichApprovalTool,
+    NotifyHumanTool,
+    HITLInterruptTool,
+    HITLWebSocketServer
+)
+
 from squad_os.database.session import init_db, get_next_queued_mission, update_mission
 
 # Clean up terminal warnings
@@ -105,7 +113,12 @@ async def run_worker():
         # SELF-HEALING:
         SelfHealTool(),
         HealthCheckTool(),
-        RetryWithBackoffTool()
+        RetryWithBackoffTool(),
+        
+        # RICH HITL:
+        RichApprovalTool(),
+        NotifyHumanTool(),
+        HITLInterruptTool()
     ]
     
     # 3. Initialize the Manager with the full toolset
@@ -115,7 +128,17 @@ async def run_worker():
     print("\n🛰️  SquadOS 'Integrated Ecosystem' Worker is ONLINE.")
     print("🚀 Level 6 Capabilities Active: Dynamic Hiring + Agent-to-Agent Delegation.")
     print("📅 Scheduling Engine Active: Cron-like mission scheduling enabled.")
+    print("📡 HITL WebSocket Server: Real-time human-in-the-loop notifications.")
     print("--- Waiting for missions ---")
+
+    # Start WebSocket server for HITL notifications
+    ws_task = None
+    try:
+        ws_server = HITLWebSocketServer.get_instance()
+        ws_task = asyncio.create_task(ws_server.start())
+    except Exception as e:
+        print(f"⚠️ [Worker]: HITL WebSocket server failed to start: {e}")
+        print("   Falling back to polling-based HITL.")
 
     # 4. The Polling Loop
     while True:

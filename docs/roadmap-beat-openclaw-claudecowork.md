@@ -31,9 +31,10 @@
 - **Skill marketplace** (tool discovery, dynamic loading, and marketplace browsing)
 - **Scheduling/cron workflows** (recurring missions, timed task execution, schedule management)
 - **Self-healing agents** (error classification, health monitoring, exponential backoff, automatic recovery strategies)
+- **Rich HITL** (WebSocket notifications, structured approval forms, real-time interrupts, guided recovery)
 
 ### 🔄 In Progress
-- **Rich HITL** (WebSocket notifications, structured forms)
+- (none — all roadmap items complete)
 
 ###  Planned
 - (none)
@@ -96,7 +97,7 @@
 | **Cost** | ✅ Free self-hosted | ~$20/mo + API | $17-200/mo |
 | **Multi-Agent** | ✅ DAG parallel + swarm coordination | ✅ Parallel | ❌ Single agent |
 | **Browser Automation** | ✅ Playwright | ❌ | ❌ |
-| **Human-in-the-Loop** | ✅ Dashboard approvals | ⚠️ Limited | ✅ Basic |
+| **Human-in-the-Loop** | ✅ WebSocket notifications, structured forms, real-time interrupts | ⚠️ Limited | ✅ Basic |
 | **Native Integrations** | ✅ Telegram, Discord, Email | ✅ 25+ channels | ❌ Desktop only |
 | **Skill Marketplace** | ✅ Tool discovery and dynamic loading | ✅ ClawMart | ❌ None |
 | **Scheduling** | ✅ Cron-like scheduling with recurring missions | ✅ Cron | ✅ Basic |
