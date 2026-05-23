@@ -376,6 +376,7 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
         # Build dependency graph and execute in waves
         max_waves = len(tasks) * 2  # Safety limit
         wave = 0
+        _memory_written = False
         
         while any(state == "PENDING" for state in task_states.values()) and wave < max_waves:
             wave += 1
@@ -412,6 +413,15 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
                     print(f"⚠️ [Manager]: No tasks ready to execute. Possible circular dependency.")
                     break
             
+            # Write project memory before the commit task runs (branch gets archived after)
+            for task_idx in ready_tasks:
+                if "commit_project" in tasks[task_idx].description.lower():
+                    try:
+                        self._write_project_memory(shared_branch, enriched_goal, tasks, task_results, wave)
+                    except Exception as e:
+                        print(f"⚠️ [Manager]: Failed to write project memory: {e}")
+                    _memory_written = True
+
             # Execute ready tasks in parallel
             print(f"\n🔄 [Manager]: Wave {wave} - Executing {len(ready_tasks)} tasks in parallel: {ready_tasks}")
             
@@ -485,12 +495,13 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
                         print(f"❌ [Manager]: Task {task_idx} reassignment also failed.")
                     break  # Only try one reassignment per task
         
-        # --- AUTO-GENERATE PROJECT MEMORY ---
-        try:
-            self._write_project_memory(shared_branch, enriched_goal, tasks, task_results, wave)
-        except Exception as e:
-            print(f"⚠️ [Manager]: Failed to write project memory: {e}")
-        
+        # Auto-generate project memory (fallback if no commit task ran)
+        if not _memory_written:
+            try:
+                self._write_project_memory(shared_branch, enriched_goal, tasks, task_results, wave)
+            except Exception as e:
+                print(f"⚠️ [Manager]: Failed to write project memory: {e}")
+
         # Final status
         completed = sum(1 for s in task_states.values() if s == "COMPLETED")
         failed = sum(1 for s in task_states.values() if s == "FAILED")
