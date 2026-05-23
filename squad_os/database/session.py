@@ -196,6 +196,18 @@ async def init_db():
                 FOREIGN KEY (mission_id) REFERENCES missions (id) ON DELETE CASCADE
             )
         """)
+        # 7. Performance Indexes
+        # Optimizes mission retrieval by status (e.g. Dashboard, Worker Queue)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_missions_status ON missions(status)")
+        # Optimizes task lookups for specific missions (Mission View, Context Loading)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_mission_id ON tasks(mission_id)")
+        # Optimizes task filtering by status
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)")
+        # Optimizes approval retrieval for missions
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_approvals_mission_id ON approvals(mission_id)")
+        # Optimizes interrupt retrieval for missions
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_interrupts_mission_id ON mission_interrupts(mission_id)")
+
         await db.commit()
 
 async def init_interrupts_table():
@@ -214,6 +226,8 @@ async def init_interrupts_table():
                 FOREIGN KEY (mission_id) REFERENCES missions (id) ON DELETE CASCADE
             )
         """)
+        # Optimize interrupt lookups
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_interrupts_mission_id ON mission_interrupts(mission_id)")
         await db.commit()
 
 # --- MISSION & TASK HELPERS ---

@@ -13,6 +13,7 @@ from squad_os.agents.base import BaseAgent
 from squad_os.database.session import create_mission, create_task, update_task, update_mission, update_blackboard, DB_PATH
 from squad_os.core.projects import ProjectBranch
 from squad_os.tools.self_healing import health_monitor
+from squad_os.core.utils import is_safe_path
 
 class TaskPlan(BaseModel):
     description: str
@@ -262,6 +263,11 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
                             f['name'] = safe_name
 
                         if os.path.exists(src):
+                            # Security: Validate that temp_path is within the expected uploads directory
+                            if not is_safe_path(os.path.join("workspace", "uploads"), src):
+                                logging.warning(f"BLOCKED: Attempted path traversal via uploaded file temp_path: {src}")
+                                continue
+
                             shutil.move(src, dest)
                             rel_path = os.path.relpath(dest, os.getcwd())
                             f['final_path'] = rel_path
