@@ -4,6 +4,10 @@ from typing import Optional
 from squad_os.tools.base import BaseTool
 from squad_os.core.utils import is_safe_path
 
+_FFMPEG_PATH = r"C:\Users\Administrator\AppData\Local\Microsoft\WinGet\Packages\yt-dlp.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-N-124279-g0f6ba39122-win64-gpl\bin"
+if _FFMPEG_PATH not in os.environ.get("PATH", ""):
+    os.environ["PATH"] = _FFMPEG_PATH + os.pathsep + os.environ.get("PATH", "")
+
 class VideoProcessingTool(BaseTool):
     name = "video_remove_watermark"
     description = (

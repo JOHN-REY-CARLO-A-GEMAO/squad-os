@@ -56,6 +56,10 @@ class BaseAgent:
                 restricted = {required_tool_name: self.tools[required_tool_name]}
                 self.tools = restricted
                 print(f"  [{self.role}] Task requires '{required_tool_name}' — restricted toolset to required tool.")
+                task_description += (
+                    f"\n\nCRITICAL: You MUST call the '{required_tool_name}' tool function. "
+                    "Do NOT respond with text only — you must execute the tool call."
+                )
 
         tool_schemas = [
             {"type": "function", "function": {"name": t.name, "description": t.description, "parameters": t.parameters}}
