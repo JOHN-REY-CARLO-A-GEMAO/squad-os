@@ -150,6 +150,17 @@ def get_project_status(project_id, is_active):
         return "Awaiting Commit"
     return "Exploring"
 
+def format_project_label(proj_id):
+    """Formats a project ID like '20240101_120000_my_project' to '12:00:00 - My Project'."""
+    parts = proj_id.split('_', 2)
+    if len(parts) >= 3:
+        ts = parts[1]
+        name = parts[2].replace('_', ' ').title()
+        if len(ts) == 6:
+            formatted_ts = f"{ts[:2]}:{ts[2:4]}:{ts[4:]}"
+            return f"{formatted_ts} - {name}"
+    return proj_id.replace('_', ' ').title()
+
 # --- UI ---
 
 st.title("🛡️ SquadOS: Project Command Center")
@@ -175,8 +186,11 @@ with st.sidebar:
     if not active_projects:
         st.write("No active projects.")
     for proj in active_projects:
-        label = f"📍 {proj}" if proj == st.session_state.selected_proj else f"🚀 {proj}"
-        if st.button(label, key=f"btn_act_{proj}", width="stretch", help=f"Open active project: {proj}"):
+        status = get_project_status(proj, True)
+        icon = "⚙️" if status == "Exploring" else "👀"
+        display_label = format_project_label(proj)
+        label = f"📍 {display_label}" if proj == st.session_state.selected_proj else f"{icon} {display_label}"
+        if st.button(label, key=f"btn_act_{proj}", use_container_width=True, help=f"Open active project: {proj} (Status: {status})"):
             st.session_state.selected_proj = proj
             st.session_state.is_active = True
             st.rerun()
@@ -185,13 +199,14 @@ with st.sidebar:
     if not archived_projects:
         st.write("No archived projects.")
     for proj in archived_projects:
-        label = f"📍 {proj}" if proj == st.session_state.selected_proj else f"📦 {proj}"
-        if st.button(label, key=f"btn_arc_{proj}", width="stretch", help=f"Open archived project: {proj}"):
+        display_label = format_project_label(proj)
+        label = f"📍 {display_label}" if proj == st.session_state.selected_proj else f"📦 {display_label}"
+        if st.button(label, key=f"btn_arc_{proj}", use_container_width=True, help=f"Open archived project: {proj}"):
             st.session_state.selected_proj = proj
             st.session_state.is_active = False
             st.rerun()
 
-    if st.button("Reset View (Go to Chat)", width="stretch", shortcut="Esc", help="Return to the main chat interface"):
+    if st.button("Reset View (Go to Chat)", use_container_width=True, shortcut="Esc", help="Return to the main chat interface"):
         st.session_state.selected_proj = None
         st.rerun()
 
@@ -200,8 +215,16 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("📊 Global Performance")
     col_s1, col_s2 = st.columns(2)
-    col_s1.metric("Total Cost", f"${stats[2] if stats[2] else 0.0:.4f}")
-    col_s2.metric("Total Tokens", f"{ (stats[0] or 0) + (stats[1] or 0) :,}")
+    col_s1.metric(
+        "Total Cost",
+        f"${stats[2] if stats[2] else 0.0:.4f}",
+        help="The aggregate USD cost of all LLM requests across all missions."
+    )
+    col_s2.metric(
+        "Total Tokens",
+        f"{ (stats[0] or 0) + (stats[1] or 0) :,}",
+        help="The combined count of prompt and completion tokens processed."
+    )
 
 selected_project = st.session_state.selected_proj
 is_selected_active = st.session_state.is_active
@@ -272,6 +295,8 @@ else:
     col1, col2 = st.columns([3, 1])
     with col1:
         st.header(f"Project: `{selected_project}`")
+        project_root = os.path.abspath(os.path.join(PROJECTS_DIR if is_selected_active else ARCHIVES_DIR, selected_project))
+        st.caption(f"📍 **Location:** `{project_root}`")
     with col2:
         if st.button("🔙 Back to Chat", help="Return to the main chat interface"):
             st.session_state.selected_proj = None
