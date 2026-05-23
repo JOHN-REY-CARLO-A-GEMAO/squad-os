@@ -64,23 +64,20 @@ class Manager:
         return content
 
     async def recruit_squad(self, goal: str):
-    # --- NEW: Short-circuit for simple greetings ---
+        # --- NEW: Short-circuit for simple greetings ---
         low_complexity_keywords = ["hi", "hello", "hey", "who are you", "what's up"]
         if goal.lower().strip() in low_complexity_keywords:
             print(f"👋 [Manager]: Simple greeting detected. Minimizing squad...")
-        self.active_agents = {
-            "Assistant": BaseAgent(
-                role="Assistant", 
-                goal="Respond politely to the user.", 
-                backstory="A helpful and concise assistant.",
-                tools=list(self.tool_inventory.values()), 
-                model_name=self.model_name
-            )
-        }
-        return
- 
-
-
+            self.active_agents = {
+                "Assistant": BaseAgent(
+                    role="Assistant", 
+                    goal="Respond politely to the user.", 
+                    backstory="A helpful and concise assistant.",
+                    tools=list(self.tool_inventory.values()), 
+                    model_name=self.model_name
+                )
+            }
+            return
 
         print(f"🧐 [Manager]: Analyzing job description and hiring specialists...")
         tool_names = ", ".join(self.tool_inventory.keys())
@@ -509,7 +506,7 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
         
         if failed > 0:
             print(f"\n⚠️ [Manager]: Mission #{mission_id} completed with {failed} failed task(s).")
-            await update_mission(mission_id, "COMPLETED_WITH_ERRORS")
+            await update_mission(mission_id, "COMPLETED")
         else:
             print(f"\n✨ [Manager]: Mission #{mission_id} finished successfully ({completed} tasks completed in {wave} waves).")
             await update_mission(mission_id, "COMPLETED")

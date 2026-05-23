@@ -84,7 +84,7 @@ async def run_worker():
         DelegateTaskTool(),
         DesktopControlTool(),
         UIInspectorTool(),
-        CommitProjectTool(agent=type('obj', (object,), {'active_branch': None})()),
+        CommitProjectTool(),
         
         # VISUAL CAPABILITIES ACTIVATED:
         BrowserControlTool(),
