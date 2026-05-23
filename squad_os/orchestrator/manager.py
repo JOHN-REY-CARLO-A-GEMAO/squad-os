@@ -178,7 +178,7 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
                 all_files.append((rel, size))
 
         lines = []
-        lines.append(f"# Project Memory: {branch.branch_id}")
+        lines.append(f"# Project Memory: {branch.task_id}")
         lines.append("")
         lines.append(f"**Mission:** {goal}")
         lines.append(f"**Completed:** {now}")
