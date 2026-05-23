@@ -47,6 +47,16 @@ class BaseAgent:
             if hasattr(tool, "active_branch"):
                 tool.active_branch = self.active_branch
 
+        # Check if task description mandates a specific tool
+        import re
+        must_use_match = re.search(r"MUST use (\w+) tool", task_description)
+        if must_use_match:
+            required_tool_name = must_use_match.group(1)
+            if required_tool_name in self.tools:
+                restricted = {required_tool_name: self.tools[required_tool_name]}
+                self.tools = restricted
+                print(f"  [{self.role}] Task requires '{required_tool_name}' — restricted toolset to required tool.")
+
         tool_schemas = [
             {"type": "function", "function": {"name": t.name, "description": t.description, "parameters": t.parameters}}
             for t in self.tools.values()
