@@ -27,6 +27,11 @@ from squad_os.tools.visual import (
     VisionAnalysisTool    # <--- The Agent's Visual Analyzer
 )
 
+# VIDEO PROCESSING
+from squad_os.tools.video import (
+    VideoProcessingTool   # <--- Watermark removal, video editing
+)
+
 # NATIVE INTEGRATIONS
 from squad_os.tools.telegram import TelegramTool, TelegramReceiveTool
 from squad_os.tools.discord import DiscordTool, DiscordReceiveTool
@@ -89,6 +94,9 @@ async def run_worker():
         # VISUAL CAPABILITIES ACTIVATED:
         BrowserControlTool(),
         VisionAnalysisTool(),
+
+        # VIDEO PROCESSING:
+        VideoProcessingTool(),
         
         # NATIVE INTEGRATIONS:
         TelegramTool(),
