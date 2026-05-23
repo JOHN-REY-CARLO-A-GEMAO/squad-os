@@ -121,6 +121,10 @@ def submit_new_mission(prompt, uploaded_files_json=None):
             except Exception as e:
                 st.error(f"Failed to push to {path}: {e}")
 
+# BOLT OPTIMIZATION: Cache global stats to reduce database aggregate load.
+# Impact: Prevents redundant O(N) SUM queries on every 5s refresh cycle.
+# Expected: Reduces dashboard latency and DB CPU usage as project history grows.
+@st.cache_data(ttl=60)
 def load_global_stats():
     conn = get_db_connection()
     if conn:
