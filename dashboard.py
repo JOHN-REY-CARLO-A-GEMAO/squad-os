@@ -121,6 +121,7 @@ def submit_new_mission(prompt, uploaded_files_json=None):
             except Exception as e:
                 st.error(f"Failed to push to {path}: {e}")
 
+@st.cache_data(ttl=60)
 def load_global_stats():
     conn = get_db_connection()
     if conn:
@@ -129,7 +130,8 @@ def load_global_stats():
             cursor.execute("SELECT SUM(prompt_tokens), SUM(completion_tokens), SUM(cost_usd) FROM tasks")
             stats = cursor.fetchone()
             conn.close()
-            return (stats[0], stats[1], stats[2]) if stats else (0, 0, 0.0)
+            # Explicitly return standard Python types (tuple) to ensure @st.cache_data serialization works.
+            return (stats[0] or 0, stats[1] or 0, stats[2] or 0.0) if stats else (0, 0, 0.0)
         except Exception:
             pass
     return (0, 0, 0.0)
