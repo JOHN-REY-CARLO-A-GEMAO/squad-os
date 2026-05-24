@@ -14,6 +14,9 @@ except ImportError:
 from squad_os.tools.base import BaseTool
 from squad_os.core.utils import is_safe_path
 
+# Security: Trusted system directories for absolute command paths
+TRUSTED_SYSTEM_DIRS: List[str] = ['/bin/', '/usr/bin/', '/usr/local/bin/']
+
 # Security: Dangerous command patterns that are blocked
 DANGEROUS_PATTERNS: Set[str] = {
     'rm -rf /', 'rm -rf /*', 'rm -rf ~', 'dd if=/dev/zero', 'mkfs.', 'fdisk',
@@ -124,23 +127,32 @@ def _validate_terminal_command(command: str, workspace: str) -> tuple[bool, str]
 
         # If we expect a command name (at start or after an operator)
         if expect_command:
-            cmd_name = token.lower()
-            # Allow common shell built-ins and safe commands
-            if cmd_name in ALLOWED_COMMANDS or cmd_name.startswith('./'):
-                # OK - allowed or local execution
-                pass
-            elif '/' in cmd_name:
-                # Check for qualified paths like /bin/ls
-                if os.path.basename(cmd_name) in ALLOWED_COMMANDS:
-                    # OK - /bin/ls is allowed because ls is allowed
-                    pass
-                else:
-                    return False, f"Command '{cmd_name}' not in allowed list"
-            else:
+            cmd_name = token
+
+            # Security: Validate command path
+            if os.path.isabs(cmd_name):
+                # Normalize path to resolve .. segments
+                cmd_name = os.path.normpath(cmd_name)
+                # Absolute paths must be in trusted system directories
+                if not any(cmd_name.startswith(tp) for tp in TRUSTED_SYSTEM_DIRS):
+                    # If not in trusted system dirs, it MUST be in workspace
+                    if not is_safe_path(workspace, cmd_name):
+                        return False, f"Access denied: Command path '{cmd_name}' is outside the workspace and not in a trusted system directory"
+
+                # Even if path is trusted, the command basename must be in ALLOWED_COMMANDS
+                if os.path.basename(cmd_name).lower() not in ALLOWED_COMMANDS:
+                    return False, f"Command '{os.path.basename(cmd_name)}' not in allowed list"
+
+            elif cmd_name.startswith('./') or '/' in cmd_name or '\\' in cmd_name:
+                # Relative path must be within workspace
+                if not is_safe_path(workspace, cmd_name):
+                    return False, f"Access denied: Command '{cmd_name}' attempts to access path outside workspace"
+
+            elif cmd_name.lower() not in ALLOWED_COMMANDS:
                 return False, f"Command '{cmd_name}' not in allowed list"
 
             # Command name itself is exempt from the generic path check below
-            # because it might be an absolute path (e.g., /bin/ls)
+            # because we just validated it above
             expect_command = False
             continue
 
