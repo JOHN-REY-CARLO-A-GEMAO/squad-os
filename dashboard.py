@@ -150,6 +150,22 @@ def get_project_status(project_id, is_active):
         return "Awaiting Commit"
     return "Exploring"
 
+def format_project_id(project_id):
+    """Formats YYYYMMDD_HHMMSS_slug into HH:MM:SS - Slug if it matches the pattern."""
+    try:
+        parts = project_id.split("_", 2)
+        # Check if it looks like YYYYMMDD_HHMMSS
+        if len(parts) >= 2 and len(parts[0]) == 8 and len(parts[1]) == 6 and parts[0].isdigit() and parts[1].isdigit():
+            time_str = parts[1]
+            formatted_time = f"{time_str[:2]}:{time_str[2:4]}:{time_str[4:6]}"
+            if len(parts) == 3:
+                slug = parts[2].replace("_", " ").title()
+                return f"{formatted_time} - {slug}"
+            return formatted_time
+    except Exception:
+        pass
+    return project_id.replace("_", " ").title()
+
 # --- UI ---
 
 st.title("🛡️ SquadOS: Project Command Center")
@@ -175,8 +191,12 @@ with st.sidebar:
     if not active_projects:
         st.write("No active projects.")
     for proj in active_projects:
-        label = f"📍 {proj}" if proj == st.session_state.selected_proj else f"🚀 {proj}"
-        if st.button(label, key=f"btn_act_{proj}", width="stretch", help=f"Open active project: {proj}"):
+        status = get_project_status(proj, True)
+        icon = "⚙️" if status == "Exploring" else "👀"
+        display_name = format_project_id(proj)
+        label = f"📍 {display_name}" if proj == st.session_state.selected_proj else f"{icon} {display_name}"
+
+        if st.button(label, key=f"btn_act_{proj}", use_container_width=True, help=f"Open active project: {proj} ({status})"):
             st.session_state.selected_proj = proj
             st.session_state.is_active = True
             st.rerun()
@@ -185,13 +205,15 @@ with st.sidebar:
     if not archived_projects:
         st.write("No archived projects.")
     for proj in archived_projects:
-        label = f"📍 {proj}" if proj == st.session_state.selected_proj else f"📦 {proj}"
-        if st.button(label, key=f"btn_arc_{proj}", width="stretch", help=f"Open archived project: {proj}"):
+        display_name = format_project_id(proj)
+        label = f"📍 {display_name}" if proj == st.session_state.selected_proj else f"📦 {display_name}"
+
+        if st.button(label, key=f"btn_arc_{proj}", use_container_width=True, help=f"Open archived project: {proj}"):
             st.session_state.selected_proj = proj
             st.session_state.is_active = False
             st.rerun()
 
-    if st.button("Reset View (Go to Chat)", width="stretch", shortcut="Esc", help="Return to the main chat interface"):
+    if st.button("Reset View (Go to Chat)", use_container_width=True, shortcut="Esc", help="Return to the main chat interface"):
         st.session_state.selected_proj = None
         st.rerun()
 
