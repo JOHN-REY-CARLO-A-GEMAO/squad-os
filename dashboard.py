@@ -4,8 +4,10 @@ import pandas as pd
 import os
 import json
 import mimetypes
+import asyncio
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
+from squad_os.database.session import save_persona, get_all_personas, delete_persona
 
 # Configuration
 DB_PATHS = ["shared_memory.db", "instance/shared_memory.db"]
@@ -175,8 +177,9 @@ with st.sidebar:
     if not active_projects:
         st.write("No active projects.")
     for proj in active_projects:
-        label = f"📍 {proj}" if proj == st.session_state.selected_proj else f"🚀 {proj}"
-        if st.button(label, key=f"btn_act_{proj}", width="stretch", help=f"Open active project: {proj}"):
+        status_icon = "🟢" if get_project_status(proj, True) == "Exploring" else "🟡"
+        label = f"📍 {proj}" if proj == st.session_state.selected_proj else f"{status_icon} {proj}"
+        if st.button(label, key=f"btn_act_{proj}", use_container_width=True, help=f"Open active project: {proj}"):
             st.session_state.selected_proj = proj
             st.session_state.is_active = True
             st.rerun()
@@ -186,12 +189,12 @@ with st.sidebar:
         st.write("No archived projects.")
     for proj in archived_projects:
         label = f"📍 {proj}" if proj == st.session_state.selected_proj else f"📦 {proj}"
-        if st.button(label, key=f"btn_arc_{proj}", width="stretch", help=f"Open archived project: {proj}"):
+        if st.button(label, key=f"btn_arc_{proj}", use_container_width=True, help=f"Open archived project: {proj}"):
             st.session_state.selected_proj = proj
             st.session_state.is_active = False
             st.rerun()
 
-    if st.button("Reset View (Go to Chat)", width="stretch", shortcut="Esc", help="Return to the main chat interface"):
+    if st.button("Reset View (Go to Chat)", use_container_width=True, shortcut="Esc", help="Return to the main chat interface"):
         st.session_state.selected_proj = None
         st.rerun()
 
@@ -209,61 +212,112 @@ is_selected_active = st.session_state.is_active
 if not selected_project:
     st.info("👋 Welcome to SquadOS. Dispatch a new mission below, or click a project on the left to view details.")
 
-    # --- CHAT GPT LIKE INTERFACE ---
-    st.subheader("💬 Mission Control Chat")
-    
-    # Display Chat History (Past Missions)
-    missions = load_missions()
-    chat_container = st.container(height=500)
-    
-    with chat_container:
-        if not missions.empty:
-            for _, row in missions.iterrows():
-                # Extract the prompt text based on schema
-                prompt_text = row.get('goal') if pd.notna(row.get('goal')) else row.get('description', 'Unknown Task')
-                status = row.get('status', 'UNKNOWN').upper()
-                
-                # User Bubble
-                with st.chat_message("user"):
-                    st.write(prompt_text)
+    main_tab1, main_tab2 = st.tabs(["💬 Mission Control", "🏗️ Agent Factory"])
 
-                    # Show uploaded files if any
-                    uploaded_files_json = row.get('uploaded_files')
-                    if uploaded_files_json:
-                        try:
-                            files = json.loads(uploaded_files_json)
-                            if files:
-                                st.markdown("---")
-                                st.markdown(f"📎 **Attached Files ({len(files)}):**")
-                                for f in files:
-                                    st.caption(f"📄 {f['name']} ({f['size_bytes']//1024} KB)")
-                        except Exception:
-                            pass
+    with main_tab1:
+        # --- CHAT GPT LIKE INTERFACE ---
+        st.subheader("💬 Mission Control Chat")
+
+        # Display Chat History (Past Missions)
+        missions = load_missions()
+        chat_container = st.container(height=500)
+
+        with chat_container:
+            if not missions.empty:
+                for _, row in missions.iterrows():
+                    # Extract the prompt text based on schema
+                    prompt_text = row.get('goal') if pd.notna(row.get('goal')) else row.get('description', 'Unknown Task')
+                    status = row.get('status', 'UNKNOWN').upper()
+
+                    # User Bubble
+                    with st.chat_message("user"):
+                        st.write(prompt_text)
+
+                        # Show uploaded files if any
+                        uploaded_files_json = row.get('uploaded_files')
+                        if uploaded_files_json:
+                            try:
+                                files = json.loads(uploaded_files_json)
+                                if files:
+                                    st.markdown("---")
+                                    st.markdown(f"📎 **Attached Files ({len(files)}):**")
+                                    for f in files:
+                                        st.caption(f"📄 {f['name']} ({f['size_bytes']//1024} KB)")
+                            except Exception:
+                                pass
+
+                    # Agent Bubble
+                    with st.chat_message("assistant", avatar="🤖"):
+                        if status == "QUEUED":
+                            st.info("⏳ Queued and waiting for the SquadOS worker to pick this up...")
+                        elif status == "IN_PROGRESS":
+                            st.warning("⚡ The team is currently executing this mission in the background.")
+                        elif status == "COMPLETED":
+                            st.success("✅ Mission accomplished! Check the Branch Explorer for results.")
+                        elif status == "FAILED":
+                            st.error("❌ Mission failed. Please check terminal logs.")
+                        else:
+                            st.write(f"Status: {status}")
+            else:
+                st.write("No missions found. Send a message below to start!")
+
+        # Chat Input Box
+        with st.container():
+            uploaded_files = st.file_uploader("📎 Attach documents, images, videos, etc.", accept_multiple_files=True, label_visibility="collapsed", help="Total upload limit: 500MB (200MB per file)")
+            if prompt := st.chat_input("Ask SquadOS to do something... (e.g., 'Analyze this document for me')"):
+                files_json = save_uploaded_files(uploaded_files)
+                if files_json != "ERROR_SIZE":
+                    submit_new_mission(prompt, files_json)
+                    st.session_state.mission_submitted = True
+                    st.rerun()
+
+    with main_tab2:
+        st.subheader("🏗️ Agent Factory")
+        st.caption("Design and deploy specialized agent personas for your squad.")
+
+        col_a, col_b = st.columns([1, 2])
+
+        with col_a:
+            st.write("**Active Personas**")
+            personas = asyncio.run(get_all_personas())
+            if not personas:
+                st.info("No custom personas defined.")
+            else:
+                for p in personas:
+                    with st.expander(f"👤 {p['role']}"):
+                        st.write(f"**Goal:** {p['goal']}")
+                        st.write(f"**Tools:** {', '.join(json.loads(p['tools']))}")
+                        if st.button(f"🗑️ Delete {p['role']}", key=f"del_{p['role']}"):
+                            asyncio.run(delete_persona(p['role']))
+                            st.rerun()
+
+        with col_b:
+            st.write("**Assemble New Agent**")
+            with st.form("new_agent_form"):
+                new_role = st.text_input("Role Name", placeholder="e.g. Senior Security Auditor")
+                new_goal = st.text_area("Primary Goal", placeholder="Identify vulnerabilities in the provided codebase.")
+                new_backstory = st.text_area("Backstory", placeholder="An elite white-hat hacker with 20 years of experience...")
+
+                all_tools = [
+                    "web_search", "write_file", "read_file", "terminal", "python_runner",
+                    "dashboard_approval", "memory_search", "set_shared_value", "get_shared_value",
+                    "delegate_task", "desktop_control", "ui_inspector", "commit_project",
+                    "browser_control", "vision_analysis", "video_processing", "telegram_send",
+                    "telegram_receive", "discord_send", "discord_receive", "email_send",
+                    "email_receive", "marketplace_search", "install_skill", "get_tool_info",
+                    "schedule_mission", "list_schedules", "cancel_schedule", "self_heal",
+                    "health_check", "rich_approval", "notify_human", "hitl_interrupt"
+                ]
+                selected_tools = st.multiselect("Assign Tools", all_tools)
                 
-                # Agent Bubble
-                with st.chat_message("assistant", avatar="🤖"):
-                    if status == "QUEUED":
-                        st.info("⏳ Queued and waiting for the SquadOS worker to pick this up...")
-                    elif status == "IN_PROGRESS":
-                        st.warning("⚡ The team is currently executing this mission in the background.")
-                    elif status == "COMPLETED":
-                        st.success("✅ Mission accomplished! Check the Branch Explorer for results.")
-                    elif status == "FAILED":
-                        st.error("❌ Mission failed. Please check terminal logs.")
+                submit_agent = st.form_submit_button("💾 Save Persona")
+                if submit_agent:
+                    if new_role and new_goal and new_backstory:
+                        asyncio.run(save_persona(new_role, new_goal, new_backstory, selected_tools))
+                        st.success(f"Agent '{new_role}' added to the registry!")
+                        st.rerun()
                     else:
-                        st.write(f"Status: {status}")
-        else:
-            st.write("No missions found. Send a message below to start!")
-
-    # Chat Input Box
-    with st.container():
-        uploaded_files = st.file_uploader("📎 Attach documents, images, videos, etc.", accept_multiple_files=True, label_visibility="collapsed", help="Total upload limit: 500MB (200MB per file)")
-        if prompt := st.chat_input("Ask SquadOS to do something... (e.g., 'Analyze this document for me')"):
-            files_json = save_uploaded_files(uploaded_files)
-            if files_json != "ERROR_SIZE":
-                submit_new_mission(prompt, files_json)
-                st.session_state.mission_submitted = True
-                st.rerun()
+                        st.error("Please fill in all fields.")
 
 else:
     # --- INDIVIDUAL PROJECT VIEW ---
@@ -281,10 +335,10 @@ else:
 
     project_root = os.path.join(PROJECTS_DIR if is_selected_active else ARCHIVES_DIR, selected_project)
 
-    tab1, tab2, tab3, tab4 = st.tabs(["🖼️ Project Files", "📜 Live Logs", "🧠 Memory", "✅ Commit Review"])
+    tab1, tab2, tab3, tab4 = st.tabs(["🛠️ Live Workspace", "📜 Live Logs", "🧠 Memory", "✅ Commit Review"])
 
     with tab1:
-        st.subheader("All Project Files")
+        st.subheader("🛠️ Live Coder Workspace")
         EXTENSIONS_CODE = {'.py', '.js', '.ts', '.html', '.css', '.json', '.md', '.yaml', '.yml', '.toml', '.cfg', '.ini', '.sh', '.bat', '.ps1', '.sql', '.txt', '.env.example', '.gitignore'}
         EXTENSIONS_IMG = {'.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg', '.bmp'}
         EXTENSIONS_VID = {'.mp4', '.webm', '.avi', '.mov'}
@@ -322,8 +376,15 @@ else:
                     for rel in sorted(grouped[dirname]):
                         fpath = os.path.join(project_root, rel)
                         ext = os.path.splitext(rel)[1].lower()
+
+                        # Get file stats for "Live Coder" feel
+                        stats = os.stat(fpath)
+                        mtime = datetime.fromtimestamp(stats.st_mtime).strftime('%Y-%m-%d %H:%M:%S')
+                        size_kb = stats.st_size / 1024
+
                         col_a, col_b = st.columns([4, 1])
                         with col_a:
+                            st.caption(f"Last modified: {mtime} | Size: {size_kb:.1f} KB")
                             if ext in img_exts:
                                 try:
                                     st.image(fpath, use_container_width=True)
@@ -332,7 +393,7 @@ else:
                             elif ext in code_exts:
                                 try:
                                     with open(fpath, "r", encoding="utf-8", errors="ignore") as fh:
-                                        st.code(fh.read(), language="python" if ext == ".py" else None)
+                                        st.code(fh.read(), language=ext.lstrip('.'), line_numbers=True)
                                 except Exception:
                                     st.write(f"📄 {rel}")
                             else:

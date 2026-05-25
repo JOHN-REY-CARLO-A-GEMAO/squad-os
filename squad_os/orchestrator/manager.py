@@ -10,7 +10,7 @@ import os
 import shutil
 import aiosqlite
 from squad_os.agents.base import BaseAgent
-from squad_os.database.session import create_mission, create_task, update_task, update_mission, update_blackboard, DB_PATH
+from squad_os.database.session import create_mission, create_task, update_task, update_mission, update_blackboard, DB_PATH, get_all_personas
 from squad_os.core.projects import ProjectBranch
 from squad_os.tools.self_healing import health_monitor
 from squad_os.core.utils import is_safe_path
@@ -21,6 +21,8 @@ class TaskPlan(BaseModel):
     depends_on: List[int] = Field(default_factory=list, description="List of task indices (0-based) this task depends on")
     priority: int = Field(default=0, description="Task priority (higher = more urgent)")
     estimated_complexity: str = Field(default="medium", description="low, medium, or high")
+    is_swarm: bool = Field(default=False, description="Whether this task should be executed as a swarm (multiple agents)")
+    swarm_roles: List[str] = Field(default_factory=list, description="List of roles to include in the swarm if is_swarm is True")
 
 class MissionPlan(BaseModel):
     tasks: List[TaskPlan]
@@ -34,6 +36,7 @@ class Manager:
         self.active_agents = {}
         self.agent_metrics = {}  # role -> {"tasks_completed": int, "tasks_failed": int, "avg_time": float}
         self.agent_load = {}  # role -> current number of active tasks
+        self.plan_mission_obj = None
 
     def _repair_json(self, content: str) -> str:
         """Deep clean JSON, handling severe LLM hallucinations."""
@@ -46,20 +49,13 @@ class Manager:
             content = content[start:end+1]
         content = content.replace('\r', '').replace('\n', ' ')
 
-        # Only attempt quote repair if JSON is invalid and looks like it uses single quotes for keys
-        # This regex specifically targets JSON property keys: 'property_name': value
-        # It uses word boundary and lookahead to avoid matching apostrophes inside string values
         import json
         try:
             json.loads(content)
-            return content  # Valid JSON, no repair needed
+            return content
         except json.JSONDecodeError:
-            pass  # Need repair
+            pass
 
-        # Check if it looks like single-quoted JSON (property names in single quotes)
-        # Only match: 'word_chars': (property names) not: 'any content with spaces'
-        # This avoids mangling contractions like O'Brien or don't
-        # Pattern: single quote, followed by word chars (no spaces/apostrophes), then quote-colon
         content = re.sub(r"'([a-zA-Z_][a-zA-Z0-9_]*)'\s*:", r'"\1":', content)
         return content
 
@@ -80,12 +76,20 @@ class Manager:
             return
 
         print(f"🧐 [Manager]: Analyzing job description and hiring specialists...")
+
+        # Load custom personas from the database
+        custom_personas = await get_all_personas()
+        persona_context = ""
+        if custom_personas:
+            persona_context = "\nCUSTOM PERSONAS AVAILABLE:\n" + "\n".join([f"- {p['role']}: {p['goal']}" for p in custom_personas])
+
         tool_names = ", ".join(self.tool_inventory.keys())
         prompt = f"""You are an HR Director.
 MISSION: {goal}
-AVAILABLE TOOLS: {tool_names}
+AVAILABLE TOOLS: {tool_names}{persona_context}
 
 Hire a squad. Return ONLY a valid JSON object. DO NOT include any conversational text.
+If a CUSTOM PERSONA fits the mission, prioritize hiring them.
 Structure: {{ "squad": [ {{ "role": "...", "goal": "...", "backstory": "...", "tools_to_assign": ["tool_name"] }} ] }}"""
 
         for attempt in range(self.max_retries):
@@ -96,15 +100,33 @@ Structure: {{ "squad": [ {{ "role": "...", "goal": "...", "backstory": "...", "t
 
                 self.active_agents = {}
                 commit_keywords = ["devops", "version control", "deployment", "release", "version", "coordinator", "control", "operator", "manager"]
+
+                # Create a map of custom personas for easy lookup
+                persona_map = {p['role']: p for p in custom_personas}
+
                 for member in hire_data.get('squad', []):
-                    assigned = [self.tool_inventory[name] for name in member.get('tools_to_assign', []) if name in self.tool_inventory]
-                    role_lower = member['role'].lower()
+                    role_name = member['role']
+
+                    # Check if this is a custom persona
+                    if role_name in persona_map:
+                        p = persona_map[role_name]
+                        tools_list = json.loads(p['tools'])
+                        assigned = [self.tool_inventory[name] for name in tools_list if name in self.tool_inventory]
+                        backstory = p['backstory']
+                        goal_text = p['goal']
+                    else:
+                        assigned = [self.tool_inventory[name] for name in member.get('tools_to_assign', []) if name in self.tool_inventory]
+                        backstory = member['backstory']
+                        goal_text = member['goal']
+
+                    role_lower = role_name.lower()
                     if any(kw in role_lower for kw in commit_keywords):
                         if "commit_project" in self.tool_inventory and self.tool_inventory["commit_project"] not in assigned:
                             assigned.append(self.tool_inventory["commit_project"])
-                    print(f"🤝 [Manager]: Hired '{member['role']}'")
-                    self.active_agents[member['role']] = BaseAgent(
-                        role=member['role'], goal=member['goal'], backstory=member['backstory'],
+
+                    print(f"🤝 [Manager]: Hired '{role_name}'")
+                    self.active_agents[role_name] = BaseAgent(
+                        role=role_name, goal=goal_text, backstory=backstory,
                         tools=assigned, model_name=self.model_name
                     )
                 return
@@ -121,17 +143,17 @@ Structure: {{ "squad": [ {{ "role": "...", "goal": "...", "backstory": "...", "t
 Available Roles (EXACTLY these, do NOT invent others): {roles}
 
 RULES:
-1. Assign tasks ONLY to roles listed above. NEVER invent new roles like Researcher, Analyst, Writer, Editor, etc.
+1. Assign tasks ONLY to roles listed above. NEVER invent new roles.
 2. If only "Assistant" is available, assign ALL tasks to "Assistant".
 3. Every task description MUST specify which TOOL to use.
 4. The LAST task MUST say: 'MUST use commit_project tool to commit all artifacts'.
 5. Identify INDEPENDENT tasks that can run in PARALLEL and set their depends_on to [].
 6. Tasks that need results from other tasks MUST list those task indices in depends_on.
 7. Set priority (0-3) based on importance: 3=critical, 2=high, 1=normal, 0=low.
-8. Estimate complexity: "low" (simple command), "medium" (multi-step), "high" (creative/complex).
-9. Suggest how many tasks can run concurrently in suggested_parallelism.
+8. Estimate complexity: "low", "medium", "high".
+9. For "high" complexity tasks, consider setting is_swarm to true and selecting 2-3 swarm_roles for consensus.
 10. Return ONLY JSON. No other text.
-Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", "depends_on": [0, 1], "priority": 1, "estimated_complexity": "medium" }} ], "suggested_parallelism": 2 }}"""
+Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", "depends_on": [0, 1], "priority": 1, "estimated_complexity": "medium", "is_swarm": false, "swarm_roles": [] }} ], "suggested_parallelism": 2 }}"""
 
         for attempt in range(self.max_retries):
             try:
@@ -141,9 +163,12 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
                 plan = MissionPlan(**plan_dict)
                 # Validate all roles exist
                 valid_roles = set(a.role for a in self.active_agents.values())
-                invalid = [t for t in plan.tasks if t.assigned_agent_role not in valid_roles]
-                if invalid:
-                    raise ValueError(f"Invalid roles: {[t.assigned_agent_role for t in invalid]}. Must use: {valid_roles}")
+                for t in plan.tasks:
+                    if t.assigned_agent_role not in valid_roles:
+                         raise ValueError(f"Invalid role: {t.assigned_agent_role}")
+                    for sr in t.swarm_roles:
+                        if sr not in valid_roles:
+                            raise ValueError(f"Invalid swarm role: {sr}")
                 return plan
             except Exception as e:
                 print(f" [Manager]: Planning JSON Error. Retrying... ({attempt+1}/{self.max_retries})")
@@ -288,93 +313,151 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
                 agent.active_branch = shared_branch
 
             plan = await self.plan_mission(enriched_goal)
+            self.plan_mission_obj = plan  # Store for swarm access
             tasks = plan.tasks
             for i, t in enumerate(tasks):
                 deps = f" (depends on: {t.depends_on})" if t.depends_on else ""
-                print(f"  📝 Task {i}: [{t.assigned_agent_role}] {t.description}{deps}")
+                swarm = " [SWARM]" if t.is_swarm else ""
+                print(f"  📝 Task {i}{swarm}: [{t.assigned_agent_role}] {t.description}{deps}")
         except Exception as e:
             print(f"❌ [Manager]: Setup failed: {e}")
             await update_mission(mission_id, "FAILED")
             return
 
-        # --- DAG-BASED PARALLEL EXECUTION ---
+        # --- EXECUTE DAG ---
+        await self.execute_dag(tasks, mission_id, enriched_goal, shared_branch)
+
+        # Final status
+        await update_mission(mission_id, "COMPLETED")
+
+    async def execute_task(self, task_idx: int, context: str, mission_id: int, task_states, task_results, task_ids, tasks) -> bool:
+        """Execute a single task. Returns True if successful."""
+        task_data = tasks[task_idx]
+
+        if task_data.is_swarm:
+            return await self.execute_swarm_task(task_idx, context, mission_id, task_states, task_results, task_ids)
+
+        agent = self.active_agents.get(task_data.assigned_agent_role)
+
+        # Initialize agent metrics if not present
+        if task_data.assigned_agent_role not in self.agent_metrics:
+            self.agent_metrics[task_data.assigned_agent_role] = {
+                "tasks_completed": 0,
+                "tasks_failed": 0,
+                "total_time": 0.0
+            }
+
+        # Track load
+        self.agent_load[task_data.assigned_agent_role] = self.agent_load.get(task_data.assigned_agent_role, 0) + 1
+
+        # Fuzzy match fallback
+        if not agent:
+            target = str(task_data.assigned_agent_role).lower()
+            for r, a in self.active_agents.items():
+                if r.lower() in target or target in r.lower():
+                    agent = a
+                    break
+
+        if not agent:
+            print(f"⚠️ [Manager]: Skipping task {task_idx}, role '{task_data.assigned_agent_role}' not found.")
+            task_states[task_idx] = "FAILED"
+            self.agent_metrics[task_data.assigned_agent_role]["tasks_failed"] += 1
+            self.agent_load[task_data.assigned_agent_role] -= 1
+            health_monitor.record_failure(task_data.assigned_agent_role, "Agent role not found in active agents")
+            return False
+
+        print(f"\n🚀 [Manager]: Task {task_idx}/{len(tasks)} -> {agent.role}")
+        task_id = await create_task(mission_id, task_data.description, agent.role)
+        task_ids[task_idx] = task_id
+
+        start_time = datetime.now()
+        result = await agent.execute_task(task_data.description, context)
+        elapsed = (datetime.now() - start_time).total_seconds()
+
+        output_text = result.get("output", "Task completed without text summary.")
+
+        # --- TOOL ENFORCEMENT CHECK ---
+        must_use = "must use" in task_data.description.lower() or "delegate_task" in task_data.description.lower()
+        if must_use and len(output_text) < 20 and "DELEGATED" not in output_text:
+            print(f"️ [Manager]: Agent {agent.role} skipped mandatory tool use. Forcing retry...")
+            # Retry once with enforcement context
+            retry_context = context + f"\n\nERROR: You skipped a mandatory tool call. You MUST execute the tool now."
+            result = await agent.execute_task(task_data.description, retry_context)
+            output_text = result.get("output", "Task completed without text summary.")
+
+        # Update metrics
+        self.agent_metrics[task_data.assigned_agent_role]["total_time"] += elapsed
+        self.agent_load[task_data.assigned_agent_role] -= 1
+
+        # Success path
+        await update_task(task_id, status="COMPLETED", output_data=output_text)
+        task_results[task_idx] = output_text
+        task_states[task_idx] = "COMPLETED"
+        self.agent_metrics[task_data.assigned_agent_role]["tasks_completed"] += 1
+        health_monitor.record_success(task_data.assigned_agent_role)
+
+        # Write result to blackboard for other tasks
+        await update_blackboard(f"task_{task_idx}_result", output_text)
+
+        print(f"✅ [Manager]: Task {task_idx} completed in {elapsed:.1f}s.")
+        return True
+
+    async def execute_swarm_task(self, task_idx: int, context: str, mission_id: int, task_states, task_results, task_ids) -> bool:
+        """Execute a task using a swarm of agents for consensus."""
+        task_data = self.plan_mission_obj.tasks[task_idx] if hasattr(self, 'plan_mission_obj') else None
+        if not task_data:
+             return False
+
+        print(f"\n🐝 [Manager]: Starting SWARM for Task {task_idx}...")
+        roles = [task_data.assigned_agent_role] + task_data.swarm_roles
+
+        # 1. Parallel Execution
+        async def agent_task(role: str):
+            agent = self.active_agents.get(role)
+            if not agent: return f"[{role}]: Agent not found."
+            print(f"  🐝 [Swarm]: {role} is thinking...")
+            result = await agent.execute_task(task_data.description, context)
+            return f"[{role}]: {result.get('output', 'No output')}"
+
+        outputs = await asyncio.gather(*[agent_task(r) for r in roles])
+        debate_history = "\n\n".join(outputs)
+
+        # 2. Consensus Building
+        print(f"  🐝 [Swarm]: Building consensus between {len(roles)} agents...")
+        consensus_prompt = f"""The following agents have provided their perspectives on the task:
+{debate_history}
+
+Original Task: {task_data.description}
+Mission Context: {context}
+
+Act as a Lead Coordinator. Synthesize these perspectives into a single, optimized final answer or plan of action.
+Identify any conflicts and resolve them based on the best technical reasoning provided.
+FINAL CONSENSUS:"""
+
+        # Use the manager's model to synthesize
+        response = await acompletion(model=self.model_name, messages=[{"role": "user", "content": consensus_prompt}])
+        final_output = response.choices[0].message.content
+
+        # 3. Record result
+        task_id = await create_task(mission_id, f"[SWARM] {task_data.description}", "Manager (Consensus)")
+        task_ids[task_idx] = task_id
+        await update_task(task_id, status="COMPLETED", output_data=final_output)
+        task_results[task_idx] = final_output
+        task_states[task_idx] = "COMPLETED"
+
+        print(f"✅ [Manager]: Swarm Task {task_idx} reached consensus.")
+        return True
+
+    async def execute_dag(self, tasks: List[TaskPlan], mission_id: int, enriched_goal: str, shared_branch: ProjectBranch):
+        """DAG-BASED PARALLEL EXECUTION"""
         task_states = {}  # task_idx -> "PENDING" | "RUNNING" | "COMPLETED" | "FAILED"
         task_results = {}  # task_idx -> output_text
         task_ids = {}  # task_idx -> database task_id
         
         for i in range(len(tasks)):
             task_states[i] = "PENDING"
-        
-        async def execute_task(task_idx: int, context: str) -> bool:
-            """Execute a single task. Returns True if successful."""
-            task_data = tasks[task_idx]
-            agent = self.active_agents.get(task_data.assigned_agent_role)
-            
-            # Initialize agent metrics if not present
-            if task_data.assigned_agent_role not in self.agent_metrics:
-                self.agent_metrics[task_data.assigned_agent_role] = {
-                    "tasks_completed": 0,
-                    "tasks_failed": 0,
-                    "total_time": 0.0
-                }
-            
-            # Track load
-            self.agent_load[task_data.assigned_agent_role] = self.agent_load.get(task_data.assigned_agent_role, 0) + 1
-            
-            # Fuzzy match fallback
-            if not agent:
-                target = str(task_data.assigned_agent_role).lower()
-                for r, a in self.active_agents.items():
-                    if r.lower() in target or target in r.lower():
-                        agent = a
-                        break
-            
-            if not agent:
-                print(f"⚠️ [Manager]: Skipping task {task_idx}, role '{task_data.assigned_agent_role}' not found.")
-                task_states[task_idx] = "FAILED"
-                self.agent_metrics[task_data.assigned_agent_role]["tasks_failed"] += 1
-                self.agent_load[task_data.assigned_agent_role] -= 1
-                health_monitor.record_failure(task_data.assigned_agent_role, "Agent role not found in active agents")
-                return False
-            
-            print(f"\n🚀 [Manager]: Task {task_idx}/{len(tasks)} -> {agent.role}")
-            task_id = await create_task(mission_id, task_data.description, agent.role)
-            task_ids[task_idx] = task_id
-            
-            start_time = datetime.now()
-            result = await agent.execute_task(task_data.description, context)
-            elapsed = (datetime.now() - start_time).total_seconds()
-            
-            output_text = result.get("output", "Task completed without text summary.")
-            
-            # --- TOOL ENFORCEMENT CHECK ---
-            must_use = "must use" in task_data.description.lower() or "delegate_task" in task_data.description.lower()
-            if must_use and len(output_text) < 20 and "DELEGATED" not in output_text:
-                print(f"️ [Manager]: Agent {agent.role} skipped mandatory tool use. Forcing retry...")
-                # Retry once with enforcement context
-                retry_context = context + f"\n\nERROR: You skipped a mandatory tool call. You MUST execute the tool now."
-                result = await agent.execute_task(task_data.description, retry_context)
-                output_text = result.get("output", "Task completed without text summary.")
-            
-            # Update metrics
-            self.agent_metrics[task_data.assigned_agent_role]["total_time"] += elapsed
-            self.agent_load[task_data.assigned_agent_role] -= 1
-            
-            # Success path
-            await update_task(task_id, status="COMPLETED", output_data=output_text)
-            task_results[task_idx] = output_text
-            task_states[task_idx] = "COMPLETED"
-            self.agent_metrics[task_data.assigned_agent_role]["tasks_completed"] += 1
-            health_monitor.record_success(task_data.assigned_agent_role)
-            
-            # Write result to blackboard for other tasks
-            await update_blackboard(f"task_{task_idx}_result", output_text)
-            
-            print(f"✅ [Manager]: Task {task_idx} completed in {elapsed:.1f}s.")
-            return True
-        
-        # Build dependency graph and execute in waves
-        max_waves = len(tasks) * 2  # Safety limit
+
+        max_waves = len(tasks) * 2
         wave = 0
         _memory_written = False
         
@@ -435,7 +518,7 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
                 task_contexts[task_idx] = "\n\n".join(context_parts)
             
             # Limit parallelism based on plan suggestion and agent load
-            max_concurrent = getattr(plan, 'suggested_parallelism', 2)
+            max_concurrent = getattr(self.plan_mission_obj, 'suggested_parallelism', 2)
             # Check if any agent is overloaded
             for task_idx in ready_tasks:
                 role = tasks[task_idx].assigned_agent_role
@@ -445,7 +528,7 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
             
             # Execute in parallel (all ready tasks, load tracking happens inside execute_task)
             results = await asyncio.gather(
-                *[execute_task(idx, task_contexts[idx]) for idx in ready_tasks],
+                *[self.execute_task(idx, task_contexts[idx], mission_id, task_states, task_results, task_ids, tasks) for idx in ready_tasks],
                 return_exceptions=True
             )
             
@@ -488,7 +571,7 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
                     new_context = "\n\n".join(context_parts)
                     
                     # Retry
-                    success = await execute_task(task_idx, new_context)
+                    success = await self.execute_task(task_idx, new_context, mission_id, task_states, task_results, task_ids, tasks)
                     if success:
                         print(f"✅ [Manager]: Task {task_idx} successfully reassigned and completed.")
                     else:
@@ -514,10 +597,3 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
                 avg_time = metrics["total_time"] / max(1, metrics["tasks_completed"])
                 success_rate = (metrics["tasks_completed"] / total) * 100
                 print(f"   {role}: {metrics['tasks_completed']}/{total} succeeded ({success_rate:.0f}%), avg {avg_time:.1f}s/task")
-        
-        if failed > 0:
-            print(f"\n⚠️ [Manager]: Mission #{mission_id} completed with {failed} failed task(s).")
-            await update_mission(mission_id, "COMPLETED")
-        else:
-            print(f"\n✨ [Manager]: Mission #{mission_id} finished successfully ({completed} tasks completed in {wave} waves).")
-            await update_mission(mission_id, "COMPLETED")
