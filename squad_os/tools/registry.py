@@ -26,6 +26,9 @@ DANGEROUS_PATTERNS: Set[str] = {
     'del /f /s /q', 'rd /s /q', 'format ', 'diskpart',
 }
 
+# Trusted system directories for absolute command paths
+TRUSTED_SYSTEM_DIRS: Set[str] = {"/bin/", "/usr/bin/", "/usr/local/bin/"}
+
 # Allowed safe commands for terminal
 ALLOWED_COMMANDS: Set[str] = {
     'ls', 'dir', 'pwd', 'cd', 'cat', 'type', 'head', 'tail', 'less', 'more',
@@ -126,21 +129,33 @@ def _validate_terminal_command(command: str, workspace: str) -> tuple[bool, str]
         if expect_command:
             cmd_name = token.lower()
             # Allow common shell built-ins and safe commands
-            if cmd_name in ALLOWED_COMMANDS or cmd_name.startswith('./'):
-                # OK - allowed or local execution
+            if cmd_name in ALLOWED_COMMANDS:
+                # OK - allowed built-in or registered command
                 pass
-            elif '/' in cmd_name:
-                # Check for qualified paths like /bin/ls
-                if os.path.basename(cmd_name) in ALLOWED_COMMANDS:
-                    # OK - /bin/ls is allowed because ls is allowed
-                    pass
-                else:
+            elif cmd_name.startswith('./'):
+                # Local execution - MUST check if it's within workspace
+                if not is_safe_path(workspace, cmd_name):
+                    return False, f"Access denied: Command '{cmd_name}' attempts to execute outside workspace"
+            elif cmd_name.startswith('/'):
+                # Absolute path execution - restrict to trusted system directories
+                parent_dir = os.path.dirname(cmd_name)
+                if not parent_dir.endswith('/'):
+                    parent_dir += '/'
+
+                if parent_dir not in TRUSTED_SYSTEM_DIRS:
+                    return False, f"Security violation: Command '{cmd_name}' is from an untrusted directory"
+
+                if os.path.basename(cmd_name) not in ALLOWED_COMMANDS:
+                    return False, f"Command '{cmd_name}' not in allowed list"
+            elif '/' in cmd_name or '\\' in cmd_name:
+                # Other qualified paths (e.g., relative paths with separators)
+                if not is_safe_path(workspace, cmd_name):
+                    return False, f"Access denied: Command '{cmd_name}' attempts to execute outside workspace"
+                if os.path.basename(cmd_name) not in ALLOWED_COMMANDS:
                     return False, f"Command '{cmd_name}' not in allowed list"
             else:
                 return False, f"Command '{cmd_name}' not in allowed list"
 
-            # Command name itself is exempt from the generic path check below
-            # because it might be an absolute path (e.g., /bin/ls)
             expect_command = False
             continue
 
