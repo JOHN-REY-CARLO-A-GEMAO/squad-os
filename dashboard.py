@@ -9,6 +9,7 @@ from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
 from squad_os.database.session import save_persona, get_all_personas, delete_persona
 
+
 # Configuration
 DB_PATHS = ["shared_memory.db", "instance/shared_memory.db"]
 WORKSPACE_DIR = "workspace"
@@ -159,6 +160,89 @@ def load_global_stats():
             pass
     return (0, 0, 0.0)
 
+def load_store_catalog():
+    """Query store_packages joined with install status."""
+    conn = get_db_connection()
+    if not conn:
+        return []
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT p.id, p.name, p.version, p.author, p.description, p.tags,
+                   p.install_count, p.source_url,
+                   COALESCE(i.status, 'NOT_INSTALLED') as install_status,
+                   i.version as installed_version
+            FROM store_packages p
+            LEFT JOIN installed_packages i ON p.id = i.package_id AND i.status = 'ACTIVE'
+            ORDER BY p.install_count DESC, p.name ASC
+        """)
+        cols = [d[0] for d in cursor.description]
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(zip(cols, r)) for r in rows]
+    except Exception:
+        return []
+
+def deploy_store_workflow(package_id: str, custom_goal: str = ""):
+    """Queue a mission from a stored workflow."""
+    conn = get_db_connection()
+    if not conn:
+        return False
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT workflow FROM store_workflows WHERE package_id = ?", (package_id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            conn.close()
+            return False
+        workflow_str = row[0]
+        workflow = json.loads(workflow_str)
+        goal = custom_goal or workflow.get("description") or f"Workflow: {package_id}"
+        cursor.execute(
+            "INSERT INTO missions (goal, status, workflow_json) VALUES (?, 'QUEUED', ?)",
+            (goal, workflow_str)
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception:
+        return False
+
+def list_installed_packages():
+    """List active installed packages with their workflow info."""
+    conn = get_db_connection()
+    if not conn:
+        return []
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT i.package_id, i.version, i.install_path, i.installed_at,
+                   p.name, p.description, w.workflow
+            FROM installed_packages i
+            JOIN store_packages p ON i.package_id = p.id
+            LEFT JOIN store_workflows w ON w.package_id = i.package_id
+            WHERE i.status = 'ACTIVE'
+            ORDER BY i.installed_at DESC
+        """)
+        cols = [d[0] for d in cursor.description]
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(zip(cols, r)) for r in rows]
+    except Exception:
+        return []
+
+def list_toolbox_packages():
+    """List .sqad files in the packages directory (for sideloading display)."""
+    packages_dir = os.path.join(WORKSPACE_DIR, "packages")
+    if not os.path.isdir(packages_dir):
+        return []
+    return sorted([
+        d for d in os.listdir(packages_dir)
+        if os.path.isdir(os.path.join(packages_dir, d))
+    ], reverse=True)
+
 def list_projects():
     # Use os.scandir() for O(N) traversal, replacing O(2N) listdir+isdir pattern
     with os.scandir(PROJECTS_DIR) as active_entries:
@@ -264,7 +348,7 @@ is_selected_active = st.session_state.is_active
 if not selected_project:
     st.info("👋 Welcome to SquadOS. Dispatch a new mission below, or click a project on the left to view details.")
 
-    main_tab1, main_tab2 = st.tabs(["💬 Mission Control", "🏗️ Agent Factory"])
+    main_tab1, main_tab2, main_tab3 = st.tabs(["💬 Mission Control", "🏗️ Agent Factory", "💾 Agent Store"])
 
     with main_tab1:
         # --- CHAT GPT LIKE INTERFACE ---
@@ -371,6 +455,120 @@ if not selected_project:
                         st.rerun()
                     else:
                         st.error("Please fill in all fields.")
+
+    with main_tab3:
+        from squad_os.store.loader import AgentPackageLoader
+        st.subheader("💾 Agent Store")
+        st.caption("Browse, install, and run .sqad workflow packages.")
+
+        store_tab1, store_tab2, store_tab3 = st.tabs(["📦 Browse", "✅ Installed", "📤 Upload .sqad"])
+
+        with store_tab1:
+            catalog = load_store_catalog()
+            if not catalog:
+                st.info("No packages in the store catalog yet. Upload a .sqad package to get started.")
+            else:
+                col_search, _ = st.columns([2, 1])
+                with col_search:
+                    search_term = st.text_input("🔍 Search packages", placeholder="name or tag...", label_visibility="collapsed")
+                for pkg in catalog:
+                    if search_term:
+                        q = search_term.lower()
+                        if q not in pkg["name"].lower() and q not in (pkg.get("description") or "").lower():
+                            continue
+                    tags = json.loads(pkg["tags"]) if pkg["tags"] else []
+                    tag_str = ", ".join(tags[:4]) if tags else ""
+                    is_installed = pkg["install_status"] == "ACTIVE"
+                    with st.container():
+                        cols = st.columns([3, 1, 1])
+                        with cols[0]:
+                            st.write(f"**{pkg['name']}** v{pkg['version']}")
+                            st.caption(f"by {pkg['author'] or 'unknown'} · {pkg['install_count'] or 0} installs")
+                            if tag_str:
+                                st.caption(f"🏷️ {tag_str}")
+                            if pkg.get("description"):
+                                st.write(pkg["description"])
+                        with cols[1]:
+                            if is_installed:
+                                st.success("✅ Installed")
+                            else:
+                                sqad_path = pkg.get("source_url", "")
+                                if sqad_path and os.path.exists(sqad_path):
+                                    if st.button(f"⬇️ Install", key=f"install_{pkg['id']}", use_container_width=True):
+                                        asyncio.run(AgentPackageLoader.install_package(
+                                            AgentPackageLoader.load_sqad(sqad_path)
+                                        ))
+                                        st.rerun()
+                                else:
+                                    st.caption("No source")
+                        with cols[2]:
+                            if is_installed:
+                                if st.button(f"🗑️ Uninstall", key=f"uninstall_{pkg['id']}", use_container_width=True):
+                                    asyncio.run(AgentPackageLoader.uninstall_package(pkg["id"]))
+                                    st.rerun()
+                        st.divider()
+
+        with store_tab2:
+            installed = list_installed_packages()
+            if not installed:
+                st.info("No packages installed yet. Browse or upload one above.")
+            for ip in installed:
+                with st.expander(f"📦 **{ip['name']}** v{ip['version']}", expanded=True):
+                    st.write(f"**Description:** {ip.get('description', 'N/A')}")
+                    st.caption(f"Path: `{ip['install_path']}` · Installed: {ip['installed_at']}")
+                    if ip.get("workflow"):
+                        wf = json.loads(ip["workflow"])
+                        wf_name = wf.get("name", "Default workflow")
+                        st.write(f"**Workflow:** {wf_name}")
+                        st.code(json.dumps(wf, indent=2), language="json", line_numbers=True)
+                        if st.button(f"🚀 Deploy '{wf_name}' as Mission", key=f"deploy_{ip['package_id']}", use_container_width=True):
+                            success = deploy_store_workflow(ip["package_id"])
+                            if success:
+                                st.success(f"Workflow '{wf_name}' queued as a mission!")
+                                st.rerun()
+                            else:
+                                st.error("Failed to deploy workflow.")
+                    else:
+                        st.write("No workflow in this package (tools-only package).")
+
+        with store_tab3:
+            st.write("Upload a `.sqad` package file to sideload it into the Agent Store.")
+            uploaded_sqad = st.file_uploader("Choose a .sqad file", type=["sqad"], label_visibility="collapsed")
+            if uploaded_sqad:
+                save_dir = os.path.join(WORKSPACE_DIR, "packages", "uploads")
+                os.makedirs(save_dir, exist_ok=True)
+                dest_path = os.path.join(save_dir, uploaded_sqad.name)
+                with open(dest_path, "wb") as f:
+                    f.write(uploaded_sqad.getbuffer())
+                st.success(f"Saved to `{dest_path}`")
+
+                pkg = AgentPackageLoader.load_sqad(dest_path)
+                if pkg:
+                    st.write(f"**Package:** {pkg.name} v{pkg.version}")
+                    st.write(f"**Author:** {pkg.manifest.get('author', 'unknown')}")
+                    st.write(f"**Workflow:** {'Yes' if pkg.workflow else 'No'}")
+                    st.write(f"**Custom tools:** {len(pkg.custom_tools)}")
+                    st.write(f"**Custom agents:** {len(pkg.custom_agents)}")
+                    st.write(f"**Dependencies:** {len(pkg.dependencies)}")
+
+                    validation = AgentPackageLoader.validate_package(pkg)
+                    if validation:
+                        st.success("Package validation passed.")
+                    else:
+                        for e in validation.errors:
+                            st.error(f"❌ {e}")
+                    for w in validation.warnings:
+                        st.warning(f"⚠️ {w}")
+
+                    if st.button("💾 Install this package", use_container_width=True, type="primary"):
+                        success = asyncio.run(AgentPackageLoader.install_package(pkg))
+                        if success:
+                            st.success(f"Package '{pkg.name}' installed!")
+                            st.rerun()
+                        else:
+                            st.error("Installation failed.")
+                else:
+                    st.error("Failed to parse .sqad package. Check that it contains a valid manifest.json.")
 
 else:
     # --- INDIVIDUAL PROJECT VIEW ---

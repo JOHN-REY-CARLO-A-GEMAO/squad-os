@@ -259,8 +259,8 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
 
         print(f"📝 [Manager]: Auto-generated project_memory.md ({len(all_files)} files, {total_size:,} bytes)")
 
-    async def run_mission(self, goal: str, uploaded_files_json: Optional[str] = None):
-        mission_id = await create_mission(goal, uploaded_files_json)
+    async def run_mission(self, goal: str, uploaded_files_json: Optional[str] = None, workflow_json: Optional[str] = None):
+        mission_id = await create_mission(goal, uploaded_files_json, workflow_json)
 
         # 1. Create a Shared Project Branch for the Mission
         slug = goal[:30]
@@ -314,20 +314,71 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
             except Exception as e:
                 print(f"⚠️ [Manager]: Error processing uploaded files: {e}")
 
+        # 3. Either use pre-built workflow DAG or plan via LLM
         try:
-            await self.recruit_squad(enriched_goal)
+            if workflow_json:
+                self.active_agents = {}
+                workflow_data = json.loads(workflow_json)
+                tasks_data = workflow_data.get("tasks", [])
+                suggested_parallelism = workflow_data.get("suggested_parallelism", 2)
 
-            # Inject shared branch into all agents
-            for agent in self.active_agents.values():
-                agent.active_branch = shared_branch
+                # Build agents for every unique role in the workflow
+                all_roles = set()
+                for t in tasks_data:
+                    all_roles.add(t.get("assigned_agent_role", "Assistant"))
+                    for sr in t.get("swarm_roles", []):
+                        all_roles.add(sr)
 
-            plan = await self.plan_mission(enriched_goal)
-            self.plan_mission_obj = plan  # Store for swarm access
-            tasks = plan.tasks
-            for i, t in enumerate(tasks):
-                deps = f" (depends on: {t.depends_on})" if t.depends_on else ""
-                swarm = " [SWARM]" if t.is_swarm else ""
-                print(f"  📝 Task {i}{swarm}: [{t.assigned_agent_role}] {t.description}{deps}")
+                for role in all_roles:
+                    self.active_agents[role] = BaseAgent(
+                        role=role,
+                        goal=f"Execute your assigned tasks in pre-built workflow: {goal[:50]}",
+                        backstory=f"You are a {role} executing a predefined workflow from the Agent Store.",
+                        tools=list(self.tool_inventory.values()),
+                        model_name=self.model_name
+                    )
+
+                # Inject shared branch
+                for agent in self.active_agents.values():
+                    agent.active_branch = shared_branch
+
+                # Build TaskPlan objects from the workflow data
+                task_plans = []
+                for i, t in enumerate(tasks_data):
+                    task_plans.append(TaskPlan(
+                        description=t.get("description", f"Task {i}"),
+                        assigned_agent_role=t.get("assigned_agent_role", "Assistant"),
+                        depends_on=t.get("depends_on", []),
+                        priority=t.get("priority", 1),
+                        estimated_complexity=t.get("estimated_complexity", "medium"),
+                        is_swarm=t.get("is_swarm", False),
+                        swarm_roles=t.get("swarm_roles", [])
+                    ))
+
+                plan = MissionPlan(tasks=task_plans, suggested_parallelism=suggested_parallelism)
+                self.plan_mission_obj = plan
+                tasks = plan.tasks
+
+                wf_name = workflow_data.get("name", "pre-built workflow")
+                print(f"📋 [Manager]: Using pre-built workflow '{wf_name}' — skipping LLM planning.")
+                for i, t in enumerate(tasks):
+                    deps = f" (depends on: {t.depends_on})" if t.depends_on else ""
+                    swarm = " [SWARM]" if t.is_swarm else ""
+                    print(f"  📝 Task {i}{swarm}: [{t.assigned_agent_role}] {t.description}{deps}")
+            else:
+                await self.recruit_squad(enriched_goal)
+
+                # Inject shared branch into all agents
+                for agent in self.active_agents.values():
+                    agent.active_branch = shared_branch
+
+                plan = await self.plan_mission(enriched_goal)
+                self.plan_mission_obj = plan  # Store for swarm access
+                tasks = plan.tasks
+                for i, t in enumerate(tasks):
+                    deps = f" (depends on: {t.depends_on})" if t.depends_on else ""
+                    swarm = " [SWARM]" if t.is_swarm else ""
+                    print(f"  📝 Task {i}{swarm}: [{t.assigned_agent_role}] {t.description}{deps}")
         except Exception as e:
             print(f"❌ [Manager]: Setup failed: {e}")
             try:
@@ -566,10 +617,10 @@ FINAL CONSENSUS:"""
                     print(f"⚠️ [Manager]: Agent '{role}' is at capacity ({current_load} tasks). Deferring task {task_idx}.")
             
             # Execute in parallel (all ready tasks, load tracking happens inside execute_task)
-                    async def capped_execute(idx):
-            async with sem:
-                return await self.execute_task(idx, task_contexts[idx], mission_id, task_states, task_results, task_ids, tasks)
-        results = await asyncio.gather(*[capped_execute(idx) for idx in ready_tasks], return_exceptions=True)
+            async def capped_execute(idx):
+                async with sem:
+                    return await self.execute_task(idx, task_contexts[idx], mission_id, task_states, task_results, task_ids, tasks)
+            results = await asyncio.gather(*[capped_execute(idx) for idx in ready_tasks], return_exceptions=True)
             
             # Handle exceptions
             for i, result in enumerate(results):

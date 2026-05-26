@@ -176,8 +176,9 @@ async def run_worker():
             await update_mission(mission['id'], "IN_PROGRESS")
             
             try:
-                # EXECUTE MISSION
-                await manager.run_mission(mission['goal'], mission.get('uploaded_files'))
+                # EXECUTE MISSION — pass workflow_json if present for pre-built DAG execution
+                workflow_json = mission.get('workflow_json')
+                await manager.run_mission(mission['goal'], mission.get('uploaded_files'), workflow_json)
                 print(f"✅ MISSION #{mission['id']} COMPLETE.")
                 await update_mission(mission['id'], "COMPLETED")
             except Exception as e:

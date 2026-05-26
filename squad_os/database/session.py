@@ -34,6 +34,7 @@ class MissionRecord(BaseModel):
     goal: str
     status: str = MissionStatus.PENDING.value
     uploaded_files: Optional[str] = None  # JSON string containing file metadata
+    workflow_json: Optional[str] = None  # JSON string containing pre-built workflow DAG
     created_at: datetime = Field(default_factory=datetime.now)
 
 class TaskRecord(BaseModel):
@@ -74,8 +75,7 @@ async def _run_migrations(db: aiosqlite.Connection, current_version: int) -> int
     """Run sequential migrations. Returns new schema version."""
     migrations = {
         0: lambda db: db.execute("ALTER TABLE missions ADD COLUMN uploaded_files TEXT"),
-        # Add future migrations here:
-        # 1: lambda db: db.execute("ALTER TABLE tasks ADD COLUMN new_column TEXT"),
+        1: lambda db: db.execute("ALTER TABLE missions ADD COLUMN workflow_json TEXT"),
     }
 
     new_version = current_version
@@ -103,6 +103,7 @@ async def init_db():
                 goal TEXT NOT NULL,
                 status TEXT NOT NULL,
                 uploaded_files TEXT,
+                workflow_json TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -111,10 +112,9 @@ async def init_db():
         async with db.execute("PRAGMA user_version") as cursor:
             user_version = (await cursor.fetchone())[0]
 
-        if user_version == 0:
-            # Run all migrations from version 0
-            new_version = await _run_migrations(db, 0)
-            # Update schema version after migrations
+        # Run any pending migrations (works for all starting versions)
+        new_version = await _run_migrations(db, user_version)
+        if new_version != user_version:
             await db.execute(f"PRAGMA user_version = {new_version}")
 
         # 2. Tasks Table
@@ -216,7 +216,61 @@ async def init_db():
             )
         """)
 
-        # 8. Performance Indexes
+        # 8. Agent Store Tables (for .sqad package ecosystem)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS store_packages (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                version TEXT NOT NULL,
+                author TEXT,
+                description TEXT,
+                min_squad_os_version TEXT,
+                tags TEXT,
+                source_url TEXT,
+                install_count INTEGER DEFAULT 0,
+                rating REAL DEFAULT 0.0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS installed_packages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                package_id TEXT NOT NULL,
+                version TEXT NOT NULL,
+                install_path TEXT NOT NULL,
+                status TEXT DEFAULT 'ACTIVE',
+                installed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (package_id) REFERENCES store_packages(id)
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS store_tools (
+                id TEXT PRIMARY KEY,
+                package_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT,
+                parameters TEXT,
+                entry_point TEXT,
+                dependencies TEXT,
+                FOREIGN KEY (package_id) REFERENCES store_packages(id)
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS store_workflows (
+                id TEXT PRIMARY KEY,
+                package_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT,
+                workflow TEXT NOT NULL,
+                FOREIGN KEY (package_id) REFERENCES store_packages(id)
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_installed_packages_package_id ON installed_packages(package_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_store_tools_package_id ON store_tools(package_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_store_workflows_package_id ON store_workflows(package_id)")
+
+        # 9. Performance Indexes
         # Optimizes mission retrieval by status (e.g. Dashboard, Worker Queue)
         await db.execute("CREATE INDEX IF NOT EXISTS idx_missions_status ON missions(status)")
         # Optimizes task lookups for specific missions (Mission View, Context Loading)
@@ -254,11 +308,11 @@ async def init_interrupts_table():
 
 # --- MISSION & TASK HELPERS ---
 
-async def create_mission(goal: str, uploaded_files: Optional[str] = None) -> int:
+async def create_mission(goal: str, uploaded_files: Optional[str] = None, workflow_json: Optional[str] = None) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
-            "INSERT INTO missions (goal, status, uploaded_files) VALUES (?, ?, ?)",
-            (goal, MissionStatus.IN_PROGRESS.value, uploaded_files)
+            "INSERT INTO missions (goal, status, uploaded_files, workflow_json) VALUES (?, ?, ?, ?)",
+            (goal, MissionStatus.IN_PROGRESS.value, uploaded_files, workflow_json)
         )
         await db.commit()
         return cursor.lastrowid
