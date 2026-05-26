@@ -175,6 +175,28 @@ def get_project_status(project_id, is_active):
         return "Awaiting Commit"
     return "Exploring"
 
+def format_project_label(project_id):
+    """Transforms a project ID like '20241027_123456_my_project' into '12:34:56 - My Project'."""
+    parts = project_id.split("_")
+    if len(parts) >= 3 and len(parts[0]) == 8 and len(parts[1]) == 6:
+        # It follows the 20240101_120000_slug pattern
+        time_part = parts[1]
+        formatted_time = f"{time_part[:2]}:{time_part[2:4]}:{time_part[4:6]}"
+        slug_part = " ".join(parts[2:]).title()
+        return f"{formatted_time} - {slug_part}"
+    return project_id.replace("_", " ").title()
+
+def format_log_timestamp(ts_str):
+    """Converts ISO timestamp strings to HH:MM:SS format for cleaner logs."""
+    if not ts_str:
+        return ""
+    try:
+        # Handle cases with 'Z' or other ISO variations
+        dt = datetime.fromisoformat(str(ts_str).replace('Z', '+00:00'))
+        return dt.strftime('%H:%M:%S')
+    except Exception:
+        return str(ts_str)
+
 # --- UI ---
 
 st.title("🛡️ SquadOS: Project Command Center")
@@ -200,9 +222,14 @@ with st.sidebar:
     if not active_projects:
         st.write("No active projects.")
     for proj in active_projects:
-        status_icon = "🟢" if get_project_status(proj, True) == "Exploring" else "🟡"
-        label = f"📍 {proj}" if proj == st.session_state.selected_proj else f"{status_icon} {proj}"
-        if st.button(label, key=f"btn_act_{proj}", use_container_width=True, help=f"Open active project: {proj}"):
+        proj_status = get_project_status(proj, True)
+        icon = "🟢" if proj_status == "Exploring" else "👀"
+        if proj == st.session_state.selected_proj: icon = "📍"
+
+        readable_name = format_project_label(proj)
+        label = f"{icon} {readable_name}"
+
+        if st.button(label, key=f"btn_act_{proj}", use_container_width=True, help=f"Open active project ({proj_status}): {proj}"):
             st.session_state.selected_proj = proj
             st.session_state.is_active = True
             st.rerun()
@@ -211,7 +238,9 @@ with st.sidebar:
     if not archived_projects:
         st.write("No archived projects.")
     for proj in archived_projects:
-        label = f"📍 {proj}" if proj == st.session_state.selected_proj else f"📦 {proj}"
+        icon = "📍" if proj == st.session_state.selected_proj else "📦"
+        readable_name = format_project_label(proj)
+        label = f"{icon} {readable_name}"
         if st.button(label, key=f"btn_arc_{proj}", use_container_width=True, help=f"Open archived project: {proj}"):
             st.session_state.selected_proj = proj
             st.session_state.is_active = False
@@ -349,9 +378,11 @@ else:
     
     col1, col2 = st.columns([3, 1])
     with col1:
-        st.header(f"Project: `{selected_project}`")
+        readable_project_name = format_project_label(selected_project)
+        st.header(f"Project: `{readable_project_name}`")
+        st.caption(f"ID: {selected_project}")
     with col2:
-        if st.button("🔙 Back to Chat", help="Return to the main chat interface"):
+        if st.button("🔙 Back to Chat", use_container_width=True, help="Return to the main chat interface"):
             st.session_state.selected_proj = None
             st.rerun()
 
@@ -450,7 +481,7 @@ else:
                                 st.video(v_path)
                             mime_type, _ = mimetypes.guess_type(v_path)
                             with open(v_path, "rb") as fh:
-                                st.download_button("💾 Download", data=fh, file_name=v_file, mime=mime_type or "application/octet-stream", key=f"dl_vis_{v_file}", use_container_width=True)
+                                st.download_button("💾 Download", data=fh, file_name=v_file, mime=mime_type or "application/octet-stream", key=f"dl_vis_{v_file}", use_container_width=True, help=f"Download visual artifact: {v_file}")
         else:
             st.info("No files found in this project. 🗂️")
 
@@ -480,12 +511,8 @@ else:
 
         if logs:
             for entry in reversed(logs):
-                ts = entry.get('timestamp')
-                try:
-                    ts = datetime.fromisoformat(ts).strftime('%Y-%m-%d %H:%M:%S')
-                except Exception:
-                    pass
-                with st.expander(f"🛠️ {entry.get('tool')} @ {ts}", expanded=(entry == logs[-1])):
+                ts_display = format_log_timestamp(entry.get('timestamp'))
+                with st.expander(f"🛠️ {entry.get('tool')} @ {ts_display}", expanded=(entry == logs[-1])):
                     st.write("**Inputs:**")
                     st.code(json.dumps(entry.get('inputs'), indent=2), language="json")
                     st.write("**Output:**")
@@ -562,7 +589,8 @@ else:
                     data=zip_buf,
                     file_name=f"{os.path.basename(project_root)}.zip",
                     mime="application/zip",
-                    use_container_width=True
+                    use_container_width=True,
+                    help="Download all committed project files as a ZIP archive"
                 )
 
             st.markdown("---")
