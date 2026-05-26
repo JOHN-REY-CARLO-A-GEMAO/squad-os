@@ -461,21 +461,24 @@ if not selected_project:
                 icon = icons.get(status, "❓")
                 pills.append((mid, f"{icon} #{mid} {goal_short}", status))
 
-            # Show as horizontal pills; selected one stays highlighted
-            cols = st.columns(max(1, len(pills)))
-            for i, (mid, label, status) in enumerate(pills):
-                is_selected = mid == selected_id
-                btn_type = "primary" if is_selected else "secondary"
-                if cols[i % len(cols)].button(label, key=f"session_{mid}", type=btn_type, use_container_width=True):
-                    st.session_state.selected_session_id = mid if not is_selected else None
-                    st.rerun()
+            # Show as horizontal pills (max 4 per row to prevent layout collapse)
+            PILLS_PER_ROW = 4
+            for chunk_start in range(0, len(pills), PILLS_PER_ROW):
+                chunk = pills[chunk_start:chunk_start + PILLS_PER_ROW]
+                cols = st.columns(len(chunk))
+                for j, (mid, label, status) in enumerate(chunk):
+                    is_selected = mid == selected_id
+                    btn_type = "primary" if is_selected else "secondary"
+                    if cols[j].button(label, key=f"session_{mid}", type=btn_type, use_container_width=True):
+                        st.session_state.selected_session_id = mid if not is_selected else None
+                        st.rerun()
         else:
             st.info("No missions yet. Send a message below to start!")
 
         st.divider()
 
         # --- Chat Area ---
-        chat_container = st.container(height=380)
+        chat_container = st.container(height=480)
 
         with chat_container:
             if selected_id is not None:
