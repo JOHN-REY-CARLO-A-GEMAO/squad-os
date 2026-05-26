@@ -194,6 +194,7 @@ def load_global_stats():
 REGISTRY_URL = "https://raw.githubusercontent.com/JOHN-REY-CARLO-A-GEMAO/squad-registry/main/packages.json"
 
 
+@st.cache_data(ttl=3600)
 def fetch_registry_packages():
     """Fetch community packages from the remote registry's packages.json."""
     try:
