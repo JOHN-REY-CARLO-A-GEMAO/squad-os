@@ -145,6 +145,36 @@ def submit_new_mission(prompt, uploaded_files_json=None):
             except Exception as e:
                 st.error(f"Failed to push to {path}: {e}")
 
+
+def submit_followup(mission_id: int, message: str):
+    """Send a follow-up message to an existing mission. Queues it for the worker."""
+    for path in DB_PATHS:
+        if os.path.exists(path):
+            try:
+                conn = sqlite3.connect(path)
+                cursor = conn.cursor()
+                # Get current conversation history
+                cursor.execute("SELECT conversation_history FROM missions WHERE id = ?", (mission_id,))
+                row = cursor.fetchone()
+                history = json.loads(row[0] or "[]") if row else []
+                history.append({
+                    "role": "user",
+                    "content": message,
+                    "timestamp": datetime.utcnow().isoformat() + "Z"
+                })
+                # Set status to FOLLOWUP so the worker picks it up
+                cursor.execute(
+                    "UPDATE missions SET conversation_history = ?, status = 'FOLLOWUP' WHERE id = ?",
+                    (json.dumps(history), mission_id)
+                )
+                conn.commit()
+                conn.close()
+                return True
+            except Exception as e:
+                st.error(f"Failed to submit follow-up: {e}")
+                return False
+    return False
+
 # Optimization: Cache global stats to reduce DB load during 5s auto-refreshes.
 # Reduces database aggregation overhead from O(N) every 5s to once per minute.
 @st.cache_data(ttl=60)
@@ -351,6 +381,10 @@ if st.session_state.get("mission_submitted"):
     st.toast("✅ Mission dispatched successfully!")
     st.session_state.mission_submitted = False
 
+# Session state for mission chat sessions
+if "selected_session_id" not in st.session_state:
+    st.session_state.selected_session_id = None
+
 # Sidebar
 st.sidebar.header("🕹️ Control Panel")
 
@@ -413,26 +447,51 @@ if not selected_project:
     main_tab1, main_tab2, main_tab3 = st.tabs(["💬 Mission Control", "🏗️ Agent Factory", "💾 Agent Store"])
 
     with main_tab1:
-        # --- CHAT GPT LIKE INTERFACE ---
-        st.subheader("💬 Mission Control Chat")
+        missions_df = load_missions()
+        selected_id = st.session_state.selected_session_id
 
-        # Display Chat History (Past Missions)
-        missions = load_missions()
-        chat_container = st.container(height=500)
+        # --- Session Selector Pills ---
+        if not missions_df.empty:
+            pills = []
+            for _, row in missions_df.iterrows():
+                mid = row["id"]
+                status = row.get("status", "UNKNOWN")
+                goal_short = (str(row.get("goal", ""))[:28] + "..") if len(str(row.get("goal", ""))) > 30 else str(row.get("goal", ""))
+                icons = {"QUEUED": "⏳", "IN_PROGRESS": "⚡", "COMPLETED": "✅", "FAILED": "❌", "FOLLOWUP": "💬"}
+                icon = icons.get(status, "❓")
+                pills.append((mid, f"{icon} #{mid} {goal_short}", status))
+
+            # Show as horizontal pills; selected one stays highlighted
+            cols = st.columns(max(1, len(pills)))
+            for i, (mid, label, status) in enumerate(pills):
+                is_selected = mid == selected_id
+                btn_type = "primary" if is_selected else "secondary"
+                if cols[i % len(cols)].button(label, key=f"session_{mid}", type=btn_type, use_container_width=True):
+                    st.session_state.selected_session_id = mid if not is_selected else None
+                    st.rerun()
+        else:
+            st.info("No missions yet. Send a message below to start!")
+
+        st.divider()
+
+        # --- Chat Area ---
+        chat_container = st.container(height=380)
 
         with chat_container:
-            if not missions.empty:
-                for _, row in missions.iterrows():
-                    # Extract the prompt text based on schema
-                    prompt_text = row.get('goal') if pd.notna(row.get('goal')) else row.get('description', 'Unknown Task')
-                    status = row.get('status', 'UNKNOWN').upper()
+            if selected_id is not None:
+                # Single-session view: show only this mission's thread
+                mission_row = missions_df[missions_df["id"] == selected_id]
+                if mission_row.empty:
+                    st.write("Mission not found.")
+                else:
+                    row = mission_row.iloc[0]
+                    prompt_text = str(row.get("goal", ""))
+                    status = row.get("status", "UNKNOWN").upper()
 
-                    # User Bubble
+                    # Original user message
                     with st.chat_message("user"):
                         st.write(prompt_text)
-
-                        # Show uploaded files if any
-                        uploaded_files_json = row.get('uploaded_files')
+                        uploaded_files_json = row.get("uploaded_files")
                         if uploaded_files_json:
                             try:
                                 files = json.loads(uploaded_files_json)
@@ -444,7 +503,7 @@ if not selected_project:
                             except Exception:
                                 pass
 
-                    # Agent Bubble
+                    # Agent response
                     with st.chat_message("assistant", avatar="🤖"):
                         if status == "QUEUED":
                             st.info("⏳ Queued and waiting for the SquadOS worker to pick this up...")
@@ -453,21 +512,90 @@ if not selected_project:
                         elif status == "COMPLETED":
                             st.success("✅ Mission accomplished! Check the Branch Explorer for results.")
                         elif status == "FAILED":
-                            st.error("❌ Mission failed. Please check terminal logs.")
+                            st.error("❌ Mission failed. You can send a follow-up below to retry with adjustments.")
+                        elif status == "FOLLOWUP":
+                            st.warning("💬 Follow-up queued — worker will process it shortly.")
                         else:
                             st.write(f"Status: {status}")
-            else:
-                st.write("No missions found. Send a message below to start!")
 
-        # Chat Input Box
+                    # Conversation history (follow-ups)
+                    conv_history = json.loads(row.get("conversation_history") or "[]")
+                    for msg in conv_history:
+                        role = msg.get("role", "")
+                        content = msg.get("content", "")
+                        if role == "user":
+                            with st.chat_message("user"):
+                                st.write(content)
+                        elif role == "system":
+                            with st.chat_message("assistant", avatar="⚙️"):
+                                st.caption(content)
+                        elif role == "assistant":
+                            with st.chat_message("assistant", avatar="🤖"):
+                                st.write(content)
+            else:
+                # Multi-mission timeline view (original behavior)
+                if not missions_df.empty:
+                    for _, row in missions_df.iterrows():
+                        prompt_text = str(row.get("goal", ""))
+                        status = row.get("status", "UNKNOWN").upper()
+
+                        with st.chat_message("user"):
+                            st.write(prompt_text)
+                            uploaded_files_json = row.get("uploaded_files")
+                            if uploaded_files_json:
+                                try:
+                                    files = json.loads(uploaded_files_json)
+                                    if files:
+                                        st.markdown("---")
+                                        st.markdown(f"📎 **Attached Files ({len(files)}):**")
+                                        for f in files:
+                                            st.caption(f"📄 {f['name']} ({f['size_bytes']//1024} KB)")
+                                except Exception:
+                                    pass
+
+                        with st.chat_message("assistant", avatar="🤖"):
+                            if status == "QUEUED":
+                                st.info("⏳ Queued and waiting...")
+                            elif status == "IN_PROGRESS":
+                                st.warning("⚡ Executing...")
+                            elif status == "COMPLETED":
+                                st.success("✅ Done.")
+                            elif status == "FAILED":
+                                st.error("❌ Failed.")
+                            elif status == "FOLLOWUP":
+                                st.info("💬 Follow-up queued.")
+                            else:
+                                st.write(f"Status: {status}")
+                else:
+                    st.write("No missions found. Send a message below to start!")
+
+        # --- Input Area ---
         with st.container():
             uploaded_files = st.file_uploader("📎 Attach documents, images, videos, etc.", accept_multiple_files=True, label_visibility="collapsed", help="Total upload limit: 500MB (200MB per file)")
-            if prompt := st.chat_input("Ask SquadOS to do something... (e.g., 'Analyze this document for me')"):
-                files_json = save_uploaded_files(uploaded_files)
-                if files_json != "ERROR_SIZE":
-                    submit_new_mission(prompt, files_json)
-                    st.session_state.mission_submitted = True
-                    st.rerun()
+
+            if selected_id is not None:
+                # Follow-up mode: send message to existing mission
+                mission_row = missions_df[missions_df["id"] == selected_id]
+                is_active = False
+                if not mission_row.empty:
+                    s = mission_row.iloc[0].get("status", "").upper()
+                    is_active = s in ("IN_PROGRESS", "QUEUED", "FOLLOWUP")
+
+                if is_active:
+                    st.info(f"⏳ Mission #{selected_id} is in progress. Wait for it to complete before sending a follow-up.")
+                else:
+                    if prompt := st.chat_input(f"Follow-up for Mission #{selected_id}... (e.g., 'Retry with a different approach')"):
+                        submit_followup(selected_id, prompt)
+                        st.session_state.mission_submitted = True
+                        st.rerun()
+            else:
+                # New mission mode
+                if prompt := st.chat_input("Ask SquadOS to do something... (e.g., 'Analyze this document for me')"):
+                    files_json = save_uploaded_files(uploaded_files)
+                    if files_json != "ERROR_SIZE":
+                        submit_new_mission(prompt, files_json)
+                        st.session_state.mission_submitted = True
+                        st.rerun()
 
     with main_tab2:
         st.subheader("🏗️ Agent Factory")

@@ -35,6 +35,7 @@ class MissionRecord(BaseModel):
     status: str = MissionStatus.PENDING.value
     uploaded_files: Optional[str] = None  # JSON string containing file metadata
     workflow_json: Optional[str] = None  # JSON string containing pre-built workflow DAG
+    conversation_history: str = "[]"  # JSON array of follow-up messages
     created_at: datetime = Field(default_factory=datetime.now)
 
 class TaskRecord(BaseModel):
@@ -71,25 +72,25 @@ class AgentPersona(BaseModel):
 
 # --- DATABASE INITIALIZATION ---
 
-async def _run_migrations(db: aiosqlite.Connection, current_version: int) -> int:
-    """Run sequential migrations. Returns new schema version."""
-    migrations = {
-        0: lambda db: db.execute("ALTER TABLE missions ADD COLUMN uploaded_files TEXT"),
-        1: lambda db: db.execute("ALTER TABLE missions ADD COLUMN workflow_json TEXT"),
-    }
+MISSIONS_COLUMNS = {
+    "uploaded_files": "ALTER TABLE missions ADD COLUMN uploaded_files TEXT",
+    "workflow_json": "ALTER TABLE missions ADD COLUMN workflow_json TEXT",
+    "conversation_history": "ALTER TABLE missions ADD COLUMN conversation_history TEXT DEFAULT '[]'",
+}
 
-    new_version = current_version
-    for version, migration in sorted(migrations.items()):
-        if version >= current_version:
+
+async def _run_migrations(db: aiosqlite.Connection):
+    """Detect missing columns on existing tables and add them."""
+    cursor = await db.execute("PRAGMA table_info(missions)")
+    existing = {row[1] for row in await cursor.fetchall()}
+
+    for col, alter_sql in MISSIONS_COLUMNS.items():
+        if col not in existing:
             try:
-                await migration(db)
-                new_version = version + 1
+                await db.execute(alter_sql)
+                print(f"[DB Migration] Added column '{col}' to missions table.")
             except aiosqlite.Error as e:
-                # Migration may fail if column already exists, etc.
-                print(f"[DB Migration] Note: Migration {version} skipped: {e}")
-                new_version = version + 1
-
-    return new_version
+                print(f"[DB Migration] Note: Could not add '{col}': {e}")
 
 
 async def init_db():
@@ -104,18 +105,13 @@ async def init_db():
                 status TEXT NOT NULL,
                 uploaded_files TEXT,
                 workflow_json TEXT,
+                conversation_history TEXT DEFAULT '[]',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
 
-        # MIGRATION: Use user_version PRAGMA with sequential migration map
-        async with db.execute("PRAGMA user_version") as cursor:
-            user_version = (await cursor.fetchone())[0]
-
-        # Run any pending migrations (works for all starting versions)
-        new_version = await _run_migrations(db, user_version)
-        if new_version != user_version:
-            await db.execute(f"PRAGMA user_version = {new_version}")
+        # MIGRATION: Auto-detect missing columns and add them
+        await _run_migrations(db)
 
         # 2. Tasks Table
         await db.execute("""
@@ -316,6 +312,71 @@ async def create_mission(goal: str, uploaded_files: Optional[str] = None, workfl
         )
         await db.commit()
         return cursor.lastrowid
+
+async def append_conversation(mission_id: int, role: str, content: str):
+    """Append a message to a mission's conversation_history."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT conversation_history FROM missions WHERE id = ?", (mission_id,))
+        row = await cursor.fetchone()
+        if not row:
+            return
+        history = json.loads(row[0] or "[]")
+        history.append({"role": role, "content": content, "timestamp": datetime.utcnow().isoformat() + "Z"})
+        await db.execute("UPDATE missions SET conversation_history = ? WHERE id = ?", (json.dumps(history), mission_id))
+        await db.commit()
+
+
+async def get_conversation(mission_id: int) -> list:
+    """Get the full conversation history for a mission."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT conversation_history FROM missions WHERE id = ?", (mission_id,))
+        row = await cursor.fetchone()
+        if not row:
+            return []
+        return json.loads(row[0] or "[]")
+
+
+async def set_mission_status(mission_id: int, status: str):
+    """Update a mission's status."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE missions SET status = ? WHERE id = ?", (status, mission_id))
+        await db.commit()
+
+
+async def get_mission(mission_id: int) -> Optional[Dict[str, Any]]:
+    """Get a mission's full row as a dict."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM missions WHERE id = ?", (mission_id,))
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return dict(row)
+
+
+async def get_next_followup_mission() -> Optional[Dict[str, Any]]:
+    """Get the next mission awaiting a follow-up (status='FOLLOWUP'), ordered by oldest first."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM missions WHERE status = 'FOLLOWUP' ORDER BY id ASC LIMIT 1"
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return dict(row)
+
+
+async def get_mission(mission_id: int) -> Optional[Dict[str, Any]]:
+    """Get a mission's full row as a dict."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM missions WHERE id = ?", (mission_id,))
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return dict(row)
+
 
 async def create_task(mission_id: int, description: str, assigned_agent: str) -> int:
     async with aiosqlite.connect(DB_PATH) as db:

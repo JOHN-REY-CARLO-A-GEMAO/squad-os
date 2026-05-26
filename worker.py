@@ -1,4 +1,5 @@
 import asyncio
+import json
 import warnings
 from dotenv import load_dotenv
 load_dotenv()
@@ -66,7 +67,7 @@ from squad_os.tools.hitl import (
     HITLWebSocketServer
 )
 
-from squad_os.database.session import init_db, get_next_queued_mission, update_mission
+from squad_os.database.session import init_db, get_next_queued_mission, update_mission, get_next_followup_mission
 
 # Clean up terminal warnings
 warnings.filterwarnings("ignore", category=ResourceWarning)
@@ -184,6 +185,29 @@ async def run_worker():
             except Exception as e:
                 print(f"❌ MISSION #{mission['id']} FAILED: {e}")
                 await update_mission(mission['id'], "FAILED")
+        
+        # Check for follow-up missions (status = 'FOLLOWUP')
+        followup = await get_next_followup_mission()
+        if followup:
+            print(f"\n💬 FOLLOW-UP DETECTED for MISSION #{followup['id']}: {followup['goal'][:60]}...")
+            await update_mission(followup['id'], "IN_PROGRESS")
+            try:
+                # Get the last user message from conversation history as the follow-up text
+                history = json.loads(followup.get('conversation_history') or '[]')
+                last_user_msg = ""
+                for msg in reversed(history):
+                    if msg.get('role') == 'user':
+                        last_user_msg = msg.get('content', '')
+                        break
+                if last_user_msg:
+                    await manager.handle_followup(followup['id'], last_user_msg)
+                    print(f"✅ FOLLOW-UP FOR MISSION #{followup['id']} COMPLETE.")
+                else:
+                    print(f"⚠️ FOLLOW-UP FOR MISSION #{followup['id']} has no user message.")
+                    await update_mission(followup['id'], "COMPLETED")
+            except Exception as e:
+                print(f"❌ FOLLOW-UP FOR MISSION #{followup['id']} FAILED: {e}")
+                await update_mission(followup['id'], "FAILED")
         
         # Check for new requests every 5 seconds
         await asyncio.sleep(5)

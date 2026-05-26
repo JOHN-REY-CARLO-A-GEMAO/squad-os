@@ -10,7 +10,7 @@ import os
 import shutil
 import aiosqlite
 from squad_os.agents.base import BaseAgent
-from squad_os.database.session import create_mission, create_task, update_task, update_mission, update_blackboard, DB_PATH, get_all_personas
+from squad_os.database.session import create_mission, create_task, update_task, update_mission, update_blackboard, DB_PATH, get_all_personas, append_conversation, get_conversation, get_mission, set_mission_status
 from squad_os.core.projects import ProjectBranch
 from squad_os.tools.self_healing import health_monitor
 from squad_os.core.utils import is_safe_path
@@ -395,6 +395,126 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
             await update_mission(mission_id, "COMPLETED")
         except Exception as db_err:
             logging.error(f"Database error while updating mission status to COMPLETED: {db_err}")
+
+    async def handle_followup(self, mission_id: int, user_message: str):
+        """Handle a follow-up message for an existing mission.
+        Loads previous context, enriches the goal, re-plans, and re-executes on the same branch.
+        """
+        # 1. Load mission context
+        mission = await get_mission(mission_id)
+        if not mission:
+            print(f"❌ [Manager]: Mission #{mission_id} not found for follow-up.")
+            return
+
+        goal = mission["goal"]
+        prev_history = json.loads(mission.get("conversation_history") or "[]")
+        workflow_json = mission.get("workflow_json")
+        uploaded_files_json = mission.get("uploaded_files")
+
+        # 2. Log the follow-up to conversation history
+        await append_conversation(mission_id, "user", user_message)
+
+        # 3. Build enriched goal from original + previous results + user follow-up
+        enriched_goal = goal
+
+        # Gather previous task results from DB
+        async with aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT description, status, output_data, assigned_agent FROM tasks WHERE mission_id = ? ORDER BY id", (mission_id,))
+            prev_tasks = [dict(r) for r in await cursor.fetchall()]
+
+        if prev_tasks:
+            summary_lines = ["\n\n--- PREVIOUS ATTEMPT RESULTS ---"]
+            for i, t in enumerate(prev_tasks):
+                status_icon = "✅" if t["status"] == "COMPLETED" else "❌"
+                output = ""
+                if t.get("output_data"):
+                    try:
+                        out = json.loads(t["output_data"])
+                        output = f" → {str(out)[:200]}"
+                    except (json.JSONDecodeError, TypeError):
+                        output = f" → {str(t['output_data'])[:200]}"
+                summary_lines.append(f"  Task {i} [{t['assigned_agent']}]: {status_icon} {t['description']}{output}")
+            enriched_goal += "\n".join(summary_lines)
+
+        enriched_goal += f"\n\n--- FOLLOW-UP FROM USER ---\n{user_message}"
+
+        # 4. Load or recreate project branch
+        slug = goal[:30]
+        branch_id = ProjectBranch.create_id(slug)
+        shared_branch = ProjectBranch(branch_id)
+        if os.path.exists(shared_branch.project_path):
+            print(f"📂 [Manager]: Reusing existing branch: {branch_id}")
+        else:
+            shared_branch.fork()
+            print(f"📂 [Manager]: Created new shared mission branch: {branch_id}")
+
+        # 5. Re-plan and re-execute
+        try:
+            await set_mission_status(mission_id, "IN_PROGRESS")
+            await append_conversation(mission_id, "system", f"Re-planning with follow-up: {user_message[:100]}")
+
+            if workflow_json:
+                self.active_agents = {}
+                workflow_data = json.loads(workflow_json)
+                tasks_data = workflow_data.get("tasks", [])
+                all_roles = set()
+                for t in tasks_data:
+                    all_roles.add(t.get("assigned_agent_role", "Assistant"))
+                    for sr in t.get("swarm_roles", []):
+                        all_roles.add(sr)
+                for role in all_roles:
+                    self.active_agents[role] = BaseAgent(
+                        role=role,
+                        goal=f"Execute your assigned tasks in pre-built workflow: {goal[:50]}",
+                        backstory=f"You are a {role} executing a predefined workflow.",
+                        tools=list(self.tool_inventory.values()),
+                        model_name=self.model_name
+                    )
+                for agent in self.active_agents.values():
+                    agent.active_branch = shared_branch
+
+                task_plans = []
+                for i, t in enumerate(tasks_data):
+                    task_plans.append(TaskPlan(
+                        description=t.get("description", f"Task {i}"),
+                        assigned_agent_role=t.get("assigned_agent_role", "Assistant"),
+                        depends_on=t.get("depends_on", []),
+                        priority=t.get("priority", 1),
+                        estimated_complexity=t.get("estimated_complexity", "medium"),
+                        is_swarm=t.get("is_swarm", False),
+                        swarm_roles=t.get("swarm_roles", [])
+                    ))
+                plan = MissionPlan(tasks=task_plans, suggested_parallelism=workflow_data.get("suggested_parallelism", 2))
+                self.plan_mission_obj = plan
+                tasks = plan.tasks
+                print(f"📋 [Manager]: Follow-up using pre-built workflow — skipping LLM planning.")
+            else:
+                await self.recruit_squad(enriched_goal)
+                for agent in self.active_agents.values():
+                    agent.active_branch = shared_branch
+                plan = await self.plan_mission(enriched_goal)
+                self.plan_mission_obj = plan
+                tasks = plan.tasks
+
+            for i, t in enumerate(tasks):
+                deps = f" (depends on: {t.depends_on})" if t.depends_on else ""
+                print(f"  📝 Task {i}: [{t.assigned_agent_role}] {t.description}{deps}")
+
+            await append_conversation(mission_id, "system", f"Re-planning complete — {len(tasks)} tasks to execute.")
+
+            # Re-execute on the same branch
+            await self.execute_dag(tasks, mission_id, enriched_goal, shared_branch)
+            await set_mission_status(mission_id, "COMPLETED")
+
+            # Log success to conversation
+            completed = sum(1 for t in self.plan_mission_obj.tasks if hasattr(t, '_result') and getattr(t, '_result') == "COMPLETED")
+            await append_conversation(mission_id, "system", f"Follow-up execution complete. {completed}/{len(tasks)} tasks succeeded.")
+
+        except Exception as e:
+            print(f"❌ [Manager]: Follow-up failed: {e}")
+            await set_mission_status(mission_id, "FAILED")
+            await append_conversation(mission_id, "system", f"Follow-up failed: {str(e)[:200]}")
 
     async def execute_task(self, task_idx: int, context: str, mission_id: int, task_states, task_results, task_ids, tasks) -> bool:
         """Execute a single task. Returns True if successful."""
