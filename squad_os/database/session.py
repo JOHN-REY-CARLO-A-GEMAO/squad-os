@@ -60,6 +60,14 @@ class ApprovalRecord(BaseModel):
     status: str = ApprovalStatus.PENDING.value
     feedback: Optional[str] = None
 
+class AgentPersona(BaseModel):
+    id: Optional[int] = None
+    role: str
+    goal: str
+    backstory: str
+    tools: str  # JSON string list of tool names
+    created_at: Optional[datetime] = None
+
 # --- DATABASE INITIALIZATION ---
 
 async def _run_migrations(db: aiosqlite.Connection, current_version: int) -> int:
@@ -196,7 +204,19 @@ async def init_db():
                 FOREIGN KEY (mission_id) REFERENCES missions (id) ON DELETE CASCADE
             )
         """)
-        # 7. Performance Indexes
+        # 7. Agent Personas Table
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS agent_personas (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                role TEXT UNIQUE NOT NULL,
+                goal TEXT NOT NULL,
+                backstory TEXT NOT NULL,
+                tools TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # 8. Performance Indexes
         # Optimizes mission retrieval by status (e.g. Dashboard, Worker Queue)
         await db.execute("CREATE INDEX IF NOT EXISTS idx_missions_status ON missions(status)")
         # Optimizes task lookups for specific missions (Mission View, Context Loading)
@@ -207,6 +227,8 @@ async def init_db():
         await db.execute("CREATE INDEX IF NOT EXISTS idx_approvals_mission_id ON approvals(mission_id)")
         # Optimizes interrupt retrieval for missions
         await db.execute("CREATE INDEX IF NOT EXISTS idx_interrupts_mission_id ON mission_interrupts(mission_id)")
+        # Optimizes persona lookups by role
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_personas_role ON agent_personas(role)")
 
         await db.commit()
 
@@ -375,4 +397,33 @@ async def update_interrupt_guidance(interrupt_id: int, user_guidance: str):
             "UPDATE mission_interrupts SET user_guidance = ?, status = 'RESOLVED' WHERE id = ?",
             (user_guidance, interrupt_id)
         )
+        await db.commit()
+
+# --- AGENT PERSONA HELPERS ---
+
+async def save_persona(role: str, goal: str, backstory: str, tools: List[str]):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO agent_personas (role, goal, backstory, tools) VALUES (?, ?, ?, ?)",
+            (role, goal, backstory, json.dumps(tools))
+        )
+        await db.commit()
+
+async def get_all_personas() -> List[Dict[str, Any]]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM agent_personas ORDER BY role ASC") as cursor:
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+async def get_persona_by_role(role: str) -> Optional[Dict[str, Any]]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM agent_personas WHERE role = ?", (role,)) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+async def delete_persona(role: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM agent_personas WHERE role = ?", (role,))
         await db.commit()
