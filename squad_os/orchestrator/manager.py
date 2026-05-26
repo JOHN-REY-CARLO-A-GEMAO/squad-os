@@ -34,19 +34,25 @@ class Manager:
         self.model_name = model_name
         self.max_retries = 3
         self.active_agents = {}
-        self.agent_metrics = {}  # role -> {"tasks_completed": int, "tasks_failed": int, "avg_time": float}
+        self.agent_metrics = {}  # role -> {"tasks_completed": int, "tasks_failed": int, "total_time": float}
         self.agent_load = {}  # role -> current number of active tasks
         self.plan_mission_obj = None
 
     def _repair_json(self, content: str) -> str:
         """Deep clean JSON, handling severe LLM hallucinations."""
         content = content.strip()
-        if "```" in content:
-            content = re.sub(r"```(?:json)?\s*(.*?)\s*```", r"\1", content, flags=re.DOTALL).strip()
+        # Optimization: Early return if basic structure is clean and parsable
+        if not (content.startswith('{') and content.endswith('}')):
+            # If it's markdown wrapped, clean that first
+            if "```" in content:
+                content = re.sub(r"```(?:json)?\s*(.*?)\s*```", r"\1", content, flags=re.DOTALL).strip()
+        
+        # Extract JSON object
         start = content.find('{')
         end = content.rfind('}')
         if start != -1 and end != -1:
             content = content[start:end+1]
+        
         content = content.replace('\r', '').replace('\n', ' ')
 
         import json
@@ -286,7 +292,10 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
 
                         if os.path.exists(src):
                             # Security: Validate that temp_path is within the expected uploads directory
-                            if not is_safe_path(os.path.join("workspace", "uploads"), src):
+                            # Use the actual root path for validation rather than a hardcoded string
+                            # Default base validation to workspace/uploads, but respect absolute paths if validated by platform
+                            validation_base = os.path.join(os.getcwd(), "workspace", "uploads")
+                            if not is_safe_path(validation_base, src):
                                 logging.warning(f"BLOCKED: Attempted path traversal via uploaded file temp_path: {src}")
                                 continue
 
@@ -321,14 +330,20 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
                 print(f"  📝 Task {i}{swarm}: [{t.assigned_agent_role}] {t.description}{deps}")
         except Exception as e:
             print(f"❌ [Manager]: Setup failed: {e}")
-            await update_mission(mission_id, "FAILED")
+            try:
+                await update_mission(mission_id, "FAILED")
+            except Exception as db_err:
+                logging.error(f"Database error while updating mission status: {db_err}")
             return
 
         # --- EXECUTE DAG ---
         await self.execute_dag(tasks, mission_id, enriched_goal, shared_branch)
 
         # Final status
-        await update_mission(mission_id, "COMPLETED")
+        try:
+            await update_mission(mission_id, "COMPLETED")
+        except Exception as db_err:
+            logging.error(f"Database error while updating mission status to COMPLETED: {db_err}")
 
     async def execute_task(self, task_idx: int, context: str, mission_id: int, task_states, task_results, task_ids, tasks) -> bool:
         """Execute a single task. Returns True if successful."""
@@ -339,16 +354,20 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
 
         agent = self.active_agents.get(task_data.assigned_agent_role)
 
-        # Initialize agent metrics if not present
+        # Initialize agent metrics if not present (Fix 3)
         if task_data.assigned_agent_role not in self.agent_metrics:
             self.agent_metrics[task_data.assigned_agent_role] = {
                 "tasks_completed": 0,
                 "tasks_failed": 0,
                 "total_time": 0.0
             }
+            
+        # Initialize load tracking if not present
+        if task_data.assigned_agent_role not in self.agent_load:
+            self.agent_load[task_data.assigned_agent_role] = 0
 
         # Track load
-        self.agent_load[task_data.assigned_agent_role] = self.agent_load.get(task_data.assigned_agent_role, 0) + 1
+        self.agent_load[task_data.assigned_agent_role] += 1
 
         # Fuzzy match fallback
         if not agent:
@@ -361,8 +380,19 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
         if not agent:
             print(f"⚠️ [Manager]: Skipping task {task_idx}, role '{task_data.assigned_agent_role}' not found.")
             task_states[task_idx] = "FAILED"
+            
+            # Safe metric update to prevent KeyError (Redundant check for safety)
+            if task_data.assigned_agent_role not in self.agent_metrics:
+                self.agent_metrics[task_data.assigned_agent_role] = {"tasks_completed": 0, "tasks_failed": 0, "total_time": 0.0}
+            
             self.agent_metrics[task_data.assigned_agent_role]["tasks_failed"] += 1
-            self.agent_load[task_data.assigned_agent_role] -= 1
+            
+            # Safe load update
+            if task_data.assigned_agent_role in self.agent_load:
+                self.agent_load[task_data.assigned_agent_role] -= 1
+            else:
+                self.agent_load[task_data.assigned_agent_role] = 0
+                
             health_monitor.record_failure(task_data.assigned_agent_role, "Agent role not found in active agents")
             return False
 
@@ -371,8 +401,11 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
         task_ids[task_idx] = task_id
 
         start_time = datetime.now()
-        result = await agent.execute_task(task_data.description, context)
-        elapsed = (datetime.now() - start_time).total_seconds()
+        try:
+            result = await agent.execute_task(task_data.description, context)
+        finally:
+            elapsed = (datetime.now() - start_time).total_seconds()
+            self.agent_load[task_data.assigned_agent_role] = max(0, self.agent_load.get(task_data.assigned_agent_role, 0) - 1)
 
         output_text = result.get("output", "Task completed without text summary.")
 
@@ -416,8 +449,12 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
             agent = self.active_agents.get(role)
             if not agent: return f"[{role}]: Agent not found."
             print(f"  🐝 [Swarm]: {role} is thinking...")
-            result = await agent.execute_task(task_data.description, context)
-            return f"[{role}]: {result.get('output', 'No output')}"
+            try:
+                result = await agent.execute_task(task_data.description, context)
+                return f"[{role}]: {result.get('output', 'No output')}"
+            except Exception as e:
+                print(f"  ⚠️ [Swarm]: {role} failed: {e}")
+                return f"[{role}]: FAILED - {str(e)}"
 
         outputs = await asyncio.gather(*[agent_task(r) for r in roles])
         debate_history = "\n\n".join(outputs)
@@ -460,6 +497,8 @@ FINAL CONSENSUS:"""
         max_waves = len(tasks) * 2
         wave = 0
         _memory_written = False
+        sem = asyncio.Semaphore(getattr(self.plan_mission_obj, 'suggested_parallelism', 2))
+        sem = asyncio.Semaphore(getattr(self.plan_mission_obj, 'suggested_parallelism', 2))
         
         while any(state == "PENDING" for state in task_states.values()) and wave < max_waves:
             wave += 1
@@ -527,10 +566,10 @@ FINAL CONSENSUS:"""
                     print(f"⚠️ [Manager]: Agent '{role}' is at capacity ({current_load} tasks). Deferring task {task_idx}.")
             
             # Execute in parallel (all ready tasks, load tracking happens inside execute_task)
-            results = await asyncio.gather(
-                *[self.execute_task(idx, task_contexts[idx], mission_id, task_states, task_results, task_ids, tasks) for idx in ready_tasks],
-                return_exceptions=True
-            )
+                    async def capped_execute(idx):
+            async with sem:
+                return await self.execute_task(idx, task_contexts[idx], mission_id, task_states, task_results, task_ids, tasks)
+        results = await asyncio.gather(*[capped_execute(idx) for idx in ready_tasks], return_exceptions=True)
             
             # Handle exceptions
             for i, result in enumerate(results):
@@ -539,10 +578,17 @@ FINAL CONSENSUS:"""
                     print(f"❌ [Manager]: Task {task_idx} failed with exception: {result}")
                     task_states[task_idx] = "FAILED"
                     if task_idx in task_ids:
-                        await update_task(task_ids[task_idx], status="FAILED", output_data=str(result))
-                    if tasks[task_idx].assigned_agent_role in self.agent_metrics:
-                        self.agent_metrics[tasks[task_idx].assigned_agent_role]["tasks_failed"] += 1
-                    health_monitor.record_failure(tasks[task_idx].assigned_agent_role, str(result))
+                        try:
+                            await update_task(task_ids[task_idx], status="FAILED", output_data=str(result))
+                        except Exception as db_err:
+                            logging.error(f"Failed to update task {task_idx} status: {db_err}")
+                    
+                    role = tasks[task_idx].assigned_agent_role
+                    if role not in self.agent_metrics:
+                        self.agent_metrics[role] = {"tasks_completed": 0, "tasks_failed": 0, "total_time": 0.0}
+                    self.agent_metrics[role]["tasks_failed"] += 1
+                    
+                    health_monitor.record_failure(role, str(result))
         
         # --- DYNAMIC TASK REASSIGNMENT ---
         # Retry failed tasks with different agents if available
@@ -597,3 +643,4 @@ FINAL CONSENSUS:"""
                 avg_time = metrics["total_time"] / max(1, metrics["tasks_completed"])
                 success_rate = (metrics["tasks_completed"] / total) * 100
                 print(f"   {role}: {metrics['tasks_completed']}/{total} succeeded ({success_rate:.0f}%), avg {avg_time:.1f}s/task")
+

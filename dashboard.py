@@ -41,6 +41,26 @@ def get_db_connection():
             pass
     return None
 
+def ensure_personas_table():
+    for path in DB_PATHS:
+        if os.path.exists(path):
+            try:
+                conn = sqlite3.connect(path)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS agent_personas (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        role TEXT UNIQUE NOT NULL,
+                        goal TEXT NOT NULL,
+                        backstory TEXT NOT NULL,
+                        tools TEXT NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                conn.commit()
+                conn.close()
+            except Exception:
+                pass
+
 def load_missions():
     conn = get_db_connection()
     if conn:
@@ -279,6 +299,7 @@ if not selected_project:
 
         with col_a:
             st.write("**Active Personas**")
+            ensure_personas_table()
             personas = asyncio.run(get_all_personas())
             if not personas:
                 st.info("No custom personas defined.")
