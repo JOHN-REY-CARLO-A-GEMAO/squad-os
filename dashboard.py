@@ -5,6 +5,7 @@ import os
 import json
 import mimetypes
 import asyncio
+import urllib.request
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
 from squad_os.database.session import save_persona, get_all_personas, delete_persona
@@ -160,8 +161,23 @@ def load_global_stats():
             pass
     return (0, 0, 0.0)
 
+REGISTRY_URL = "https://raw.githubusercontent.com/JOHN-REY-CARLO-A-GEMAO/squad-registry/main/packages.json"
+
+
+def fetch_registry_packages():
+    """Fetch community packages from the remote registry's packages.json."""
+    try:
+        req = urllib.request.Request(REGISTRY_URL, headers={"User-Agent": "SquadOS-Dashboard/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        return data.get("packages", [])
+    except Exception as e:
+        print(f"[Dashboard] Registry fetch failed: {e}")
+        return []
+
+
 def load_store_catalog():
-    """Query store_packages joined with install status."""
+    """Query store_packages joined with install status, merged with remote registry entries."""
     conn = get_db_connection()
     if not conn:
         return []
@@ -178,10 +194,56 @@ def load_store_catalog():
         """)
         cols = [d[0] for d in cursor.description]
         rows = cursor.fetchall()
+        local_packages = {r["id"]: dict(zip(cols, r)) for r in rows}
+
+        # Merge remote registry packages
+        remote_packages = fetch_registry_packages()
+        for rp in remote_packages:
+            pid = rp["id"]
+            if pid not in local_packages:
+                local_packages[pid] = {
+                    "id": pid,
+                    "name": rp.get("name", pid),
+                    "version": rp.get("version", "0.0.0"),
+                    "author": rp.get("author", ""),
+                    "description": rp.get("description", ""),
+                    "tags": json.dumps(rp.get("tags", [])),
+                    "install_count": 0,
+                    "source_url": rp.get("source_url", ""),
+                    "install_status": "REMOTE",
+                    "installed_version": None,
+                }
+
+        result = sorted(local_packages.values(), key=lambda x: (-x["install_count"], x["name"]))
         conn.close()
-        return [dict(zip(cols, r)) for r in rows]
+        return result
     except Exception:
         return []
+
+def install_remote_package(pkg):
+    """Download a .sqad from a remote URL and install it."""
+    import urllib.request
+    import tempfile
+
+    url = pkg.get("source_url", "")
+    if not url:
+        st.error(f"No source URL for '{pkg['id']}'")
+        return
+
+    try:
+        os.makedirs("workspace/packages/uploads", exist_ok=True)
+        dest = os.path.join("workspace", "packages", "uploads", f"{pkg['id']}.sqad")
+        with st.spinner(f"Downloading {pkg['name']}..."):
+            urllib.request.urlretrieve(url, dest)
+        pkg_obj = AgentPackageLoader.load_sqad(dest)
+        if pkg_obj:
+            asyncio.run(AgentPackageLoader.install_package(pkg_obj))
+            st.success(f"✅ {pkg['name']} installed from registry!")
+        else:
+            st.error("Failed to validate package.")
+    except Exception as e:
+        st.error(f"Failed to install from registry: {e}")
+
 
 def deploy_store_workflow(package_id: str, custom_goal: str = ""):
     """Queue a mission from a stored workflow."""
@@ -489,11 +551,18 @@ if not selected_project:
                             if pkg.get("description"):
                                 st.write(pkg["description"])
                         with cols[1]:
-                            if is_installed:
+                            install_status = pkg.get("install_status", "NOT_INSTALLED")
+                            if install_status == "ACTIVE":
                                 st.success("✅ Installed")
+                            elif install_status == "REMOTE":
+                                if st.button(f"⬇️ Get from Registry", key=f"remote_{pkg['id']}", use_container_width=True):
+                                    install_remote_package(pkg)
+                                    st.rerun()
                             else:
                                 sqad_path = pkg.get("source_url", "")
-                                if sqad_path and os.path.exists(sqad_path):
+                                if sqad_path and sqad_path.startswith("http"):
+                                    st.caption("📡 Remote")
+                                elif sqad_path and os.path.exists(sqad_path):
                                     if st.button(f"⬇️ Install", key=f"install_{pkg['id']}", use_container_width=True):
                                         asyncio.run(AgentPackageLoader.install_package(
                                             AgentPackageLoader.load_sqad(sqad_path)
