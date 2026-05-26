@@ -8,13 +8,18 @@ A .sqad (Squad OS Agent Package) is a zip bundle containing:
   - agents/             — custom agent persona JSON definitions
   - assets/             — static resources (prompts, icons, etc.)
   - requirements.txt    — pip dependencies
+
+You can author a package as a single squad.yaml file and compile it with:
+    squad build ./squad.yaml
 """
 import json
 import os
 import re
 import shutil
+import yaml
 import zipfile
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, List, Optional, Any
 from squad_os.tools.base import BaseTool
 from squad_os.core.utils import is_safe_path
@@ -410,3 +415,60 @@ class AgentPackageLoader:
             if os.path.isdir(tools_dir):
                 paths.append(tools_dir)
         return paths
+
+    @staticmethod
+    def build_sqad_from_yaml(yaml_path: str, output_path: Optional[str] = None) -> str:
+        """Compile a squad.yaml file into a .sqad package zip.
+
+        Args:
+            yaml_path: Path to the squad.yaml file.
+            output_path: Output .sqad path (default: <yaml_dir>/<id>.sqad).
+
+        Returns:
+            Path to the generated .sqad file.
+        """
+        from squad_os.store.schema import SquadManifest
+
+        with open(yaml_path, "r", encoding="utf-8") as f:
+            raw = yaml.safe_load(f)
+
+        manifest = SquadManifest(**raw)
+        bundle = manifest.to_bundle()
+
+        yaml_dir = os.path.dirname(os.path.abspath(yaml_path))
+        if not output_path:
+            output_path = os.path.join(yaml_dir, f"{manifest.id}.sqad")
+
+        with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("manifest.json", json.dumps(bundle["manifest"], indent=2))
+
+            if bundle["workflow"]:
+                zf.writestr("workflow.json", json.dumps(bundle["workflow"], indent=2))
+
+            for agent in bundle["agents"]:
+                safe_name = re.sub(r'[^a-zA-Z0-9_-]', '_', agent["role"])
+                zf.writestr(f"agents/{safe_name}.json", json.dumps(agent, indent=2))
+
+            yaml_dir_path = Path(yaml_dir)
+            tools_dir = yaml_dir_path / "tools"
+            if tools_dir.is_dir():
+                for tf in sorted(tools_dir.iterdir()):
+                    if tf.suffix == ".py" and not tf.name.startswith("_"):
+                        zf.write(str(tf), f"tools/{tf.name}")
+
+            assets_dir = yaml_dir_path / "assets"
+            if assets_dir.is_dir():
+                for af in sorted(assets_dir.rglob("*")):
+                    if af.is_file():
+                        zf.write(str(af), f"assets/{af.relative_to(assets_dir)}")
+
+            req_file = yaml_dir_path / "requirements.txt"
+            if req_file.is_file():
+                zf.write(str(req_file), "requirements.txt")
+
+            readme_file = yaml_dir_path / "README.md"
+            if readme_file.is_file():
+                zf.write(str(readme_file), "README.md")
+
+        print(f"  [PackageLoader] Built {output_path} ({os.path.getsize(output_path):,} bytes)")
+        return output_path
