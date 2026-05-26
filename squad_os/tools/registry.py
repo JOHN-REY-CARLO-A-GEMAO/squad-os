@@ -14,17 +14,24 @@ except ImportError:
 from squad_os.tools.base import BaseTool
 from squad_os.core.utils import is_safe_path
 
-# Security: Dangerous command patterns that are blocked
-DANGEROUS_PATTERNS: Set[str] = {
-    'rm -rf /', 'rm -rf /*', 'rm -rf ~', 'dd if=/dev/zero', 'mkfs.', 'fdisk',
-    '>:', '>&', '/dev/null', 'shutdown', 'reboot', 'halt', 'poweroff',
-    'init 0', 'telinit 0', 'kill -9 -1', 'kill -9 1',
-    'curl .*|.*sh', 'curl .*|.*bash', 'wget .*|.*sh', 'wget .*|.*bash',
-    '> /etc/', '>> /etc/', 'echo.*> /', 'echo.*>> /',
-    'chmod 777 /', 'chmod -R 777 /', 'chown -R',
-    'mkfs.ext', 'mkfs.btrfs', 'mkfs.xfs', 'parted', 'gparted',
-    'del /f /s /q', 'rd /s /q', 'format ', 'diskpart',
-}
+# Security: Dangerous command patterns that are blocked using regex
+DANGEROUS_REGEX_PATTERNS: List[str] = [
+    r'rm\s+-rf\s+[/~*]',  # rm -rf on root, home, or wildcard
+    r'dd\s+if=/dev/zero',  # disk wiping
+    r'mkfs\.(?:ext|btrfs|xfs)',  # file system creation
+    r'fdisk|parted|gparted',  # disk partitioning
+    r'(?:curl|wget)\s+.*\|\s*.*(?:sh|bash|python)',  # curl/wget to shell/python pipe
+    r'>>?\s*/etc/',  # writing to /etc/
+    r'echo\s+.*>>?\s*/',  # echo redirection to root
+    r'chmod\s+(?:-R\s+)?777\s+/',  # permissive chmod on root
+    r'chown\s+-R',  # recursive chown
+    r'shutdown|reboot|halt|poweroff|init\s+0|telinit\s+0',  # system power/init commands
+    r'kill\s+-9\s+(?:-1|1)',  # killing all processes or init
+    r'del\s+/f\s+/s\s+/q',  # Windows recursive delete
+    r'rd\s+/s\s+/q',  # Windows recursive directory removal
+    r'format\s+|diskpart',  # Windows disk commands
+    r'>:|>&',  # Redirection tricks
+]
 
 # Trusted system directories for absolute command paths
 TRUSTED_SYSTEM_DIRS: Set[str] = {"/bin/", "/usr/bin/", "/usr/local/bin/"}
@@ -53,10 +60,10 @@ ALLOWED_COMMANDS: Set[str] = {
 
 
 def _is_dangerous_command(command: str) -> bool:
-    """Check if command contains dangerous patterns."""
+    """Check if command contains dangerous patterns using regex."""
     cmd_lower = command.lower().strip()
-    for pattern in DANGEROUS_PATTERNS:
-        if pattern.lower() in cmd_lower:
+    for pattern in DANGEROUS_REGEX_PATTERNS:
+        if re.search(pattern, cmd_lower, re.IGNORECASE):
             return True
     # Check for shell injection patterns
     if re.search(r'`[^`]+`', cmd_lower) or re.search(r'\$\([^)]+\)', cmd_lower):
