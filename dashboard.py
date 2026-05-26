@@ -450,28 +450,32 @@ if not selected_project:
         missions_df = load_missions()
         selected_id = st.session_state.selected_session_id
 
-        # --- Session Selector Pills ---
+        # --- Session Selector ---
         if not missions_df.empty:
-            pills = []
+            pill_options = []
+            pill_labels = {}
             for _, row in missions_df.iterrows():
                 mid = row["id"]
                 status = row.get("status", "UNKNOWN")
                 goal_short = (str(row.get("goal", ""))[:28] + "..") if len(str(row.get("goal", ""))) > 30 else str(row.get("goal", ""))
                 icons = {"QUEUED": "⏳", "IN_PROGRESS": "⚡", "COMPLETED": "✅", "FAILED": "❌", "FOLLOWUP": "💬"}
                 icon = icons.get(status, "❓")
-                pills.append((mid, f"{icon} #{mid} {goal_short}", status))
+                label = f"{icon} #{mid} {goal_short}"
+                pill_options.append(mid)
+                pill_labels[mid] = label
 
-            # Show as horizontal pills (max 4 per row to prevent layout collapse)
-            PILLS_PER_ROW = 4
-            for chunk_start in range(0, len(pills), PILLS_PER_ROW):
-                chunk = pills[chunk_start:chunk_start + PILLS_PER_ROW]
-                cols = st.columns(len(chunk))
-                for j, (mid, label, status) in enumerate(chunk):
-                    is_selected = mid == selected_id
-                    btn_type = "primary" if is_selected else "secondary"
-                    if cols[j].button(label, key=f"session_{mid}", type=btn_type, use_container_width=True):
-                        st.session_state.selected_session_id = mid if not is_selected else None
-                        st.rerun()
+            selected_pill = st.pills(
+                "Recent Missions",
+                options=pill_options,
+                format_func=lambda x: pill_labels.get(x),
+                selection_mode="single",
+                label_visibility="collapsed",
+                default=st.session_state.selected_session_id
+            )
+
+            if selected_pill != st.session_state.selected_session_id:
+                st.session_state.selected_session_id = selected_pill
+                st.rerun()
         else:
             st.info("No missions yet. Send a message below to start!")
 
@@ -806,7 +810,12 @@ else:
                 all_files.append(rel)
 
         if all_files:
-            view_filter = st.radio("Filter", ["All", "Code", "Images", "Documents"], horizontal=True, label_visibility="collapsed")
+            view_filter = st.segmented_control(
+                "Filter Files",
+                options=["All", "Code", "Images", "Documents"],
+                default="All",
+                label_visibility="collapsed"
+            )
 
             code_exts = EXTENSIONS_CODE
             img_exts = EXTENSIONS_IMG
