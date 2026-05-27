@@ -1,0 +1,32 @@
+spec_version: "1.0.0"
+metadata:
+  name: "Market Intelligence Researcher"
+  version: "1.0.0"
+  description: "Performs deep web research on market trends and generates structured markdown intelligence reports."
+  author: "@solodev"
+  license: "Apache-2.0"
+topology:
+  engine: "dag"
+  agents:
+    - id: "web_scout"
+      role: "researcher"
+      system_prompt: "You are a Market Research Scout. Use browser utilities to search for recent industry shifts, pricing strategies, and competitor feature matrices."
+      llm_default: "gpt-4o-mini"
+      tools: ["web_search", "browser"]
+
+    - id: "lead_analyst"
+      role: "architect"
+      system_prompt: "You are a Chief Market Strategist. Take raw scout data, perform comparative matrix analysis, and draft an executive markdown report summary."
+      llm_default: "gpt-4o"
+      tools: ["file_io"]
+
+  dependencies:
+    - parent: "web_scout"
+      child: "lead_analyst"
+      condition: "data_gathered == true"
+runtime:
+  required_tools:
+    - name: "browser"
+      min_version: "1.0.0"
+  environment_defaults:
+    OUTPUT_REPORT_NAME: "market_analysis_report.md"

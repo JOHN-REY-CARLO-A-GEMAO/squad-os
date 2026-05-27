@@ -14,24 +14,17 @@ except ImportError:
 from squad_os.tools.base import BaseTool
 from squad_os.core.utils import is_safe_path
 
-# Security: Dangerous command patterns that are blocked using regex
-DANGEROUS_REGEX_PATTERNS: List[str] = [
-    r'rm\s+-rf\s+[/~*]',  # rm -rf on root, home, or wildcard
-    r'dd\s+if=/dev/zero',  # disk wiping
-    r'mkfs\.(?:ext|btrfs|xfs)',  # file system creation
-    r'fdisk|parted|gparted',  # disk partitioning
-    r'(?:curl|wget)\s+.*\|\s*.*(?:sh|bash|python)',  # curl/wget to shell/python pipe
-    r'>>?\s*/etc/',  # writing to /etc/
-    r'echo\s+.*>>?\s*/',  # echo redirection to root
-    r'chmod\s+(?:-R\s+)?777\s+/',  # permissive chmod on root
-    r'chown\s+-R',  # recursive chown
-    r'shutdown|reboot|halt|poweroff|init\s+0|telinit\s+0',  # system power/init commands
-    r'kill\s+-9\s+(?:-1|1)',  # killing all processes or init
-    r'del\s+/f\s+/s\s+/q',  # Windows recursive delete
-    r'rd\s+/s\s+/q',  # Windows recursive directory removal
-    r'format\s+|diskpart',  # Windows disk commands
-    r'>:|>&',  # Redirection tricks
-]
+# Security: Dangerous regex patterns for terminal commands
+DANGEROUS_REGEX_PATTERNS: Set[str] = {
+    r'rm\s+-rf\s+/', r'rm\s+-rf\s+/\*', r'rm\s+-rf\s+~', r'dd\s+if=/dev/zero', r'mkfs\.', r'fdisk',
+    r'>:', r'>&', r'/dev/null', r'shutdown', r'reboot', r'halt', r'poweroff',
+    r'init\s+0', r'telinit\s+0', r'kill\s+-9\s+-1', r'kill\s+-9\s+1',
+    r'curl\s+.*\|\s*.*sh', r'curl\s+.*\|\s*.*bash', r'wget\s+.*\|\s*.*sh', r'wget\s+.*\|\s*.*bash',
+    r'>\s+/etc/', r'>>\s+/etc/', r'echo.*>\s+/', r'echo.*>>\s+/',
+    r'chmod\s+777\s+/', r'chmod\s+-R\s+777\s+/', r'chown\s+-R',
+    r'mkfs\.ext', r'mkfs\.btrfs', r'mkfs\.xfs', r'parted', r'gparted',
+    r'del\s+/f\s+/s\s+/q', r'rd\s+/s\s+/q', r'format\s+', r'diskpart',
+}
 
 # Trusted system directories for absolute command paths
 TRUSTED_SYSTEM_DIRS: Set[str] = {"/bin/", "/usr/bin/", "/usr/local/bin/"}
@@ -162,7 +155,6 @@ def _validate_terminal_command(command: str, workspace: str) -> tuple[bool, str]
                     return False, f"Command '{cmd_name}' not in allowed list"
             else:
                 return False, f"Command '{cmd_name}' not in allowed list"
-
             expect_command = False
             continue
 

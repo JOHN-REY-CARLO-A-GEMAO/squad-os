@@ -38,6 +38,9 @@ Thumbs.db
 *.db-wal
 *.db-shm
 
+# Package build artifacts
+*.sqad
+
 # Runtime data
 workspace/
 data/
