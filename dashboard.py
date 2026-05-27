@@ -410,7 +410,6 @@ def format_log_timestamp(ts_str):
         return dt.strftime('%H:%M:%S')
     except Exception:
         return str(ts_str)
-
 # --- UI ---
 
 st.title("🛡️ SquadOS: Project Command Center")
