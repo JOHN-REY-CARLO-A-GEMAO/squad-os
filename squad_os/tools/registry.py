@@ -155,7 +155,6 @@ def _validate_terminal_command(command: str, workspace: str) -> tuple[bool, str]
                     return False, f"Command '{cmd_name}' not in allowed list"
             else:
                 return False, f"Command '{cmd_name}' not in allowed list"
-
             expect_command = False
             continue
 
