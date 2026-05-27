@@ -66,15 +66,18 @@ def _is_dangerous_command(command: str) -> bool:
 
 def _looks_like_path(token: str) -> bool:
     """Check if a token looks like a file/directory path rather than a command flag."""
-    # Command flags start with / or - and contain only alphanumeric chars
-    # Examples: /s, /b, -la, --verbose, -rf
-    if token.startswith('/') or token.startswith('-'):
-        # Windows flags: /s, /b, /q, etc. (single char after /)
-        # Unix flags: -la, --verbose, -rf (letters after - or --)
-        stripped = token.lstrip('/-')
-        if stripped.isalnum():
-            return False  # It's a flag, not a path
-    
+    # Command flags start with -
+    if token.startswith('-'):
+        return False
+
+    # On Windows, /s, /b etc are flags. On Unix, /etc is a path.
+    if token.startswith('/'):
+        if os.name == 'nt':
+            stripped = token.lstrip('/')
+            if len(stripped) <= 2 and stripped.isalnum():
+                return False
+        return True # Treat as path
+
     # Tokens that look like paths:
     # - Contain directory separators (/, \)
     # - Start with . (., .., ./file)
@@ -86,7 +89,7 @@ def _looks_like_path(token: str) -> bool:
         return True
     if '.' in token and len(token.split('.')) > 1:
         return True
-    
+
     return False
 
 
@@ -159,7 +162,7 @@ def _validate_terminal_command(command: str, workspace: str) -> tuple[bool, str]
             continue
 
         # Path Traversal Check: Only check tokens that look like actual paths
-        # Skip command flags (e.g., /s, /b, -la, --verbose) and simple arguments
+        # Skip command flags (e.g., -la, --verbose) and simple arguments
         if _looks_like_path(token) and not is_safe_path(workspace, token):
             return False, f"Access denied: Token '{token}' attempts to access path outside workspace"
 
