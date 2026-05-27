@@ -90,6 +90,12 @@ class AgentPackageLoader:
                 errors.append(f"Task {i} is missing 'assigned_agent_role'")
             if not isinstance(task.get("depends_on", []), list):
                 errors.append(f"Task {i} 'depends_on' must be a list")
+            conditions = task.get("conditions")
+            if conditions is not None and not isinstance(conditions, list):
+                errors.append(f"Task {i} 'conditions' must be a list of strings")
+            env = task.get("environment_defaults")
+            if env is not None and not isinstance(env, dict):
+                errors.append(f"Task {i} 'environment_defaults' must be a dict")
 
         # Check that depends_on indices are valid
         task_count = len(data["tasks"])
@@ -437,7 +443,7 @@ class AgentPackageLoader:
 
         yaml_dir = os.path.dirname(os.path.abspath(yaml_path))
         if not output_path:
-            output_path = os.path.join(yaml_dir, f"{manifest.id}.sqad")
+            output_path = os.path.join(yaml_dir, f"{bundle['manifest']['id']}.sqad")
 
         with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("manifest.json", json.dumps(bundle["manifest"], indent=2))

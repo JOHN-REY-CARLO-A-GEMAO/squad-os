@@ -14,6 +14,7 @@ from squad_os.database.session import create_mission, create_task, update_task, 
 from squad_os.core.projects import ProjectBranch
 from squad_os.tools.self_healing import health_monitor
 from squad_os.core.utils import is_safe_path
+from squad_os.core.evaluator import SafeEvaluator, build_condition_context
 
 class TaskPlan(BaseModel):
     description: str
@@ -23,6 +24,7 @@ class TaskPlan(BaseModel):
     estimated_complexity: str = Field(default="medium", description="low, medium, or high")
     is_swarm: bool = Field(default=False, description="Whether this task should be executed as a swarm (multiple agents)")
     swarm_roles: List[str] = Field(default_factory=list, description="List of roles to include in the swarm if is_swarm is True")
+    conditions: List[str] = Field(default_factory=list, description="Condition expressions gating this task (evaluated against parent outputs)")
 
 class MissionPlan(BaseModel):
     tasks: List[TaskPlan]
@@ -352,7 +354,8 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
                         priority=t.get("priority", 1),
                         estimated_complexity=t.get("estimated_complexity", "medium"),
                         is_swarm=t.get("is_swarm", False),
-                        swarm_roles=t.get("swarm_roles", [])
+                        swarm_roles=t.get("swarm_roles", []),
+                        conditions=t.get("conditions", [])
                     ))
 
                 plan = MissionPlan(tasks=task_plans, suggested_parallelism=suggested_parallelism)
@@ -658,7 +661,8 @@ FINAL CONSENSUS:"""
 
     async def execute_dag(self, tasks: List[TaskPlan], mission_id: int, enriched_goal: str, shared_branch: ProjectBranch):
         """DAG-BASED PARALLEL EXECUTION"""
-        task_states = {}  # task_idx -> "PENDING" | "RUNNING" | "COMPLETED" | "FAILED"
+        # State values: "PENDING" | "RUNNING" | "COMPLETED" | "FAILED" | "SKIPPED"
+        task_states = {}
         task_results = {}  # task_idx -> output_text
         task_ids = {}  # task_idx -> database task_id
         
@@ -669,21 +673,53 @@ FINAL CONSENSUS:"""
         wave = 0
         _memory_written = False
         sem = asyncio.Semaphore(getattr(self.plan_mission_obj, 'suggested_parallelism', 2))
-        sem = asyncio.Semaphore(getattr(self.plan_mission_obj, 'suggested_parallelism', 2))
         
         while any(state == "PENDING" for state in task_states.values()) and wave < max_waves:
             wave += 1
             
-            # Find tasks that are ready to execute (all dependencies completed)
+            # Find tasks that are ready to execute
             ready_tasks = []
             for i in range(len(tasks)):
                 if task_states[i] != "PENDING":
                     continue
                 
-                # Check if all dependencies are completed
+                # Check if all dependencies are in a terminal state (COMPLETED or SKIPPED)
                 deps = tasks[i].depends_on
-                if all(task_states.get(dep) == "COMPLETED" for dep in deps):
-                    ready_tasks.append(i)
+                if not all(task_states.get(dep) in ("COMPLETED", "SKIPPED") for dep in deps):
+                    continue
+                
+                # If a parent was SKIPPED, auto-skip child (condition cannot be met)
+                if any(task_states.get(dep) == "SKIPPED" for dep in deps):
+                    task_states[i] = "SKIPPED"
+                    task_id = await create_task(
+                        mission_id, tasks[i].description, tasks[i].assigned_agent_role
+                    )
+                    task_ids[i] = task_id
+                    await update_task(
+                        task_id, status="SKIPPED",
+                        output_data="Parent task was skipped — condition branch unreachable."
+                    )
+                    print(f"⏭️ [Manager]: Task {i} auto-skipped — parent task skipped")
+                    continue
+                
+                # Evaluate conditions from squad.yaml
+                conditions = getattr(tasks[i], "conditions", [])
+                if conditions:
+                    ctx = build_condition_context(task_results, deps)
+                    if not all(SafeEvaluator.evaluate(c, ctx) for c in conditions):
+                        task_states[i] = "SKIPPED"
+                        task_id = await create_task(
+                            mission_id, tasks[i].description, tasks[i].assigned_agent_role
+                        )
+                        task_ids[i] = task_id
+                        await update_task(
+                            task_id, status="SKIPPED",
+                            output_data=f"Condition not met: {'; '.join(conditions)}"
+                        )
+                        print(f"⏭️ [Manager]: Task {i} skipped — conditions not met: {conditions}")
+                        continue
+                
+                ready_tasks.append(i)
             
             # Sort by priority (higher first), then by dependency count (fewer deps first)
             ready_tasks.sort(key=lambda idx: (-tasks[idx].priority, len(tasks[idx].depends_on)))
@@ -805,6 +841,9 @@ FINAL CONSENSUS:"""
         # Final status
         completed = sum(1 for s in task_states.values() if s == "COMPLETED")
         failed = sum(1 for s in task_states.values() if s == "FAILED")
+        skipped = sum(1 for s in task_states.values() if s == "SKIPPED")
+        total = len(tasks)
+        print(f"📊 [Manager]: DAG complete — {completed}/{total} completed, {skipped} skipped, {failed} failed")
         
         # Agent performance report
         print(f"\n📊 [Manager]: Agent Performance Report:")
