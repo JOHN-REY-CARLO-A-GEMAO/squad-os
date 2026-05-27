@@ -489,7 +489,7 @@ if not selected_project:
         missions_df = load_missions()
         selected_id = st.session_state.selected_session_id
 
-        # --- Session Selector Pills ---
+        # --- Session Selector ---
         if not missions_df.empty:
             mission_options = []
             mission_labels = {}
@@ -882,7 +882,12 @@ else:
                 all_files.append(rel)
 
         if all_files:
-            view_filter = st.radio("Filter", ["All", "Code", "Images", "Documents"], horizontal=True, label_visibility="collapsed")
+            view_filter = st.segmented_control(
+                "Filter Files",
+                options=["All", "Code", "Images", "Documents"],
+                default="All",
+                label_visibility="collapsed"
+            )
 
             code_exts = EXTENSIONS_CODE
             img_exts = EXTENSIONS_IMG
