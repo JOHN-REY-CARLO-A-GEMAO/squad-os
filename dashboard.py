@@ -196,7 +196,8 @@ def load_global_stats():
 REGISTRY_URL = "https://raw.githubusercontent.com/JOHN-REY-CARLO-A-GEMAO/squad-os/main/packages.json"
 
 
-def load_agent_store_registry() -> list:
+@st.cache_data(ttl=3600)
+def fetch_registry_packages() -> list:
     """Read validated package registry — local packages.json primary, remote fallback."""
     try:
         with open("packages.json", encoding="utf-8") as f:
@@ -233,7 +234,7 @@ def load_store_catalog():
         local_packages = {r["id"]: dict(zip(cols, r)) for r in rows}
 
         # Merge community registry packages
-        remote_packages = load_agent_store_registry()
+        remote_packages = fetch_registry_packages()
         for rp in remote_packages:
             pid = rp["id"]
             if pid not in local_packages:
@@ -748,7 +749,7 @@ if not selected_project:
                 st.info("No local packages found. Upload a .sqad package or explore the community registry below.")
 
             # ── Community registry cards ─────────────────────────
-            registry_pkgs = load_agent_store_registry()
+            registry_pkgs = fetch_registry_packages()
             if registry_pkgs:
                 st.markdown("---")
                 st.subheader("🌐 Community Registry")
