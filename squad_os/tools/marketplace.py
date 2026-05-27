@@ -31,36 +31,72 @@ class SkillRegistry:
         return cls._instance
     
     def _discover_tools(self):
-        """Discover all available tools in the squad_os.tools package."""
+        """Discover all available tools in the squad_os.tools package + installed store packages."""
         import squad_os.tools
         for importer, modname, ispkg in pkgutil.iter_modules(squad_os.tools.__path__):
             if modname.startswith('_'):
                 continue
             try:
                 module = importlib.import_module(f"squad_os.tools.{modname}")
-                for attr_name in dir(module):
-                    attr = getattr(module, attr_name)
-                    if (isinstance(attr, type) and 
-                        issubclass(attr, BaseTool) and 
-                        attr != BaseTool and
-                        hasattr(attr, 'name')):
-                        tool_instance = attr()
-                        self._tools[tool_instance.name] = {
-                            "name": tool_instance.name,
-                            "description": tool_instance.description,
-                            "category": getattr(tool_instance, 'category', 'general'),
-                            "parameters": tool_instance.parameters,
-                            "module": modname,
-                            "class": attr_name
-                        }
-                        
-                        # Organize by category
-                        category = getattr(tool_instance, 'category', 'general')
-                        if category not in self._categories:
-                            self._categories[category] = []
-                        self._categories[category].append(tool_instance.name)
+                self._scan_module(module, modname)
             except Exception as e:
                 print(f"⚠️ [SkillRegistry]: Failed to load tool from {modname}: {e}")
+
+        # Discover tools from installed .sqad packages
+        try:
+            from squad_os.store.loader import AgentPackageLoader
+            for tools_dir in AgentPackageLoader.get_tool_discovery_paths():
+                if not os.path.isdir(tools_dir):
+                    continue
+                for tf in os.listdir(tools_dir):
+                    if not tf.endswith(".py") or tf.startswith("_"):
+                        continue
+                    module_name = tf[:-3]
+                    try:
+                        spec = importlib.util.spec_from_file_location(
+                            f"squad_os.tools.pkg_{module_name}",
+                            os.path.join(tools_dir, tf)
+                        )
+                        if spec and spec.loader:
+                            module = importlib.util.module_from_spec(spec)
+                            spec.loader.exec_module(module)
+                            prefix = os.path.basename(os.path.dirname(tools_dir))
+                            package_id = prefix.split("__")[0] if "__" in prefix else prefix
+                            self._scan_module(module, module_name, package_prefix=package_id)
+                    except Exception as e:
+                        print(f"⚠️ [SkillRegistry]: Failed to load package tool {module_name}: {e}")
+        except ImportError:
+            pass
+
+    def _scan_module(self, module, modname: str, package_prefix: str = None):
+        """Scan a module for BaseTool subclasses and register them."""
+        for attr_name in dir(module):
+            attr = getattr(module, attr_name)
+            if (isinstance(attr, type) and 
+                issubclass(attr, BaseTool) and 
+                attr != BaseTool and
+                hasattr(attr, 'name')):
+                try:
+                    tool_instance = attr()
+                    tool_name = tool_instance.name
+                    if package_prefix:
+                        tool_name = f"{package_prefix}.{tool_name}"
+                    self._tools[tool_name] = {
+                        "name": tool_name,
+                        "description": tool_instance.description,
+                        "category": getattr(tool_instance, 'category', 'general'),
+                        "parameters": tool_instance.parameters,
+                        "module": modname,
+                        "class": attr_name,
+                        "package": package_prefix
+                    }
+                    
+                    category = getattr(tool_instance, 'category', 'general')
+                    if category not in self._categories:
+                        self._categories[category] = []
+                    self._categories[category].append(tool_name)
+                except Exception as e:
+                    print(f"⚠️ [SkillRegistry]: Failed to instantiate tool {attr_name}: {e}")
     
     def list_tools(self, category: Optional[str] = None) -> List[Dict]:
         """List all available tools, optionally filtered by category."""
