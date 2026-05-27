@@ -14,20 +14,20 @@ except ImportError:
 from squad_os.tools.base import BaseTool
 from squad_os.core.utils import is_safe_path
 
-# Security: Trusted system directories for absolute command paths
-TRUSTED_SYSTEM_DIRS: List[str] = ['/bin/', '/usr/bin/', '/usr/local/bin/']
-
-# Security: Dangerous command patterns that are blocked
-DANGEROUS_PATTERNS: Set[str] = {
-    'rm -rf /', 'rm -rf /*', 'rm -rf ~', 'dd if=/dev/zero', 'mkfs.', 'fdisk',
-    '>:', '>&', '/dev/null', 'shutdown', 'reboot', 'halt', 'poweroff',
-    'init 0', 'telinit 0', 'kill -9 -1', 'kill -9 1',
-    'curl .*|.*sh', 'curl .*|.*bash', 'wget .*|.*sh', 'wget .*|.*bash',
-    '> /etc/', '>> /etc/', 'echo.*> /', 'echo.*>> /',
-    'chmod 777 /', 'chmod -R 777 /', 'chown -R',
-    'mkfs.ext', 'mkfs.btrfs', 'mkfs.xfs', 'parted', 'gparted',
-    'del /f /s /q', 'rd /s /q', 'format ', 'diskpart',
+# Security: Dangerous regex patterns for terminal commands
+DANGEROUS_REGEX_PATTERNS: Set[str] = {
+    r'rm\s+-rf\s+/', r'rm\s+-rf\s+/\*', r'rm\s+-rf\s+~', r'dd\s+if=/dev/zero', r'mkfs\.', r'fdisk',
+    r'>:', r'>&', r'/dev/null', r'shutdown', r'reboot', r'halt', r'poweroff',
+    r'init\s+0', r'telinit\s+0', r'kill\s+-9\s+-1', r'kill\s+-9\s+1',
+    r'curl\s+.*\|\s*.*sh', r'curl\s+.*\|\s*.*bash', r'wget\s+.*\|\s*.*sh', r'wget\s+.*\|\s*.*bash',
+    r'>\s+/etc/', r'>>\s+/etc/', r'echo.*>\s+/', r'echo.*>>\s+/',
+    r'chmod\s+777\s+/', r'chmod\s+-R\s+777\s+/', r'chown\s+-R',
+    r'mkfs\.ext', r'mkfs\.btrfs', r'mkfs\.xfs', r'parted', r'gparted',
+    r'del\s+/f\s+/s\s+/q', r'rd\s+/s\s+/q', r'format\s+', r'diskpart',
 }
+
+# Trusted system directories for absolute command paths
+TRUSTED_SYSTEM_DIRS: Set[str] = {"/bin/", "/usr/bin/", "/usr/local/bin/"}
 
 # Allowed safe commands for terminal
 ALLOWED_COMMANDS: Set[str] = {
@@ -53,10 +53,10 @@ ALLOWED_COMMANDS: Set[str] = {
 
 
 def _is_dangerous_command(command: str) -> bool:
-    """Check if command contains dangerous patterns."""
+    """Check if command contains dangerous patterns using regex."""
     cmd_lower = command.lower().strip()
-    for pattern in DANGEROUS_PATTERNS:
-        if pattern.lower() in cmd_lower:
+    for pattern in DANGEROUS_REGEX_PATTERNS:
+        if re.search(pattern, cmd_lower):
             return True
     # Check for shell injection patterns
     if re.search(r'`[^`]+`', cmd_lower) or re.search(r'\$\([^)]+\)', cmd_lower):
@@ -127,32 +127,34 @@ def _validate_terminal_command(command: str, workspace: str) -> tuple[bool, str]
 
         # If we expect a command name (at start or after an operator)
         if expect_command:
-            cmd_name = token
-
-            # Security: Validate command path
-            if os.path.isabs(cmd_name):
-                # Normalize path to resolve .. segments
-                cmd_name = os.path.normpath(cmd_name)
-                # Absolute paths must be in trusted system directories
-                if not any(cmd_name.startswith(tp) for tp in TRUSTED_SYSTEM_DIRS):
-                    # If not in trusted system dirs, it MUST be in workspace
-                    if not is_safe_path(workspace, cmd_name):
-                        return False, f"Access denied: Command path '{cmd_name}' is outside the workspace and not in a trusted system directory"
-
-                # Even if path is trusted, the command basename must be in ALLOWED_COMMANDS
-                if os.path.basename(cmd_name).lower() not in ALLOWED_COMMANDS:
-                    return False, f"Command '{os.path.basename(cmd_name)}' not in allowed list"
-
-            elif cmd_name.startswith('./') or '/' in cmd_name or '\\' in cmd_name:
-                # Relative path must be within workspace
+            cmd_name = token.lower()
+            # Allow common shell built-ins and safe commands
+            if cmd_name in ALLOWED_COMMANDS:
+                # OK - allowed built-in or registered command
+                pass
+            elif cmd_name.startswith('./'):
+                # Local execution - MUST check if it's within workspace
                 if not is_safe_path(workspace, cmd_name):
-                    return False, f"Access denied: Command '{cmd_name}' attempts to access path outside workspace"
+                    return False, f"Access denied: Command '{cmd_name}' attempts to execute outside workspace"
+            elif cmd_name.startswith('/'):
+                # Absolute path execution - restrict to trusted system directories
+                parent_dir = os.path.dirname(cmd_name)
+                if not parent_dir.endswith('/'):
+                    parent_dir += '/'
 
-            elif cmd_name.lower() not in ALLOWED_COMMANDS:
+                if parent_dir not in TRUSTED_SYSTEM_DIRS:
+                    return False, f"Security violation: Command '{cmd_name}' is from an untrusted directory"
+
+                if os.path.basename(cmd_name) not in ALLOWED_COMMANDS:
+                    return False, f"Command '{cmd_name}' not in allowed list"
+            elif '/' in cmd_name or '\\' in cmd_name:
+                # Other qualified paths (e.g., relative paths with separators)
+                if not is_safe_path(workspace, cmd_name):
+                    return False, f"Access denied: Command '{cmd_name}' attempts to execute outside workspace"
+                if os.path.basename(cmd_name) not in ALLOWED_COMMANDS:
+                    return False, f"Command '{cmd_name}' not in allowed list"
+            else:
                 return False, f"Command '{cmd_name}' not in allowed list"
-
-            # Command name itself is exempt from the generic path check below
-            # because we just validated it above
             expect_command = False
             continue
 
