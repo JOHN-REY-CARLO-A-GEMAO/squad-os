@@ -56,7 +56,7 @@ def _is_dangerous_command(command: str) -> bool:
     """Check if command contains dangerous patterns using regex."""
     cmd_lower = command.lower().strip()
     for pattern in DANGEROUS_REGEX_PATTERNS:
-        if re.search(pattern, cmd_lower):
+        if re.search(pattern, cmd_lower, re.IGNORECASE):
             return True
     # Check for shell injection patterns
     if re.search(r'`[^`]+`', cmd_lower) or re.search(r'\$\([^)]+\)', cmd_lower):
