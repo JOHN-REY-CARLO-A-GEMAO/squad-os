@@ -5,6 +5,8 @@ import os
 import json
 import mimetypes
 import asyncio
+import tempfile
+import pathlib
 import urllib.request
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
@@ -191,16 +193,21 @@ def load_global_stats():
             pass
     return (0, 0, 0.0)
 
-REGISTRY_URL = "https://raw.githubusercontent.com/JOHN-REY-CARLO-A-GEMAO/squad-registry/main/packages.json"
+REGISTRY_URL = "https://raw.githubusercontent.com/JOHN-REY-CARLO-A-GEMAO/squad-os/main/packages.json"
 
 
-def fetch_registry_packages():
-    """Fetch community packages from the remote registry's packages.json."""
+@st.cache_data(ttl=3600)
+def fetch_registry_packages() -> list:
+    """Read validated package registry — local packages.json primary, remote fallback."""
+    try:
+        with open("packages.json", encoding="utf-8") as f:
+            return json.load(f).get("packages", [])
+    except Exception:
+        pass
     try:
         req = urllib.request.Request(REGISTRY_URL, headers={"User-Agent": "SquadOS-Dashboard/1.0"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        return data.get("packages", [])
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read().decode("utf-8")).get("packages", [])
     except Exception as e:
         print(f"[Dashboard] Registry fetch failed: {e}")
         return []
@@ -226,7 +233,7 @@ def load_store_catalog():
         rows = cursor.fetchall()
         local_packages = {r["id"]: dict(zip(cols, r)) for r in rows}
 
-        # Merge remote registry packages
+        # Merge community registry packages
         remote_packages = fetch_registry_packages()
         for rp in remote_packages:
             pid = rp["id"]
@@ -234,10 +241,10 @@ def load_store_catalog():
                 local_packages[pid] = {
                     "id": pid,
                     "name": rp.get("name", pid),
-                    "version": rp.get("version", "0.0.0"),
-                    "author": rp.get("author", ""),
+                    "version": "0.0.0",
+                    "author": "",
                     "description": rp.get("description", ""),
-                    "tags": json.dumps(rp.get("tags", [])),
+                    "tags": "[]",
                     "install_count": 0,
                     "source_url": rp.get("source_url", ""),
                     "install_status": "REMOTE",
@@ -273,6 +280,37 @@ def install_remote_package(pkg):
             st.error("Failed to validate package.")
     except Exception as e:
         st.error(f"Failed to install from registry: {e}")
+
+
+def install_registry_package(pkg: dict) -> bool:
+    """Download remote squad.yaml, compile to .sqad, and install into SQLite."""
+    repo_url = pkg["source_url"].rstrip("/")
+    raw_base = repo_url.replace("github.com", "raw.githubusercontent.com")
+    manifest_path = pkg.get("manifest_path", "main/squad.yaml").lstrip("/")
+    manifest_url = f"{raw_base}/{manifest_path}"
+
+    try:
+        req = urllib.request.Request(manifest_url, headers={"User-Agent": "SquadOS-Dashboard/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            yaml_content = resp.read()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_yaml = pathlib.Path(tmpdir) / "squad.yaml"
+            temp_yaml.write_bytes(yaml_content)
+
+            sqad_path = AgentPackageLoader.build_sqad_from_yaml(str(temp_yaml))
+
+            pkg_obj = AgentPackageLoader.load_sqad(sqad_path)
+            if not pkg_obj:
+                st.error("Validation failed: downloaded manifest contains layout errors.")
+                return False
+
+            asyncio.run(AgentPackageLoader.install_package(pkg_obj))
+            return True
+
+    except Exception as e:
+        st.error(f"Installation pipeline error: {e}")
+        return False
 
 
 def deploy_store_workflow(package_id: str, custom_goal: str = ""):
@@ -446,14 +484,15 @@ if not selected_project:
 
     main_tab1, main_tab2, main_tab3 = st.tabs(["💬 Mission Control", "🏗️ Agent Factory", "💾 Agent Store"])
 
-    with main_tab1:
+    @st.fragment
+    def _render_chat():
         missions_df = load_missions()
         selected_id = st.session_state.selected_session_id
 
         # --- Session Selector ---
         if not missions_df.empty:
-            pill_options = []
-            pill_labels = {}
+            mission_options = []
+            mission_labels = {}
             for _, row in missions_df.iterrows():
                 mid = row["id"]
                 status = row.get("status", "UNKNOWN")
@@ -461,13 +500,13 @@ if not selected_project:
                 icons = {"QUEUED": "⏳", "IN_PROGRESS": "⚡", "COMPLETED": "✅", "FAILED": "❌", "FOLLOWUP": "💬"}
                 icon = icons.get(status, "❓")
                 label = f"{icon} #{mid} {goal_short}"
-                pill_options.append(mid)
-                pill_labels[mid] = label
+                mission_options.append(mid)
+                mission_labels[mid] = label
 
             selected_pill = st.pills(
-                "Recent Missions",
-                options=pill_options,
-                format_func=lambda x: pill_labels.get(x),
+                "Select Mission Session",
+                options=mission_options,
+                format_func=lambda x: mission_labels.get(x),
                 selection_mode="single",
                 label_visibility="collapsed",
                 default=st.session_state.selected_session_id
@@ -486,7 +525,6 @@ if not selected_project:
 
         with chat_container:
             if selected_id is not None:
-                # Single-session view: show only this mission's thread
                 mission_row = missions_df[missions_df["id"] == selected_id]
                 if mission_row.empty:
                     st.write("Mission not found.")
@@ -495,7 +533,6 @@ if not selected_project:
                     prompt_text = str(row.get("goal", ""))
                     status = row.get("status", "UNKNOWN").upper()
 
-                    # Original user message
                     with st.chat_message("user"):
                         st.write(prompt_text)
                         uploaded_files_json = row.get("uploaded_files")
@@ -510,7 +547,6 @@ if not selected_project:
                             except Exception:
                                 pass
 
-                    # Agent response
                     with st.chat_message("assistant", avatar="🤖"):
                         if status == "QUEUED":
                             st.info("⏳ Queued and waiting for the SquadOS worker to pick this up...")
@@ -525,7 +561,6 @@ if not selected_project:
                         else:
                             st.write(f"Status: {status}")
 
-                    # Conversation history (follow-ups)
                     conv_history = json.loads(row.get("conversation_history") or "[]")
                     for msg in conv_history:
                         role = msg.get("role", "")
@@ -540,7 +575,6 @@ if not selected_project:
                             with st.chat_message("assistant", avatar="🤖"):
                                 st.write(content)
             else:
-                # Multi-mission timeline view (original behavior)
                 if not missions_df.empty:
                     for _, row in missions_df.iterrows():
                         prompt_text = str(row.get("goal", ""))
@@ -578,10 +612,12 @@ if not selected_project:
 
         # --- Input Area ---
         with st.container():
-            uploaded_files = st.file_uploader("📎 Attach documents, images, videos, etc.", accept_multiple_files=True, label_visibility="collapsed", help="Total upload limit: 500MB (200MB per file)")
+            if "upload_key" not in st.session_state:
+                st.session_state.upload_key = 0
+
+            uploaded_files = st.file_uploader("📎 Attach documents, images, videos, etc.", accept_multiple_files=True, label_visibility="collapsed", help="Total upload limit: 500MB (200MB per file)", key=f"mission_file_uploader_{st.session_state.upload_key}")
 
             if selected_id is not None:
-                # Follow-up mode: send message to existing mission
                 mission_row = missions_df[missions_df["id"] == selected_id]
                 is_active = False
                 if not mission_row.empty:
@@ -594,15 +630,18 @@ if not selected_project:
                     if prompt := st.chat_input(f"Follow-up for Mission #{selected_id}... (e.g., 'Retry with a different approach')"):
                         submit_followup(selected_id, prompt)
                         st.session_state.mission_submitted = True
+                        st.session_state.upload_key += 1
                         st.rerun()
             else:
-                # New mission mode
                 if prompt := st.chat_input("Ask SquadOS to do something... (e.g., 'Analyze this document for me')"):
                     files_json = save_uploaded_files(uploaded_files)
                     if files_json != "ERROR_SIZE":
                         submit_new_mission(prompt, files_json)
                         st.session_state.mission_submitted = True
+                        st.session_state.upload_key += 1
                         st.rerun()
+    with main_tab1:
+        _render_chat()
 
     with main_tab2:
         st.subheader("🏗️ Agent Factory")
@@ -662,9 +701,9 @@ if not selected_project:
 
         with store_tab1:
             catalog = load_store_catalog()
-            if not catalog:
-                st.info("No packages in the store catalog yet. Upload a .sqad package to get started.")
-            else:
+
+            # ── Local / installed packages ──────────────────────
+            if catalog:
                 col_search, _ = st.columns([2, 1])
                 with col_search:
                     search_term = st.text_input("🔍 Search packages", placeholder="name or tag...", label_visibility="collapsed")
@@ -711,6 +750,39 @@ if not selected_project:
                                     asyncio.run(AgentPackageLoader.uninstall_package(pkg["id"]))
                                     st.rerun()
                         st.divider()
+            else:
+                st.info("No local packages found. Upload a .sqad package or explore the community registry below.")
+
+            # ── Community registry cards ─────────────────────────
+            registry_pkgs = fetch_registry_packages()
+            if registry_pkgs:
+                st.markdown("---")
+                st.subheader("🌐 Community Registry")
+                st.caption("Validated by CI — contribute yours via a PR to packages.json")
+
+                for i in range(0, len(registry_pkgs), 2):
+                    cols = st.columns(2)
+                    for j in range(2):
+                        if i + j < len(registry_pkgs):
+                            pkg = registry_pkgs[i + j]
+                            with cols[j].container(border=True):
+                                st.markdown(f"**{pkg['name']}**")
+                                if pkg.get("source_url"):
+                                    st.caption(f"🔗 [Source]({pkg['source_url']})")
+                                if pkg.get("description"):
+                                    st.write(pkg["description"])
+                                if st.button(
+                                    "⬇️ Install Workflow",
+                                    key=f"ci_install_{i+j}",
+                                    use_container_width=True,
+                                ):
+                                    with st.spinner(f"Ingesting {pkg['name']}..."):
+                                        ok = install_registry_package(pkg)
+                                        if ok:
+                                            st.toast(f"✅ {pkg['name']} installed!")
+                                            st.rerun()
+            elif not catalog:
+                st.info("No community packages found. Be the first to submit one!")
 
         with store_tab2:
             installed = list_installed_packages()

@@ -1,0 +1,25 @@
+{
+  "packages": [
+    {
+      "id": "devops-on-call",
+      "name": "DevOps On-Call Incident Responder",
+      "description": "Monitors system metrics, triages errors, and executes safe self-healing recovery scripts via an automated DAG.",
+      "source_url": "https://github.com/JOHN-REY-CARLO-A-GEMAO/squad-os",
+      "manifest_path": "templates/devops-on-call/squad.yaml"
+    },
+    {
+      "id": "market-analyst",
+      "name": "Market Intelligence Researcher",
+      "description": "Performs deep web research on market trends, synthesizes competing product data, and generates structured markdown intelligence reports.",
+      "source_url": "https://github.com/JOHN-REY-CARLO-A-GEMAO/squad-os",
+      "manifest_path": "templates/market-analyst/squad.yaml"
+    },
+    {
+      "id": "data-pipeline",
+      "name": "Conditional ETL Data Pipeline",
+      "description": "Extracts, transforms, and loads dataset files. Features conditional execution branches to clean anomalies or skip empty runs.",
+      "source_url": "https://github.com/JOHN-REY-CARLO-A-GEMAO/squad-os",
+      "manifest_path": "templates/data-pipeline/squad.yaml"
+    }
+  ]
+}
