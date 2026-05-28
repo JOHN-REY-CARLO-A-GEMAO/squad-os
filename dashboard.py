@@ -472,8 +472,16 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("📊 Global Performance")
     col_s1, col_s2 = st.columns(2)
-    col_s1.metric("Total Cost", f"${stats[2] if stats[2] else 0.0:.4f}")
-    col_s2.metric("Total Tokens", f"{ (stats[0] or 0) + (stats[1] or 0) :,}")
+    col_s1.metric(
+        "Total Cost",
+        f"${stats[2] if stats[2] else 0.0:.4f}",
+        help="The aggregate USD cost of all LLM requests across all missions."
+    )
+    col_s2.metric(
+        "Total Tokens",
+        f"{ (stats[0] or 0) + (stats[1] or 0) :,}",
+        help="The combined count of prompt and completion tokens processed."
+    )
 
 selected_project = st.session_state.selected_proj
 is_selected_active = st.session_state.is_active
