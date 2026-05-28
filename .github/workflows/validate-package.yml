@@ -1,0 +1,78 @@
+name: Validate Community Package Submission
+
+on:
+  pull_request:
+    paths:
+      - 'packages.json'
+
+jobs:
+  validate-submission:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pydantic pyyaml requests
+
+      - name: Complete Package Security and Schema Validation
+        run: |
+          python -c "
+          import json, urllib.request, yaml
+          from squad_os.store.schema import SquadManifest
+
+          FORBIDDEN_TOOLS = {'terminal_root', 'host_exec'}
+
+          with open('packages.json') as f:
+              registry = json.load(f)
+
+          for pkg in registry.get('packages', []):
+              print(f'🔍 Processing package: {pkg[\"name\"]}')
+
+              # Cleanly construct the raw GitHub payload URL
+              repo_url = pkg['source_url'].rstrip('/')
+              raw_base = repo_url.replace('github.com', 'raw.githubusercontent.com')
+
+              # Use configured path if available, fallback to default main branch
+              manifest_path = pkg.get('manifest_path', 'main/squad.yaml').lstrip('/')
+              manifest_url = f'{raw_base}/{manifest_path}'
+
+              print(f'🌐 Fetching manifest from: {manifest_url}')
+
+              try:
+                  with urllib.request.urlopen(manifest_url, timeout=5) as res:
+                      manifest_data = yaml.safe_load(res.read())
+              except Exception as e:
+                  print(f'❌ Failed to fetch or parse YAML from {manifest_url}: {str(e)}')
+                  exit(1)
+
+              # Run schema validation via Pydantic model
+              try:
+                  manifest = SquadManifest(**manifest_data)
+                  print(f'✅ Schema structure matches for {pkg[\"name\"]}')
+              except Exception as e:
+                  print(f'❌ Schema validation failed for {pkg[\"name\"]}: {str(e)}')
+                  exit(1)
+
+              # Scan for container violations / un-sandboxed tool access
+              for agent in manifest_data.get('topology', {}).get('agents', []):
+                  tools = set(agent.get('tools', []))
+                  leaked = tools.intersection(FORBIDDEN_TOOLS)
+                  if leaked:
+                      print(f'❌ SECURITY ERROR: {pkg[\"name\"]} requests un-sandboxed tools: {leaked}')
+                      exit(1)
+
+              print(f'🎉 {pkg[\"name\"]} passed all configuration gates.')
+
+          print('🚀 All registry submissions verified successfully.')
+          "
