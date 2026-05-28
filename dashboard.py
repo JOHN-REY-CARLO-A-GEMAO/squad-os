@@ -1,6 +1,5 @@
 import streamlit as st
 import sqlite3
-import pandas as pd
 import os
 import json
 import mimetypes
@@ -69,12 +68,14 @@ def load_missions():
     conn = get_db_connection()
     if conn:
         try:
-            df = pd.read_sql_query("SELECT * FROM missions ORDER BY id ASC", conn)
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM missions ORDER BY id ASC")
+            rows = [dict(row) for row in cursor.fetchall()]
             conn.close()
-            return df
+            return rows
         except Exception:
             pass
-    return pd.DataFrame()
+    return []
 
 def save_uploaded_files(uploaded_files):
     if not uploaded_files:
@@ -495,14 +496,14 @@ if not selected_project:
 
     @st.fragment
     def _render_chat():
-        missions_df = load_missions()
+        missions = load_missions()
         selected_id = st.session_state.selected_session_id
 
         # --- Session Selector ---
-        if not missions_df.empty:
+        if missions:
             mission_options = []
             mission_labels = {}
-            for _, row in missions_df.iterrows():
+            for row in missions:
                 mid = row["id"]
                 status = row.get("status", "UNKNOWN")
                 goal_short = (str(row.get("goal", ""))[:28] + "..") if len(str(row.get("goal", ""))) > 30 else str(row.get("goal", ""))
@@ -534,11 +535,11 @@ if not selected_project:
 
         with chat_container:
             if selected_id is not None:
-                mission_row = missions_df[missions_df["id"] == selected_id]
-                if mission_row.empty:
+                mission_row = [r for r in missions if r["id"] == selected_id]
+                if not mission_row:
                     st.write("Mission not found.")
                 else:
-                    row = mission_row.iloc[0]
+                    row = mission_row[0]
                     prompt_text = str(row.get("goal", ""))
                     status = row.get("status", "UNKNOWN").upper()
 
@@ -584,8 +585,8 @@ if not selected_project:
                             with st.chat_message("assistant", avatar="🤖"):
                                 st.write(content)
             else:
-                if not missions_df.empty:
-                    for _, row in missions_df.iterrows():
+                if missions:
+                    for row in missions:
                         prompt_text = str(row.get("goal", ""))
                         status = row.get("status", "UNKNOWN").upper()
 
@@ -627,10 +628,10 @@ if not selected_project:
             uploaded_files = st.file_uploader("📎 Attach documents, images, videos, etc.", accept_multiple_files=True, label_visibility="collapsed", help="Total upload limit: 500MB (200MB per file)", key=f"mission_file_uploader_{st.session_state.upload_key}")
 
             if selected_id is not None:
-                mission_row = missions_df[missions_df["id"] == selected_id]
+                mission_row = [r for r in missions if r["id"] == selected_id]
                 is_active = False
-                if not mission_row.empty:
-                    s = mission_row.iloc[0].get("status", "").upper()
+                if mission_row:
+                    s = mission_row[0].get("status", "").upper()
                     is_active = s in ("IN_PROGRESS", "QUEUED", "FOLLOWUP")
 
                 if is_active:
