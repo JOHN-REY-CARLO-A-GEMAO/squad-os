@@ -148,6 +148,7 @@ def submit_new_mission(prompt, uploaded_files_json=None):
                 st.error(f"Failed to push to {path}: {e}")
 
 
+
 def submit_followup(mission_id: int, message: str):
     """Send a follow-up message to an existing mission. Queues it for the worker."""
     for path in DB_PATHS:
@@ -179,6 +180,7 @@ def submit_followup(mission_id: int, message: str):
 
 # Optimization: Cache global stats to reduce DB load during 5s auto-refreshes.
 # Reduces database aggregation overhead from O(N) every 5s to once per minute.
+>>>>>>> origin/main
 @st.cache_data(ttl=60)
 def load_global_stats():
     conn = get_db_connection()
@@ -188,7 +190,8 @@ def load_global_stats():
             cursor.execute("SELECT SUM(prompt_tokens), SUM(completion_tokens), SUM(cost_usd) FROM tasks")
             stats = cursor.fetchone()
             conn.close()
-            return (stats[0], stats[1], stats[2]) if stats else (0, 0, 0.0)
+            # Explicitly return standard Python types (tuple) to ensure @st.cache_data serialization works.
+            return (stats[0] or 0, stats[1] or 0, stats[2] or 0.0) if stats else (0, 0, 0.0)
         except Exception:
             pass
     return (0, 0, 0.0)
