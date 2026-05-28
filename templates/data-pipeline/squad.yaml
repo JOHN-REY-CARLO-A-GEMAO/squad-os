@@ -1,0 +1,41 @@
+spec_version: "1.0.0"
+metadata:
+  name: "Conditional ETL Data Pipeline"
+  version: "1.0.0"
+  description: "Extracts, transforms, and loads dataset files. Features conditional execution branches to handle anomalies."
+  author: "@solodev"
+  license: "Apache-2.0"
+topology:
+  engine: "dag"
+  agents:
+    - id: "data_extractor"
+      role: "researcher"
+      system_prompt: "You are a Data Ingestion Agent. Read incoming CSV files, analyze schema health, count total entries, and verify file integrity."
+      llm_default: "gpt-4o-mini"
+      tools: ["file_io"]
+
+    - id: "anomaly_cleaner"
+      role: "developer"
+      system_prompt: "You are a Data Quality Engineer. You are only called if anomalies are present. Strip null bytes, correct formatting types, and balance data gaps."
+      llm_default: "gpt-4o-mini"
+      tools: ["file_io"]
+
+    - id: "db_loader"
+      role: "qa"
+      system_prompt: "You are a Database Loader Agent. Commit clean datasets into the final SQLite staging tables and log processing metrics."
+      llm_default: "gpt-4o-mini"
+      tools: ["file_io", "terminal"]
+
+  dependencies:
+    - parent: "data_extractor"
+      child: "anomaly_cleaner"
+      condition: "row_count > 0 and anomalies_detected == true"
+    - parent: "anomaly_cleaner"
+      child: "db_loader"
+      condition: "cleaning_complete == true"
+runtime:
+  required_tools:
+    - name: "file_io"
+      min_version: "1.0.0"
+  environment_defaults:
+    STAGING_DATABASE_URL: "sqlite:///staging_data.db"
