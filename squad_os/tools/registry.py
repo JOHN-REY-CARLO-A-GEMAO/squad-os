@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 import shlex
+import ast
 from typing import Dict, Any, Optional, List, Set
 
 try:
@@ -170,6 +171,14 @@ def _validate_terminal_command(command: str, workspace: str) -> tuple[bool, str]
 
 
 # Dangerous Python code patterns
+DANGEROUS_PYTHON_CALLS: Dict[str, List[str]] = {
+    'os': ['system', 'popen', 'spawn', 'startfile', 'fork', 'execv', 'execve', 'kill', 'chmod', 'chown'],
+    'subprocess': ['call', 'run', 'Popen', 'check_call', 'check_output', 'getstatusoutput', 'getoutput'],
+    'shutil': ['rmtree', 'move', 'copytree', 'chown']
+}
+
+FORBIDDEN_BUILTINS: Set[str] = {'eval', 'exec', 'compile', '__import__', 'getattr', 'setattr', 'delattr'}
+
 DANGEROUS_PYTHON_PATTERNS: List[tuple[str, str]] = [
     (r'\b__import__\s*\(\s*["\']os["\']', "Blocked: dynamic import of os module"),
     (r'\b__import__\s*\(\s*["\']subprocess["\']', "Blocked: dynamic import of subprocess"),
@@ -192,10 +201,72 @@ DANGEROUS_PYTHON_PATTERNS: List[tuple[str, str]] = [
 
 
 def _validate_python_code(code: str) -> tuple[bool, str]:
-    """Validate Python code against dangerous patterns."""
+    """Validate Python code against dangerous patterns using AST analysis and regex."""
     if not code or not code.strip():
         return False, "Empty code not allowed"
 
+    # Layer 1: AST Analysis for structural security
+    try:
+        tree = ast.parse(code)
+
+        # Track imports to catch aliased dangerous modules
+        # e.g., import os as o; o.system(...)
+        # and direct function imports
+        # e.g., from subprocess import run; run(...)
+        import_map = {} # alias -> real_module_name
+        func_map = {}   # alias -> (real_module_name, real_func_name)
+
+        for node in ast.walk(tree):
+            # Track 'import module [as alias]'
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    import_map[alias.asname or alias.name] = alias.name
+
+            # Track 'from module import func [as alias]'
+            elif isinstance(node, ast.ImportFrom):
+                if node.module:
+                    for alias in node.names:
+                        func_map[alias.asname or alias.name] = (node.module, alias.name)
+
+            # Check calls
+            elif isinstance(node, ast.Call):
+                # 1. Direct function calls: run(), system(), eval()
+                if isinstance(node.func, ast.Name):
+                    func_id = node.func.id
+
+                    # Case A: Forbidden built-ins
+                    if func_id in FORBIDDEN_BUILTINS:
+                        return False, f"Blocked: use of forbidden built-in '{func_id}'"
+
+                    # Case B: Direct imports from dangerous modules
+                    if func_id in func_map:
+                        mod, func = func_map[func_id]
+                        if mod in DANGEROUS_PYTHON_CALLS and func in DANGEROUS_PYTHON_CALLS[mod]:
+                            return False, f"Blocked: dangerous call '{mod}.{func}' (imported as {func_id})"
+
+                # 2. Attribute calls: os.system(), o.system()
+                elif isinstance(node.func, ast.Attribute):
+                    method = node.func.attr
+
+                    # Case A: Module attribute call
+                    if isinstance(node.func.value, ast.Name):
+                        val_id = node.func.value.id
+                        # Resolve alias
+                        real_mod = import_map.get(val_id, val_id)
+                        if real_mod in DANGEROUS_PYTHON_CALLS and method in DANGEROUS_PYTHON_CALLS[real_mod]:
+                            return False, f"Blocked: dangerous call '{real_mod}.{method}'"
+
+                    # Case B: Sensitive attribute access
+                    if method in ('__getattribute__', '__subclasses__', '__globals__'):
+                        return False, f"Blocked: access to sensitive attribute '{method}'"
+
+    except SyntaxError as e:
+        return False, f"Syntax error in code: {e}"
+    except Exception:
+        # Fallback to regex if AST parsing fails
+        pass
+
+    # Layer 2: Regex Patterns (Defense in depth for string-based bypasses)
     for pattern, message in DANGEROUS_PYTHON_PATTERNS:
         if re.search(pattern, code, re.IGNORECASE):
             return False, message
