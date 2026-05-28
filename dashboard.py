@@ -180,7 +180,6 @@ def submit_followup(mission_id: int, message: str):
 
 # Optimization: Cache global stats to reduce DB load during 5s auto-refreshes.
 # Reduces database aggregation overhead from O(N) every 5s to once per minute.
->>>>>>> origin/main
 @st.cache_data(ttl=60)
 def load_global_stats():
     conn = get_db_connection()
