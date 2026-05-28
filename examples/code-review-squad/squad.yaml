@@ -1,0 +1,41 @@
+spec_version: "1.0.0"
+metadata:
+  name: "Code Review Squad"
+  version: "1.1.0"
+  author: "Axiom"
+  description: "Automated PR review squad with GitHub integration and custom security scanning."
+
+topology:
+  agents:
+    - id: github-fetcher
+      role: "GitHub Fetcher"
+      system_prompt: "Fetch the diff of a Pull Request from GitHub. MUST use fetch_pr_diff tool."
+      tools: ["fetch_pr_diff"]
+
+    - id: security-reviewer
+      role: "Security Reviewer"
+      system_prompt: "Analyze the PR diff for security vulnerabilities. Focus on SQL injection and hardcoded secrets."
+      tools: ["web_search"]
+
+    - id: architecture-reviewer
+      role: "Architecture Reviewer"
+      system_prompt: "Review the PR for architectural patterns and best practices."
+      tools: ["web_search"]
+
+    - id: critical-fixer
+      role: "Critical Fixer"
+      system_prompt: "Only runs if critical issues are found. Propose fixes for the identified security vulnerabilities."
+      tools: ["terminal"]
+
+  dependencies:
+    - parent: github-fetcher
+      child: security-reviewer
+    - parent: github-fetcher
+      child: architecture-reviewer
+    - parent: security-reviewer
+      child: critical-fixer
+      condition: "task_output.contains('CRITICAL')"
+
+runtime:
+  required_tools:
+    - name: "web_search"

@@ -12,6 +12,7 @@ A .sqad (Squad OS Agent Package) is a zip bundle containing:
 You can author a package as a single squad.yaml file and compile it with:
     squad build ./squad.yaml
 """
+import ast
 import json
 import os
 import re
@@ -99,10 +100,32 @@ class AgentPackageLoader:
 
         # Check that depends_on indices are valid
         task_count = len(data["tasks"])
+        adj = [[] for _ in range(task_count)]
         for i, task in enumerate(data["tasks"]):
             for dep in task.get("depends_on", []):
-                if not isinstance(dep, int) or dep < 0 or dep >= task_count or dep >= i:
+                if not isinstance(dep, int) or dep < 0 or dep >= task_count:
                     errors.append(f"Task {i} has invalid depends_on index {dep}")
+                else:
+                    adj[dep].append(i)
+
+        # Full cycle detection using DFS
+        visited = [0] * task_count  # 0=unvisited, 1=visiting, 2=visited
+        def has_cycle(u):
+            visited[u] = 1
+            for v in adj[u]:
+                if visited[v] == 1:
+                    return True
+                if visited[v] == 0:
+                    if has_cycle(v):
+                        return True
+            visited[u] = 2
+            return False
+
+        for i in range(task_count):
+            if visited[i] == 0:
+                if has_cycle(i):
+                    errors.append("workflow.json contains circular dependencies (not a valid DAG)")
+                    break
 
         return PackageValidationResult(len(errors) == 0, errors)
 
@@ -114,13 +137,48 @@ class AgentPackageLoader:
         if not SAFE_MODULE_NAME_RE.match(module_name):
             errors.append(f"Invalid tool module name '{module_name}'")
 
-        if "os.system" in source_code or "subprocess.call" in source_code:
-            warnings.append(f"Tool '{module_name}' uses dangerous calls (os.system, subprocess.call) — requires user approval")
+        try:
+            tree = ast.parse(source_code)
+        except SyntaxError as e:
+            errors.append(f"Syntax error in tool '{module_name}': {e}")
+            return PackageValidationResult(False, errors)
 
-        forbidden = ["eval(", "exec(", "compile(", "__import__"]
-        for pattern in forbidden:
-            if pattern in source_code:
-                errors.append(f"Tool '{module_name}' contains forbidden pattern: {pattern}")
+        dangerous_calls = {
+            'os': ['system', 'popen', 'spawn', 'startfile'],
+            'subprocess': ['call', 'run', 'Popen', 'check_call', 'check_output'],
+            'shutil': ['rmtree', 'move', 'copytree']
+        }
+        network_modules = {'socket', 'requests', 'aiohttp', 'httpx', 'urllib', 'smtplib', 'telnetlib'}
+
+        for node in ast.walk(tree):
+            # Check imports
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    base_mod = alias.name.split('.')[0]
+                    if base_mod in network_modules:
+                        warnings.append(f"Tool '{module_name}' imports network module '{alias.name}'")
+            elif isinstance(node, ast.ImportFrom):
+                if node.module:
+                    base_mod = node.module.split('.')[0]
+                    if base_mod in network_modules:
+                        warnings.append(f"Tool '{module_name}' imports from network module '{node.module}'")
+
+            # Check calls
+            if isinstance(node, ast.Call):
+                if isinstance(node.func, ast.Attribute):
+                    if isinstance(node.func.value, ast.Name):
+                        module = node.func.value.id
+                        method = node.func.attr
+                        if module in dangerous_calls and method in dangerous_calls[module]:
+                            warnings.append(f"Tool '{module_name}' uses dangerous call: {module}.{method}")
+                elif isinstance(node.func, ast.Name):
+                    if node.func.id in ['eval', 'exec', 'compile', '__import__']:
+                        errors.append(f"Tool '{module_name}' uses forbidden built-in: {node.func.id}")
+
+            # Check for absolute paths in string literals
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                if os.path.isabs(node.value) and not node.value.startswith(('/bin/', '/usr/bin/', '/usr/local/bin/')):
+                    warnings.append(f"Tool '{module_name}' contains absolute path: {node.value}")
 
         return PackageValidationResult(len(errors) == 0, errors, warnings)
 
@@ -198,16 +256,30 @@ class AgentPackageLoader:
         all_errors.extend(result.errors)
         all_warnings.extend(result.warnings)
 
+        available_tool_names = set(pkg.manifest.get("assumes_tools", []))
+        package_tool_names = {t["module_name"] for t in pkg.custom_tools}
+        available_tool_names.update(package_tool_names)
+
         if pkg.workflow:
             result = AgentPackageLoader.validate_workflow(pkg.workflow)
             all_errors.extend(result.errors)
             all_warnings.extend(result.warnings)
 
-            # Check required tools exist in the manifest
+            # Check required tools exist in the manifest or package
             required_tools = pkg.workflow.get("required_tools", [])
             for tool_name in required_tools:
-                if tool_name not in pkg.manifest.get("assumes_tools", []):
-                    all_warnings.append(f"Workflow requires tool '{tool_name}' but manifest does not list it in 'assumes_tools'")
+                if tool_name not in available_tool_names:
+                    all_warnings.append(f"Workflow requires tool '{tool_name}' but it is not listed in 'assumes_tools' or provided in tools/")
+
+            # Check that every task's assigned agent has access to its tools if specified
+            for i, task in enumerate(pkg.workflow.get("tasks", [])):
+                role = task.get("assigned_agent_role")
+                # find agent def
+                agent_def = next((a for a in pkg.custom_agents if a.get("role") == role), None)
+                if agent_def:
+                    for tool in agent_def.get("tools", []):
+                        if tool not in available_tool_names:
+                            all_errors.append(f"Task {i}: Agent '{role}' requires tool '{tool}' which is missing from package/manifest")
 
         for tool in pkg.custom_tools:
             result = AgentPackageLoader.validate_tool_source(tool["module_name"], tool["source"])
