@@ -34,6 +34,8 @@ class MissionRecord(BaseModel):
     goal: str
     status: str = MissionStatus.PENDING.value
     uploaded_files: Optional[str] = None  # JSON string containing file metadata
+    workflow_json: Optional[str] = None  # JSON string containing pre-built workflow DAG
+    conversation_history: str = "[]"  # JSON array of follow-up messages
     created_at: datetime = Field(default_factory=datetime.now)
 
 class TaskRecord(BaseModel):
@@ -60,28 +62,35 @@ class ApprovalRecord(BaseModel):
     status: str = ApprovalStatus.PENDING.value
     feedback: Optional[str] = None
 
+class AgentPersona(BaseModel):
+    id: Optional[int] = None
+    role: str
+    goal: str
+    backstory: str
+    tools: str  # JSON string list of tool names
+    created_at: Optional[datetime] = None
+
 # --- DATABASE INITIALIZATION ---
 
-async def _run_migrations(db: aiosqlite.Connection, current_version: int) -> int:
-    """Run sequential migrations. Returns new schema version."""
-    migrations = {
-        0: lambda db: db.execute("ALTER TABLE missions ADD COLUMN uploaded_files TEXT"),
-        # Add future migrations here:
-        # 1: lambda db: db.execute("ALTER TABLE tasks ADD COLUMN new_column TEXT"),
-    }
+MISSIONS_COLUMNS = {
+    "uploaded_files": "ALTER TABLE missions ADD COLUMN uploaded_files TEXT",
+    "workflow_json": "ALTER TABLE missions ADD COLUMN workflow_json TEXT",
+    "conversation_history": "ALTER TABLE missions ADD COLUMN conversation_history TEXT DEFAULT '[]'",
+}
 
-    new_version = current_version
-    for version, migration in sorted(migrations.items()):
-        if version >= current_version:
+
+async def _run_migrations(db: aiosqlite.Connection):
+    """Detect missing columns on existing tables and add them."""
+    cursor = await db.execute("PRAGMA table_info(missions)")
+    existing = {row[1] for row in await cursor.fetchall()}
+
+    for col, alter_sql in MISSIONS_COLUMNS.items():
+        if col not in existing:
             try:
-                await migration(db)
-                new_version = version + 1
+                await db.execute(alter_sql)
+                print(f"[DB Migration] Added column '{col}' to missions table.")
             except aiosqlite.Error as e:
-                # Migration may fail if column already exists, etc.
-                print(f"[DB Migration] Note: Migration {version} skipped: {e}")
-                new_version = version + 1
-
-    return new_version
+                print(f"[DB Migration] Note: Could not add '{col}': {e}")
 
 
 async def init_db():
@@ -95,19 +104,14 @@ async def init_db():
                 goal TEXT NOT NULL,
                 status TEXT NOT NULL,
                 uploaded_files TEXT,
+                workflow_json TEXT,
+                conversation_history TEXT DEFAULT '[]',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
 
-        # MIGRATION: Use user_version PRAGMA with sequential migration map
-        async with db.execute("PRAGMA user_version") as cursor:
-            user_version = (await cursor.fetchone())[0]
-
-        if user_version == 0:
-            # Run all migrations from version 0
-            new_version = await _run_migrations(db, 0)
-            # Update schema version after migrations
-            await db.execute(f"PRAGMA user_version = {new_version}")
+        # MIGRATION: Auto-detect missing columns and add them
+        await _run_migrations(db)
 
         # 2. Tasks Table
         await db.execute("""
@@ -196,7 +200,73 @@ async def init_db():
                 FOREIGN KEY (mission_id) REFERENCES missions (id) ON DELETE CASCADE
             )
         """)
-        # 7. Performance Indexes
+        # 7. Agent Personas Table
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS agent_personas (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                role TEXT UNIQUE NOT NULL,
+                goal TEXT NOT NULL,
+                backstory TEXT NOT NULL,
+                tools TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # 8. Agent Store Tables (for .sqad package ecosystem)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS store_packages (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                version TEXT NOT NULL,
+                author TEXT,
+                description TEXT,
+                min_squad_os_version TEXT,
+                tags TEXT,
+                source_url TEXT,
+                install_count INTEGER DEFAULT 0,
+                rating REAL DEFAULT 0.0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS installed_packages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                package_id TEXT NOT NULL,
+                version TEXT NOT NULL,
+                install_path TEXT NOT NULL,
+                status TEXT DEFAULT 'ACTIVE',
+                installed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (package_id) REFERENCES store_packages(id)
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS store_tools (
+                id TEXT PRIMARY KEY,
+                package_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT,
+                parameters TEXT,
+                entry_point TEXT,
+                dependencies TEXT,
+                FOREIGN KEY (package_id) REFERENCES store_packages(id)
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS store_workflows (
+                id TEXT PRIMARY KEY,
+                package_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT,
+                workflow TEXT NOT NULL,
+                FOREIGN KEY (package_id) REFERENCES store_packages(id)
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_installed_packages_package_id ON installed_packages(package_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_store_tools_package_id ON store_tools(package_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_store_workflows_package_id ON store_workflows(package_id)")
+
+        # 9. Performance Indexes
         # Optimizes mission retrieval by status (e.g. Dashboard, Worker Queue)
         await db.execute("CREATE INDEX IF NOT EXISTS idx_missions_status ON missions(status)")
         # Optimizes task lookups for specific missions (Mission View, Context Loading)
@@ -207,6 +277,8 @@ async def init_db():
         await db.execute("CREATE INDEX IF NOT EXISTS idx_approvals_mission_id ON approvals(mission_id)")
         # Optimizes interrupt retrieval for missions
         await db.execute("CREATE INDEX IF NOT EXISTS idx_interrupts_mission_id ON mission_interrupts(mission_id)")
+        # Optimizes persona lookups by role
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_personas_role ON agent_personas(role)")
 
         await db.commit()
 
@@ -232,14 +304,79 @@ async def init_interrupts_table():
 
 # --- MISSION & TASK HELPERS ---
 
-async def create_mission(goal: str, uploaded_files: Optional[str] = None) -> int:
+async def create_mission(goal: str, uploaded_files: Optional[str] = None, workflow_json: Optional[str] = None) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
-            "INSERT INTO missions (goal, status, uploaded_files) VALUES (?, ?, ?)",
-            (goal, MissionStatus.IN_PROGRESS.value, uploaded_files)
+            "INSERT INTO missions (goal, status, uploaded_files, workflow_json) VALUES (?, ?, ?, ?)",
+            (goal, MissionStatus.IN_PROGRESS.value, uploaded_files, workflow_json)
         )
         await db.commit()
         return cursor.lastrowid
+
+async def append_conversation(mission_id: int, role: str, content: str):
+    """Append a message to a mission's conversation_history."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT conversation_history FROM missions WHERE id = ?", (mission_id,))
+        row = await cursor.fetchone()
+        if not row:
+            return
+        history = json.loads(row[0] or "[]")
+        history.append({"role": role, "content": content, "timestamp": datetime.utcnow().isoformat() + "Z"})
+        await db.execute("UPDATE missions SET conversation_history = ? WHERE id = ?", (json.dumps(history), mission_id))
+        await db.commit()
+
+
+async def get_conversation(mission_id: int) -> list:
+    """Get the full conversation history for a mission."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT conversation_history FROM missions WHERE id = ?", (mission_id,))
+        row = await cursor.fetchone()
+        if not row:
+            return []
+        return json.loads(row[0] or "[]")
+
+
+async def set_mission_status(mission_id: int, status: str):
+    """Update a mission's status."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE missions SET status = ? WHERE id = ?", (status, mission_id))
+        await db.commit()
+
+
+async def get_mission(mission_id: int) -> Optional[Dict[str, Any]]:
+    """Get a mission's full row as a dict."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM missions WHERE id = ?", (mission_id,))
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return dict(row)
+
+
+async def get_next_followup_mission() -> Optional[Dict[str, Any]]:
+    """Get the next mission awaiting a follow-up (status='FOLLOWUP'), ordered by oldest first."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM missions WHERE status = 'FOLLOWUP' ORDER BY id ASC LIMIT 1"
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return dict(row)
+
+
+async def get_mission(mission_id: int) -> Optional[Dict[str, Any]]:
+    """Get a mission's full row as a dict."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM missions WHERE id = ?", (mission_id,))
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return dict(row)
+
 
 async def create_task(mission_id: int, description: str, assigned_agent: str) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
@@ -375,4 +512,33 @@ async def update_interrupt_guidance(interrupt_id: int, user_guidance: str):
             "UPDATE mission_interrupts SET user_guidance = ?, status = 'RESOLVED' WHERE id = ?",
             (user_guidance, interrupt_id)
         )
+        await db.commit()
+
+# --- AGENT PERSONA HELPERS ---
+
+async def save_persona(role: str, goal: str, backstory: str, tools: List[str]):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO agent_personas (role, goal, backstory, tools) VALUES (?, ?, ?, ?)",
+            (role, goal, backstory, json.dumps(tools))
+        )
+        await db.commit()
+
+async def get_all_personas() -> List[Dict[str, Any]]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM agent_personas ORDER BY role ASC") as cursor:
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+async def get_persona_by_role(role: str) -> Optional[Dict[str, Any]]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM agent_personas WHERE role = ?", (role,)) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+async def delete_persona(role: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM agent_personas WHERE role = ?", (role,))
         await db.commit()

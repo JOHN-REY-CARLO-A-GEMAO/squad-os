@@ -10,11 +10,10 @@ import os
 import shutil
 import aiosqlite
 from squad_os.agents.base import BaseAgent
-from squad_os.database.session import create_mission, create_task, update_task, update_mission, update_blackboard, DB_PATH, get_all_personas, append_conversation, get_conversation, get_mission, set_mission_status
+from squad_os.database.session import create_mission, create_task, update_task, update_mission, update_blackboard, DB_PATH, get_all_personas
 from squad_os.core.projects import ProjectBranch
 from squad_os.tools.self_healing import health_monitor
 from squad_os.core.utils import is_safe_path
-from squad_os.core.evaluator import SafeEvaluator, build_condition_context
 
 class TaskPlan(BaseModel):
     description: str
@@ -24,7 +23,6 @@ class TaskPlan(BaseModel):
     estimated_complexity: str = Field(default="medium", description="low, medium, or high")
     is_swarm: bool = Field(default=False, description="Whether this task should be executed as a swarm (multiple agents)")
     swarm_roles: List[str] = Field(default_factory=list, description="List of roles to include in the swarm if is_swarm is True")
-    conditions: List[str] = Field(default_factory=list, description="Condition expressions gating this task (evaluated against parent outputs)")
 
 class MissionPlan(BaseModel):
     tasks: List[TaskPlan]
@@ -261,8 +259,8 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
 
         print(f"📝 [Manager]: Auto-generated project_memory.md ({len(all_files)} files, {total_size:,} bytes)")
 
-    async def run_mission(self, goal: str, uploaded_files_json: Optional[str] = None, workflow_json: Optional[str] = None):
-        mission_id = await create_mission(goal, uploaded_files_json, workflow_json)
+    async def run_mission(self, goal: str, uploaded_files_json: Optional[str] = None):
+        mission_id = await create_mission(goal, uploaded_files_json)
 
         # 1. Create a Shared Project Branch for the Mission
         slug = goal[:30]
@@ -316,72 +314,20 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
             except Exception as e:
                 print(f"⚠️ [Manager]: Error processing uploaded files: {e}")
 
-        # 3. Either use pre-built workflow DAG or plan via LLM
         try:
-            if workflow_json:
-                self.active_agents = {}
-                workflow_data = json.loads(workflow_json)
-                tasks_data = workflow_data.get("tasks", [])
-                suggested_parallelism = workflow_data.get("suggested_parallelism", 2)
+            await self.recruit_squad(enriched_goal)
 
-                # Build agents for every unique role in the workflow
-                all_roles = set()
-                for t in tasks_data:
-                    all_roles.add(t.get("assigned_agent_role", "Assistant"))
-                    for sr in t.get("swarm_roles", []):
-                        all_roles.add(sr)
+            # Inject shared branch into all agents
+            for agent in self.active_agents.values():
+                agent.active_branch = shared_branch
 
-                for role in all_roles:
-                    self.active_agents[role] = BaseAgent(
-                        role=role,
-                        goal=f"Execute your assigned tasks in pre-built workflow: {goal[:50]}",
-                        backstory=f"You are a {role} executing a predefined workflow from the Agent Store.",
-                        tools=list(self.tool_inventory.values()),
-                        model_name=self.model_name
-                    )
-
-                # Inject shared branch
-                for agent in self.active_agents.values():
-                    agent.active_branch = shared_branch
-
-                # Build TaskPlan objects from the workflow data
-                task_plans = []
-                for i, t in enumerate(tasks_data):
-                    task_plans.append(TaskPlan(
-                        description=t.get("description", f"Task {i}"),
-                        assigned_agent_role=t.get("assigned_agent_role", "Assistant"),
-                        depends_on=t.get("depends_on", []),
-                        priority=t.get("priority", 1),
-                        estimated_complexity=t.get("estimated_complexity", "medium"),
-                        is_swarm=t.get("is_swarm", False),
-                        swarm_roles=t.get("swarm_roles", []),
-                        conditions=t.get("conditions", [])
-                    ))
-
-                plan = MissionPlan(tasks=task_plans, suggested_parallelism=suggested_parallelism)
-                self.plan_mission_obj = plan
-                tasks = plan.tasks
-
-                wf_name = workflow_data.get("name", "pre-built workflow")
-                print(f"📋 [Manager]: Using pre-built workflow '{wf_name}' — skipping LLM planning.")
-                for i, t in enumerate(tasks):
-                    deps = f" (depends on: {t.depends_on})" if t.depends_on else ""
-                    swarm = " [SWARM]" if t.is_swarm else ""
-                    print(f"  📝 Task {i}{swarm}: [{t.assigned_agent_role}] {t.description}{deps}")
-            else:
-                await self.recruit_squad(enriched_goal)
-
-                # Inject shared branch into all agents
-                for agent in self.active_agents.values():
-                    agent.active_branch = shared_branch
-
-                plan = await self.plan_mission(enriched_goal)
-                self.plan_mission_obj = plan  # Store for swarm access
-                tasks = plan.tasks
-                for i, t in enumerate(tasks):
-                    deps = f" (depends on: {t.depends_on})" if t.depends_on else ""
-                    swarm = " [SWARM]" if t.is_swarm else ""
-                    print(f"  📝 Task {i}{swarm}: [{t.assigned_agent_role}] {t.description}{deps}")
+            plan = await self.plan_mission(enriched_goal)
+            self.plan_mission_obj = plan  # Store for swarm access
+            tasks = plan.tasks
+            for i, t in enumerate(tasks):
+                deps = f" (depends on: {t.depends_on})" if t.depends_on else ""
+                swarm = " [SWARM]" if t.is_swarm else ""
+                print(f"  📝 Task {i}{swarm}: [{t.assigned_agent_role}] {t.description}{deps}")
         except Exception as e:
             print(f"❌ [Manager]: Setup failed: {e}")
             try:
@@ -398,126 +344,6 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
             await update_mission(mission_id, "COMPLETED")
         except Exception as db_err:
             logging.error(f"Database error while updating mission status to COMPLETED: {db_err}")
-
-    async def handle_followup(self, mission_id: int, user_message: str):
-        """Handle a follow-up message for an existing mission.
-        Loads previous context, enriches the goal, re-plans, and re-executes on the same branch.
-        """
-        # 1. Load mission context
-        mission = await get_mission(mission_id)
-        if not mission:
-            print(f"❌ [Manager]: Mission #{mission_id} not found for follow-up.")
-            return
-
-        goal = mission["goal"]
-        prev_history = json.loads(mission.get("conversation_history") or "[]")
-        workflow_json = mission.get("workflow_json")
-        uploaded_files_json = mission.get("uploaded_files")
-
-        # 2. Log the follow-up to conversation history
-        await append_conversation(mission_id, "user", user_message)
-
-        # 3. Build enriched goal from original + previous results + user follow-up
-        enriched_goal = goal
-
-        # Gather previous task results from DB
-        async with aiosqlite.connect(DB_PATH) as db:
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute("SELECT description, status, output_data, assigned_agent FROM tasks WHERE mission_id = ? ORDER BY id", (mission_id,))
-            prev_tasks = [dict(r) for r in await cursor.fetchall()]
-
-        if prev_tasks:
-            summary_lines = ["\n\n--- PREVIOUS ATTEMPT RESULTS ---"]
-            for i, t in enumerate(prev_tasks):
-                status_icon = "✅" if t["status"] == "COMPLETED" else "❌"
-                output = ""
-                if t.get("output_data"):
-                    try:
-                        out = json.loads(t["output_data"])
-                        output = f" → {str(out)[:200]}"
-                    except (json.JSONDecodeError, TypeError):
-                        output = f" → {str(t['output_data'])[:200]}"
-                summary_lines.append(f"  Task {i} [{t['assigned_agent']}]: {status_icon} {t['description']}{output}")
-            enriched_goal += "\n".join(summary_lines)
-
-        enriched_goal += f"\n\n--- FOLLOW-UP FROM USER ---\n{user_message}"
-
-        # 4. Load or recreate project branch
-        slug = goal[:30]
-        branch_id = ProjectBranch.create_id(slug)
-        shared_branch = ProjectBranch(branch_id)
-        if os.path.exists(shared_branch.project_path):
-            print(f"📂 [Manager]: Reusing existing branch: {branch_id}")
-        else:
-            shared_branch.fork()
-            print(f"📂 [Manager]: Created new shared mission branch: {branch_id}")
-
-        # 5. Re-plan and re-execute
-        try:
-            await set_mission_status(mission_id, "IN_PROGRESS")
-            await append_conversation(mission_id, "system", f"Re-planning with follow-up: {user_message[:100]}")
-
-            if workflow_json:
-                self.active_agents = {}
-                workflow_data = json.loads(workflow_json)
-                tasks_data = workflow_data.get("tasks", [])
-                all_roles = set()
-                for t in tasks_data:
-                    all_roles.add(t.get("assigned_agent_role", "Assistant"))
-                    for sr in t.get("swarm_roles", []):
-                        all_roles.add(sr)
-                for role in all_roles:
-                    self.active_agents[role] = BaseAgent(
-                        role=role,
-                        goal=f"Execute your assigned tasks in pre-built workflow: {goal[:50]}",
-                        backstory=f"You are a {role} executing a predefined workflow.",
-                        tools=list(self.tool_inventory.values()),
-                        model_name=self.model_name
-                    )
-                for agent in self.active_agents.values():
-                    agent.active_branch = shared_branch
-
-                task_plans = []
-                for i, t in enumerate(tasks_data):
-                    task_plans.append(TaskPlan(
-                        description=t.get("description", f"Task {i}"),
-                        assigned_agent_role=t.get("assigned_agent_role", "Assistant"),
-                        depends_on=t.get("depends_on", []),
-                        priority=t.get("priority", 1),
-                        estimated_complexity=t.get("estimated_complexity", "medium"),
-                        is_swarm=t.get("is_swarm", False),
-                        swarm_roles=t.get("swarm_roles", [])
-                    ))
-                plan = MissionPlan(tasks=task_plans, suggested_parallelism=workflow_data.get("suggested_parallelism", 2))
-                self.plan_mission_obj = plan
-                tasks = plan.tasks
-                print(f"📋 [Manager]: Follow-up using pre-built workflow — skipping LLM planning.")
-            else:
-                await self.recruit_squad(enriched_goal)
-                for agent in self.active_agents.values():
-                    agent.active_branch = shared_branch
-                plan = await self.plan_mission(enriched_goal)
-                self.plan_mission_obj = plan
-                tasks = plan.tasks
-
-            for i, t in enumerate(tasks):
-                deps = f" (depends on: {t.depends_on})" if t.depends_on else ""
-                print(f"  📝 Task {i}: [{t.assigned_agent_role}] {t.description}{deps}")
-
-            await append_conversation(mission_id, "system", f"Re-planning complete — {len(tasks)} tasks to execute.")
-
-            # Re-execute on the same branch
-            await self.execute_dag(tasks, mission_id, enriched_goal, shared_branch)
-            await set_mission_status(mission_id, "COMPLETED")
-
-            # Log success to conversation
-            completed = sum(1 for t in self.plan_mission_obj.tasks if hasattr(t, '_result') and getattr(t, '_result') == "COMPLETED")
-            await append_conversation(mission_id, "system", f"Follow-up execution complete. {completed}/{len(tasks)} tasks succeeded.")
-
-        except Exception as e:
-            print(f"❌ [Manager]: Follow-up failed: {e}")
-            await set_mission_status(mission_id, "FAILED")
-            await append_conversation(mission_id, "system", f"Follow-up failed: {str(e)[:200]}")
 
     async def execute_task(self, task_idx: int, context: str, mission_id: int, task_states, task_results, task_ids, tasks) -> bool:
         """Execute a single task. Returns True if successful."""
@@ -575,11 +401,8 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
         task_ids[task_idx] = task_id
 
         start_time = datetime.now()
-        try:
-            result = await agent.execute_task(task_data.description, context)
-        finally:
-            elapsed = (datetime.now() - start_time).total_seconds()
-            self.agent_load[task_data.assigned_agent_role] = max(0, self.agent_load.get(task_data.assigned_agent_role, 0) - 1)
+        result = await agent.execute_task(task_data.description, context)
+        elapsed = (datetime.now() - start_time).total_seconds()
 
         output_text = result.get("output", "Task completed without text summary.")
 
@@ -623,12 +446,8 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
             agent = self.active_agents.get(role)
             if not agent: return f"[{role}]: Agent not found."
             print(f"  🐝 [Swarm]: {role} is thinking...")
-            try:
-                result = await agent.execute_task(task_data.description, context)
-                return f"[{role}]: {result.get('output', 'No output')}"
-            except Exception as e:
-                print(f"  ⚠️ [Swarm]: {role} failed: {e}")
-                return f"[{role}]: FAILED - {str(e)}"
+            result = await agent.execute_task(task_data.description, context)
+            return f"[{role}]: {result.get('output', 'No output')}"
 
         outputs = await asyncio.gather(*[agent_task(r) for r in roles])
         debate_history = "\n\n".join(outputs)
@@ -661,8 +480,7 @@ FINAL CONSENSUS:"""
 
     async def execute_dag(self, tasks: List[TaskPlan], mission_id: int, enriched_goal: str, shared_branch: ProjectBranch):
         """DAG-BASED PARALLEL EXECUTION"""
-        # State values: "PENDING" | "RUNNING" | "COMPLETED" | "FAILED" | "SKIPPED"
-        task_states = {}
+        task_states = {}  # task_idx -> "PENDING" | "RUNNING" | "COMPLETED" | "FAILED"
         task_results = {}  # task_idx -> output_text
         task_ids = {}  # task_idx -> database task_id
         
@@ -677,49 +495,16 @@ FINAL CONSENSUS:"""
         while any(state == "PENDING" for state in task_states.values()) and wave < max_waves:
             wave += 1
             
-            # Find tasks that are ready to execute
+            # Find tasks that are ready to execute (all dependencies completed)
             ready_tasks = []
             for i in range(len(tasks)):
                 if task_states[i] != "PENDING":
                     continue
                 
-                # Check if all dependencies are in a terminal state (COMPLETED or SKIPPED)
+                # Check if all dependencies are completed
                 deps = tasks[i].depends_on
-                if not all(task_states.get(dep) in ("COMPLETED", "SKIPPED") for dep in deps):
-                    continue
-                
-                # If a parent was SKIPPED, auto-skip child (condition cannot be met)
-                if any(task_states.get(dep) == "SKIPPED" for dep in deps):
-                    task_states[i] = "SKIPPED"
-                    task_id = await create_task(
-                        mission_id, tasks[i].description, tasks[i].assigned_agent_role
-                    )
-                    task_ids[i] = task_id
-                    await update_task(
-                        task_id, status="SKIPPED",
-                        output_data="Parent task was skipped — condition branch unreachable."
-                    )
-                    print(f"⏭️ [Manager]: Task {i} auto-skipped — parent task skipped")
-                    continue
-                
-                # Evaluate conditions from squad.yaml
-                conditions = getattr(tasks[i], "conditions", [])
-                if conditions:
-                    ctx = build_condition_context(task_results, deps)
-                    if not all(SafeEvaluator.evaluate(c, ctx) for c in conditions):
-                        task_states[i] = "SKIPPED"
-                        task_id = await create_task(
-                            mission_id, tasks[i].description, tasks[i].assigned_agent_role
-                        )
-                        task_ids[i] = task_id
-                        await update_task(
-                            task_id, status="SKIPPED",
-                            output_data=f"Condition not met: {'; '.join(conditions)}"
-                        )
-                        print(f"⏭️ [Manager]: Task {i} skipped — conditions not met: {conditions}")
-                        continue
-                
-                ready_tasks.append(i)
+                if all(task_states.get(dep) == "COMPLETED" for dep in deps):
+                    ready_tasks.append(i)
             
             # Sort by priority (higher first), then by dependency count (fewer deps first)
             ready_tasks.sort(key=lambda idx: (-tasks[idx].priority, len(tasks[idx].depends_on)))
@@ -773,10 +558,10 @@ FINAL CONSENSUS:"""
                     print(f"⚠️ [Manager]: Agent '{role}' is at capacity ({current_load} tasks). Deferring task {task_idx}.")
             
             # Execute in parallel (all ready tasks, load tracking happens inside execute_task)
-            async def capped_execute(idx):
-                async with sem:
-                    return await self.execute_task(idx, task_contexts[idx], mission_id, task_states, task_results, task_ids, tasks)
-            results = await asyncio.gather(*[capped_execute(idx) for idx in ready_tasks], return_exceptions=True)
+                    async def capped_execute(idx):
+            async with sem:
+                return await self.execute_task(idx, task_contexts[idx], mission_id, task_states, task_results, task_ids, tasks)
+        results = await asyncio.gather(*[capped_execute(idx) for idx in ready_tasks], return_exceptions=True)
             
             # Handle exceptions
             for i, result in enumerate(results):
@@ -841,9 +626,6 @@ FINAL CONSENSUS:"""
         # Final status
         completed = sum(1 for s in task_states.values() if s == "COMPLETED")
         failed = sum(1 for s in task_states.values() if s == "FAILED")
-        skipped = sum(1 for s in task_states.values() if s == "SKIPPED")
-        total = len(tasks)
-        print(f"📊 [Manager]: DAG complete — {completed}/{total} completed, {skipped} skipped, {failed} failed")
         
         # Agent performance report
         print(f"\n📊 [Manager]: Agent Performance Report:")

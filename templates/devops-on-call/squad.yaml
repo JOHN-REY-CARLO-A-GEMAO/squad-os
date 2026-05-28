@@ -1,0 +1,32 @@
+spec_version: "1.0.0"
+metadata:
+  name: "DevOps On-Call Incident Responder"
+  version: "1.0.0"
+  description: "Monitors system metrics, triages errors, and executes safe self-healing recovery scripts."
+  author: "@solodev"
+  license: "Apache-2.0"
+topology:
+  engine: "dag"
+  agents:
+    - id: "log_monitor"
+      role: "researcher"
+      system_prompt: "You are a DevOps Log Sentry. Read incoming system streams, extract exceptions, and determine if service degradation is occurring."
+      llm_default: "gpt-4o-mini"
+      tools: ["file_io", "web_search"]
+
+    - id: "sys_healer"
+      role: "developer"
+      system_prompt: "You are an Automated Systems Engineer. Analyze extracted stack traces and execute targeted, safe shell commands or service restarts to restore uptime."
+      llm_default: "gpt-4o"
+      tools: ["terminal", "self_healing"]
+
+  dependencies:
+    - parent: "log_monitor"
+      child: "sys_healer"
+      condition: "service_degraded == true"
+runtime:
+  required_tools:
+    - name: "self_healing"
+      min_version: "1.0.0"
+  environment_defaults:
+    TARGET_LOG_DIR: "/var/log/nginx/error.log"

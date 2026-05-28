@@ -14,17 +14,20 @@ except ImportError:
 from squad_os.tools.base import BaseTool
 from squad_os.core.utils import is_safe_path
 
-# Security: Dangerous command patterns that are blocked
-DANGEROUS_PATTERNS: Set[str] = {
-    'rm -rf /', 'rm -rf /*', 'rm -rf ~', 'dd if=/dev/zero', 'mkfs.', 'fdisk',
-    '>:', '>&', '/dev/null', 'shutdown', 'reboot', 'halt', 'poweroff',
-    'init 0', 'telinit 0', 'kill -9 -1', 'kill -9 1',
-    'curl .*|.*sh', 'curl .*|.*bash', 'wget .*|.*sh', 'wget .*|.*bash',
-    '> /etc/', '>> /etc/', 'echo.*> /', 'echo.*>> /',
-    'chmod 777 /', 'chmod -R 777 /', 'chown -R',
-    'mkfs.ext', 'mkfs.btrfs', 'mkfs.xfs', 'parted', 'gparted',
-    'del /f /s /q', 'rd /s /q', 'format ', 'diskpart',
+# Security: Dangerous regex patterns for terminal commands
+DANGEROUS_REGEX_PATTERNS: Set[str] = {
+    r'rm\s+-rf\s+/', r'rm\s+-rf\s+/\*', r'rm\s+-rf\s+~', r'dd\s+if=/dev/zero', r'mkfs\.', r'fdisk',
+    r'>:', r'>&', r'/dev/null', r'shutdown', r'reboot', r'halt', r'poweroff',
+    r'init\s+0', r'telinit\s+0', r'kill\s+-9\s+-1', r'kill\s+-9\s+1',
+    r'curl\s+.*\|\s*.*sh', r'curl\s+.*\|\s*.*bash', r'wget\s+.*\|\s*.*sh', r'wget\s+.*\|\s*.*bash',
+    r'>\s+/etc/', r'>>\s+/etc/', r'echo.*>\s+/', r'echo.*>>\s+/',
+    r'chmod\s+777\s+/', r'chmod\s+-R\s+777\s+/', r'chown\s+-R',
+    r'mkfs\.ext', r'mkfs\.btrfs', r'mkfs\.xfs', r'parted', r'gparted',
+    r'del\s+/f\s+/s\s+/q', r'rd\s+/s\s+/q', r'format\s+', r'diskpart',
 }
+
+# Trusted system directories for absolute command paths
+TRUSTED_SYSTEM_DIRS: Set[str] = {"/bin/", "/usr/bin/", "/usr/local/bin/"}
 
 # Allowed safe commands for terminal
 ALLOWED_COMMANDS: Set[str] = {
@@ -50,10 +53,10 @@ ALLOWED_COMMANDS: Set[str] = {
 
 
 def _is_dangerous_command(command: str) -> bool:
-    """Check if command contains dangerous patterns."""
+    """Check if command contains dangerous patterns using regex."""
     cmd_lower = command.lower().strip()
-    for pattern in DANGEROUS_PATTERNS:
-        if pattern.lower() in cmd_lower:
+    for pattern in DANGEROUS_REGEX_PATTERNS:
+        if re.search(pattern, cmd_lower, re.IGNORECASE):
             return True
     # Check for shell injection patterns
     if re.search(r'`[^`]+`', cmd_lower) or re.search(r'\$\([^)]+\)', cmd_lower):
@@ -63,15 +66,18 @@ def _is_dangerous_command(command: str) -> bool:
 
 def _looks_like_path(token: str) -> bool:
     """Check if a token looks like a file/directory path rather than a command flag."""
-    # Command flags start with / or - and contain only alphanumeric chars
-    # Examples: /s, /b, -la, --verbose, -rf
-    if token.startswith('/') or token.startswith('-'):
-        # Windows flags: /s, /b, /q, etc. (single char after /)
-        # Unix flags: -la, --verbose, -rf (letters after - or --)
-        stripped = token.lstrip('/-')
-        if stripped.isalnum():
-            return False  # It's a flag, not a path
-    
+    # Command flags start with -
+    if token.startswith('-'):
+        return False
+
+    # On Windows, /s, /b etc are flags. On Unix, /etc is a path.
+    if token.startswith('/'):
+        if os.name == 'nt':
+            stripped = token.lstrip('/')
+            if len(stripped) <= 2 and stripped.isalnum():
+                return False
+        return True # Treat as path
+
     # Tokens that look like paths:
     # - Contain directory separators (/, \)
     # - Start with . (., .., ./file)
@@ -83,7 +89,7 @@ def _looks_like_path(token: str) -> bool:
         return True
     if '.' in token and len(token.split('.')) > 1:
         return True
-    
+
     return False
 
 
@@ -126,26 +132,37 @@ def _validate_terminal_command(command: str, workspace: str) -> tuple[bool, str]
         if expect_command:
             cmd_name = token.lower()
             # Allow common shell built-ins and safe commands
-            if cmd_name in ALLOWED_COMMANDS or cmd_name.startswith('./'):
-                # OK - allowed or local execution
+            if cmd_name in ALLOWED_COMMANDS:
+                # OK - allowed built-in or registered command
                 pass
-            elif '/' in cmd_name:
-                # Check for qualified paths like /bin/ls
-                if os.path.basename(cmd_name) in ALLOWED_COMMANDS:
-                    # OK - /bin/ls is allowed because ls is allowed
-                    pass
-                else:
+            elif cmd_name.startswith('./'):
+                # Local execution - MUST check if it's within workspace
+                if not is_safe_path(workspace, cmd_name):
+                    return False, f"Access denied: Command '{cmd_name}' attempts to execute outside workspace"
+            elif cmd_name.startswith('/'):
+                # Absolute path execution - restrict to trusted system directories
+                parent_dir = os.path.dirname(cmd_name)
+                if not parent_dir.endswith('/'):
+                    parent_dir += '/'
+
+                if parent_dir not in TRUSTED_SYSTEM_DIRS:
+                    return False, f"Security violation: Command '{cmd_name}' is from an untrusted directory"
+
+                if os.path.basename(cmd_name) not in ALLOWED_COMMANDS:
+                    return False, f"Command '{cmd_name}' not in allowed list"
+            elif '/' in cmd_name or '\\' in cmd_name:
+                # Other qualified paths (e.g., relative paths with separators)
+                if not is_safe_path(workspace, cmd_name):
+                    return False, f"Access denied: Command '{cmd_name}' attempts to execute outside workspace"
+                if os.path.basename(cmd_name) not in ALLOWED_COMMANDS:
                     return False, f"Command '{cmd_name}' not in allowed list"
             else:
                 return False, f"Command '{cmd_name}' not in allowed list"
-
-            # Command name itself is exempt from the generic path check below
-            # because it might be an absolute path (e.g., /bin/ls)
             expect_command = False
             continue
 
         # Path Traversal Check: Only check tokens that look like actual paths
-        # Skip command flags (e.g., /s, /b, -la, --verbose) and simple arguments
+        # Skip command flags (e.g., -la, --verbose) and simple arguments
         if _looks_like_path(token) and not is_safe_path(workspace, token):
             return False, f"Access denied: Token '{token}' attempts to access path outside workspace"
 
