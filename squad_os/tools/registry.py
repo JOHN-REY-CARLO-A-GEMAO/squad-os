@@ -169,36 +169,124 @@ def _validate_terminal_command(command: str, workspace: str) -> tuple[bool, str]
     return True, ""
 
 
-# Dangerous Python code patterns
-DANGEROUS_PYTHON_PATTERNS: List[tuple[str, str]] = [
-    (r'\b__import__\s*\(\s*["\']os["\']', "Blocked: dynamic import of os module"),
-    (r'\b__import__\s*\(\s*["\']subprocess["\']', "Blocked: dynamic import of subprocess"),
-    (r'\b__import__\s*\(\s*["\']sys["\']', "Blocked: dynamic import of sys module"),
-    (r'\b__import__\s*\(\s*["\']shutil["\']', "Blocked: dynamic import of shutil module"),
-    (r'\beval\s*\(', "Blocked: eval() is dangerous"),
-    (r'\bexec\s*\(', "Blocked: exec() is dangerous"),
-    (r'\bcompile\s*\(', "Blocked: compile() can be used for code injection"),
-    (r'os\.system\s*\(', "Blocked: os.system() is dangerous"),
-    (r'os\.popen\s*\(', "Blocked: os.popen() is dangerous"),
-    (r'os\.spawn', "Blocked: os.spawn* is dangerous"),
-    (r'os\.fork', "Blocked: os.fork() is dangerous"),
-    (r'subprocess\.call', "Blocked: subprocess.call() is dangerous"),
-    (r'subprocess\.run', "Blocked: subprocess.run() is dangerous"),
-    (r'subprocess\.Popen', "Blocked: subprocess.Popen() is dangerous"),
-    (r'subprocess\.check_output', "Blocked: subprocess.check_output() is dangerous"),
-    (r'shutil\.rmtree\s*\([^)]*["\']?/["\']?', "Blocked: shutil.rmtree() on root paths"),
-    (r'shutil\.rmtree\s*\([^)]*["\']?~', "Blocked: shutil.rmtree() on home directory"),
-]
+import ast
+
+# Security: Dangerous Python code execution configurations
+DANGEROUS_PYTHON_CALLS: Dict[str, Set[str]] = {
+    'os': {'system', 'popen', 'spawnl', 'spawnle', 'spawnlp', 'spawnlpe', 'spawnv', 'spawnve', 'spawnvp', 'spawnvpe', 'fork', 'posix_spawn', 'posix_spawnp'},
+    'subprocess': {'run', 'call', 'check_call', 'check_output', 'Popen'},
+    'shutil': {'rmtree', 'move'},
+    'sys': {'exit'},
+}
+
+FORBIDDEN_BUILTINS: Set[str] = {'eval', 'exec', 'compile', '__import__', 'breakpoint'}
 
 
 def _validate_python_code(code: str) -> tuple[bool, str]:
-    """Validate Python code against dangerous patterns."""
+    """Validate Python code using AST analysis to prevent security bypasses."""
     if not code or not code.strip():
         return False, "Empty code not allowed"
 
-    for pattern, message in DANGEROUS_PYTHON_PATTERNS:
-        if re.search(pattern, code, re.IGNORECASE):
-            return False, message
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as e:
+        return False, f"Python syntax error: {str(e)}"
+
+    # Track module aliases (e.g., import os as o)
+    # Map from alias name to original module name
+    module_aliases: Dict[str, str] = {}
+    # Track direct function imports (e.g., from os import system)
+    # Map from alias/name to original (module, function)
+    function_aliases: Dict[str, tuple[str, str]] = {}
+
+    for node in ast.walk(tree):
+        # 1. Track imports
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                module_aliases[alias.asname or alias.name] = alias.name
+                # Block direct import of dangerous modules if not aliased?
+                # Actually, we let them import but block the calls.
+
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                for alias in node.names:
+                    function_aliases[alias.asname or alias.name] = (node.module, alias.name)
+
+        # 2. Check function calls
+        elif isinstance(node, ast.Call):
+            func = node.func
+
+            # Resolve function name if it's a simple name
+            if isinstance(func, ast.Name):
+                func_name = func.id
+
+                # Check built-ins
+                if func_name in FORBIDDEN_BUILTINS:
+                    return False, f"Blocked: Use of forbidden built-in '{func_name}'"
+
+                # Check aliased function imports (e.g., from os import system; system())
+                if func_name in function_aliases:
+                    mod, orig_func = function_aliases[func_name]
+                    if mod in DANGEROUS_PYTHON_CALLS and orig_func in DANGEROUS_PYTHON_CALLS[mod]:
+                        return False, f"Blocked: Call to dangerous function '{mod}.{orig_func}' via alias"
+
+                # Check for getattr
+                if func_name == 'getattr':
+                    if len(node.args) >= 2:
+                        target_obj = node.args[0]
+                        target_attr = node.args[1]
+
+                        if isinstance(target_attr, ast.Constant) and isinstance(target_attr.value, str):
+                            attr_val = target_attr.value
+                            if isinstance(target_obj, ast.Name):
+                                obj_name = target_obj.id
+                                mod_name = module_aliases.get(obj_name, obj_name)
+                                if mod_name in DANGEROUS_PYTHON_CALLS and attr_val in DANGEROUS_PYTHON_CALLS[mod_name]:
+                                    return False, f"Blocked: Dangerous use of getattr to access '{mod_name}.{attr_val}'"
+                            if attr_val in FORBIDDEN_BUILTINS:
+                                 return False, f"Blocked: Dangerous use of getattr to access built-in '{attr_val}'"
+                        else:
+                            # Block non-constant getattr as it's a common bypass technique
+                            return False, "Blocked: getattr with non-literal attribute name"
+
+            # Attribute calls: os.system(), o.system(), os.path.join()
+            elif isinstance(func, ast.Attribute):
+                # Check for calls like os.system()
+                # We can have multiple levels: os.path.os.system()
+
+                # Traverse up the attribute chain to find the base object
+                curr = func
+                attrs = []
+                while isinstance(curr, ast.Attribute):
+                    attrs.append(curr.attr)
+                    curr = curr.value
+
+                if isinstance(curr, ast.Name):
+                    base_obj = curr.id
+                    mod_name = module_aliases.get(base_obj, base_obj)
+
+                    # Check if any part of the chain is dangerous
+                    # e.g., if mod_name is 'os' and any attr is 'system'
+                    if mod_name in DANGEROUS_PYTHON_CALLS:
+                        for attr in attrs:
+                            if attr in DANGEROUS_PYTHON_CALLS[mod_name]:
+                                return False, f"Blocked: Call to dangerous function '{mod_name}.{attr}'"
+
+                    # Also check for dangerous built-ins in attribute chain (e.g., something.eval)
+                    for attr in attrs:
+                        if attr in FORBIDDEN_BUILTINS:
+                            return False, f"Blocked: Access to forbidden built-in '{attr}' via attribute"
+
+            # Check for other dangerous attributes like __subclasses__, __globals__, etc.
+            # (common in jailbreak payloads)
+            elif isinstance(node, ast.Attribute):
+                if node.attr in ['__subclasses__', '__globals__', '__builtins__', '__dict__']:
+                    return False, f"Blocked: Access to sensitive attribute '{node.attr}'"
+
+        # Also check attributes outside of Call nodes
+        elif isinstance(node, ast.Attribute):
+            if node.attr in ['__subclasses__', '__globals__', '__builtins__', '__dict__']:
+                return False, f"Blocked: Access to sensitive attribute '{node.attr}'"
 
     return True, ""
 
