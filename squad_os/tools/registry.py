@@ -169,36 +169,100 @@ def _validate_terminal_command(command: str, workspace: str) -> tuple[bool, str]
     return True, ""
 
 
-# Dangerous Python code patterns
-DANGEROUS_PYTHON_PATTERNS: List[tuple[str, str]] = [
-    (r'\b__import__\s*\(\s*["\']os["\']', "Blocked: dynamic import of os module"),
-    (r'\b__import__\s*\(\s*["\']subprocess["\']', "Blocked: dynamic import of subprocess"),
-    (r'\b__import__\s*\(\s*["\']sys["\']', "Blocked: dynamic import of sys module"),
-    (r'\b__import__\s*\(\s*["\']shutil["\']', "Blocked: dynamic import of shutil module"),
-    (r'\beval\s*\(', "Blocked: eval() is dangerous"),
-    (r'\bexec\s*\(', "Blocked: exec() is dangerous"),
-    (r'\bcompile\s*\(', "Blocked: compile() can be used for code injection"),
-    (r'os\.system\s*\(', "Blocked: os.system() is dangerous"),
-    (r'os\.popen\s*\(', "Blocked: os.popen() is dangerous"),
-    (r'os\.spawn', "Blocked: os.spawn* is dangerous"),
-    (r'os\.fork', "Blocked: os.fork() is dangerous"),
-    (r'subprocess\.call', "Blocked: subprocess.call() is dangerous"),
-    (r'subprocess\.run', "Blocked: subprocess.run() is dangerous"),
-    (r'subprocess\.Popen', "Blocked: subprocess.Popen() is dangerous"),
-    (r'subprocess\.check_output', "Blocked: subprocess.check_output() is dangerous"),
-    (r'shutil\.rmtree\s*\([^)]*["\']?/["\']?', "Blocked: shutil.rmtree() on root paths"),
-    (r'shutil\.rmtree\s*\([^)]*["\']?~', "Blocked: shutil.rmtree() on home directory"),
-]
+import ast
 
+# Security: Forbidden Python resources
+FORBIDDEN_BUILTINS = {'eval', 'exec', 'compile', '__import__', 'open', 'input'}
+FORBIDDEN_ATTRIBUTES = {'__subclasses__', '__globals__', '__builtins__', '__dict__'}
+DANGEROUS_METHODS = {
+    'os': {'system', 'popen', 'spawn', 'fork', 'kill', 'chmod', 'chown'},
+    'subprocess': {'run', 'call', 'check_call', 'check_output', 'Popen'},
+    'shutil': {'rmtree', 'move', 'copytree'},
+}
+
+class PythonSecurityVisitor(ast.NodeVisitor):
+    """AST visitor to detect security violations in Python code."""
+    def __init__(self):
+        self.errors = []
+        self.imported_modules = {} # alias -> real_name
+        self.imported_functions = {} # alias -> (module, function)
+
+    def visit_Import(self, node):
+        for alias in node.names:
+            self.imported_modules[alias.asname or alias.name] = alias.name
+        self.generic_visit(node)
+
+    def visit_ImportFrom(self, node):
+        if node.module:
+            for alias in node.names:
+                self.imported_functions[alias.asname or alias.name] = (node.module, alias.name)
+        self.generic_visit(node)
+
+    def visit_Call(self, node):
+        # Check direct calls to forbidden built-ins
+        if isinstance(node.func, ast.Name):
+            if node.func.id in FORBIDDEN_BUILTINS:
+                self.errors.append(f"Blocked: forbidden built-in '{node.func.id}'")
+
+            # Check for calls to imported dangerous functions
+            if node.func.id in self.imported_functions:
+                module, func = self.imported_functions[node.func.id]
+                if module in DANGEROUS_METHODS and func in DANGEROUS_METHODS[module]:
+                    self.errors.append(f"Blocked: dangerous method '{module}.{func}'")
+
+        # Check attribute calls (e.g., os.system())
+        elif isinstance(node.func, ast.Attribute):
+            if isinstance(node.func.value, ast.Name):
+                module_alias = node.func.value.id
+                method = node.func.attr
+                real_module = self.imported_modules.get(module_alias, module_alias)
+                if real_module in DANGEROUS_METHODS and method in DANGEROUS_METHODS[real_module]:
+                    self.errors.append(f"Blocked: dangerous method '{real_module}.{method}'")
+
+        # Check for dynamic attribute access via getattr/setattr
+        if isinstance(node.func, ast.Name) and node.func.id in ('getattr', 'setattr'):
+            if len(node.args) >= 2:
+                attr_arg = node.args[1]
+                # Only allow literal strings as attribute names to prevent dynamic bypasses
+                if not isinstance(attr_arg, ast.Constant) or not isinstance(attr_arg.value, str):
+                    self.errors.append(f"Blocked: dynamic attribute access in {node.func.id}()")
+                else:
+                    attr_name = attr_arg.value
+                    if attr_name in FORBIDDEN_ATTRIBUTES:
+                        self.errors.append(f"Blocked: access to sensitive attribute '{attr_name}'")
+
+                    # Also check if they are trying to get a dangerous method from a module
+                    if len(node.args) >= 1:
+                        obj_arg = node.args[0]
+                        if isinstance(obj_arg, ast.Name):
+                            module_alias = obj_arg.id
+                            real_module = self.imported_modules.get(module_alias, module_alias)
+                            if real_module in DANGEROUS_METHODS and attr_name in DANGEROUS_METHODS[real_module]:
+                                self.errors.append(f"Blocked: dangerous method '{real_module}.{attr_name}' via {node.func.id}()")
+
+        self.generic_visit(node)
+
+    def visit_Attribute(self, node):
+        # Block access to sensitive attributes like __subclasses__
+        if node.attr in FORBIDDEN_ATTRIBUTES:
+            self.errors.append(f"Blocked: access to sensitive attribute '{node.attr}'")
+        self.generic_visit(node)
 
 def _validate_python_code(code: str) -> tuple[bool, str]:
-    """Validate Python code against dangerous patterns."""
+    """Validate Python code using AST analysis to prevent security bypasses."""
     if not code or not code.strip():
         return False, "Empty code not allowed"
 
-    for pattern, message in DANGEROUS_PYTHON_PATTERNS:
-        if re.search(pattern, code, re.IGNORECASE):
-            return False, message
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as e:
+        return False, f"Syntax error in Python code: {str(e)}"
+
+    visitor = PythonSecurityVisitor()
+    visitor.visit(tree)
+
+    if visitor.errors:
+        return False, "; ".join(visitor.errors)
 
     return True, ""
 
