@@ -669,9 +669,11 @@ if not selected_project:
                     with st.expander(f"👤 {p['role']}"):
                         st.write(f"**Goal:** {p['goal']}")
                         st.write(f"**Tools:** {', '.join(json.loads(p['tools']))}")
-                        if st.button(f"🗑️ Delete {p['role']}", key=f"del_{p['role']}"):
-                            asyncio.run(delete_persona(p['role']))
-                            st.rerun()
+                        with st.popover(f"🗑️ Delete {p['role']}", use_container_width=True, key=f"pop_del_{p['role']}"):
+                            st.warning(f"Are you sure you want to delete the '{p['role']}' persona? This action cannot be undone.")
+                            if st.button(f"Confirm Delete", key=f"conf_del_{p['role']}", type="primary", use_container_width=True):
+                                asyncio.run(delete_persona(p['role']))
+                                st.rerun()
 
         with col_b:
             st.write("**Assemble New Agent**")
@@ -755,9 +757,11 @@ if not selected_project:
                                     st.caption("No source")
                         with cols[2]:
                             if is_installed:
-                                if st.button(f"🗑️ Uninstall", key=f"uninstall_{pkg['id']}", use_container_width=True):
-                                    asyncio.run(AgentPackageLoader.uninstall_package(pkg["id"]))
-                                    st.rerun()
+                                with st.popover("🗑️ Uninstall", use_container_width=True, key=f"pop_uninst_{pkg['id']}"):
+                                    st.warning(f"Are you sure you want to uninstall '{pkg['name']}'? This will remove all associated tools and workflows.")
+                                    if st.button("Confirm Uninstall", key=f"conf_uninst_{pkg['id']}", type="primary", use_container_width=True):
+                                        asyncio.run(AgentPackageLoader.uninstall_package(pkg["id"]))
+                                        st.rerun()
                         st.divider()
             else:
                 st.info("No local packages found. Upload a .sqad package or explore the community registry below.")
