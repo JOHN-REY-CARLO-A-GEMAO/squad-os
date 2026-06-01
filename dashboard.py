@@ -669,9 +669,11 @@ if not selected_project:
                     with st.expander(f"👤 {p['role']}"):
                         st.write(f"**Goal:** {p['goal']}")
                         st.write(f"**Tools:** {', '.join(json.loads(p['tools']))}")
-                        if st.button(f"🗑️ Delete {p['role']}", key=f"del_{p['role']}"):
-                            asyncio.run(delete_persona(p['role']))
-                            st.rerun()
+                        with st.popover("🗑️ Delete", use_container_width=True):
+                            st.warning(f"Delete persona '{p['role']}'?")
+                            if st.button("Confirm Delete", key=f"conf_del_{p['role']}", type="primary", use_container_width=True):
+                                asyncio.run(delete_persona(p['role']))
+                                st.rerun()
 
         with col_b:
             st.write("**Assemble New Agent**")
@@ -692,7 +694,7 @@ if not selected_project:
                 ]
                 selected_tools = st.multiselect("Assign Tools", all_tools)
                 
-                submit_agent = st.form_submit_button("💾 Save Persona")
+                submit_agent = st.form_submit_button("💾 Save Persona", help="Save this agent persona to the registry for future use")
                 if submit_agent:
                     if new_role and new_goal and new_backstory:
                         asyncio.run(save_persona(new_role, new_goal, new_backstory, selected_tools))
@@ -755,9 +757,11 @@ if not selected_project:
                                     st.caption("No source")
                         with cols[2]:
                             if is_installed:
-                                if st.button(f"🗑️ Uninstall", key=f"uninstall_{pkg['id']}", use_container_width=True):
-                                    asyncio.run(AgentPackageLoader.uninstall_package(pkg["id"]))
-                                    st.rerun()
+                                with st.popover("🗑️ Uninstall", use_container_width=True):
+                                    st.warning(f"Uninstall package '{pkg['name']}'?")
+                                    if st.button("Confirm Uninstall", key=f"conf_uninst_{pkg['id']}", type="primary", use_container_width=True):
+                                        asyncio.run(AgentPackageLoader.uninstall_package(pkg["id"]))
+                                        st.rerun()
                         st.divider()
             else:
                 st.info("No local packages found. Upload a .sqad package or explore the community registry below.")
@@ -784,6 +788,7 @@ if not selected_project:
                                     "⬇️ Install Workflow",
                                     key=f"ci_install_{i+j}",
                                     use_container_width=True,
+                                    help="Download and install this workflow from the community registry"
                                 ):
                                     with st.spinner(f"Ingesting {pkg['name']}..."):
                                         ok = install_registry_package(pkg)
@@ -806,7 +811,7 @@ if not selected_project:
                         wf_name = wf.get("name", "Default workflow")
                         st.write(f"**Workflow:** {wf_name}")
                         st.code(json.dumps(wf, indent=2), language="json", line_numbers=True)
-                        if st.button(f"🚀 Deploy '{wf_name}' as Mission", key=f"deploy_{ip['package_id']}", use_container_width=True):
+                        if st.button(f"🚀 Deploy '{wf_name}' as Mission", key=f"deploy_{ip['package_id']}", use_container_width=True, help="Queue this workflow as a new mission for execution"):
                             success = deploy_store_workflow(ip["package_id"])
                             if success:
                                 st.success(f"Workflow '{wf_name}' queued as a mission!")
@@ -845,7 +850,7 @@ if not selected_project:
                     for w in validation.warnings:
                         st.warning(f"⚠️ {w}")
 
-                    if st.button("💾 Install this package", use_container_width=True, type="primary"):
+                    if st.button("💾 Install this package", use_container_width=True, type="primary", help="Sideload and install this .sqad package into your local store"):
                         success = asyncio.run(AgentPackageLoader.install_package(pkg))
                         if success:
                             st.success(f"Package '{pkg.name}' installed!")
