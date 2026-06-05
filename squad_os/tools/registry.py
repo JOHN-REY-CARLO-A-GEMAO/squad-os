@@ -1,6 +1,7 @@
 import os
 import subprocess
 import asyncio
+import ast
 import json
 import re
 import shlex
@@ -169,37 +170,46 @@ def _validate_terminal_command(command: str, workspace: str) -> tuple[bool, str]
     return True, ""
 
 
-# Dangerous Python code patterns
-DANGEROUS_PYTHON_PATTERNS: List[tuple[str, str]] = [
-    (r'\b__import__\s*\(\s*["\']os["\']', "Blocked: dynamic import of os module"),
-    (r'\b__import__\s*\(\s*["\']subprocess["\']', "Blocked: dynamic import of subprocess"),
-    (r'\b__import__\s*\(\s*["\']sys["\']', "Blocked: dynamic import of sys module"),
-    (r'\b__import__\s*\(\s*["\']shutil["\']', "Blocked: dynamic import of shutil module"),
-    (r'\beval\s*\(', "Blocked: eval() is dangerous"),
-    (r'\bexec\s*\(', "Blocked: exec() is dangerous"),
-    (r'\bcompile\s*\(', "Blocked: compile() can be used for code injection"),
-    (r'os\.system\s*\(', "Blocked: os.system() is dangerous"),
-    (r'os\.popen\s*\(', "Blocked: os.popen() is dangerous"),
-    (r'os\.spawn', "Blocked: os.spawn* is dangerous"),
-    (r'os\.fork', "Blocked: os.fork() is dangerous"),
-    (r'subprocess\.call', "Blocked: subprocess.call() is dangerous"),
-    (r'subprocess\.run', "Blocked: subprocess.run() is dangerous"),
-    (r'subprocess\.Popen', "Blocked: subprocess.Popen() is dangerous"),
-    (r'subprocess\.check_output', "Blocked: subprocess.check_output() is dangerous"),
-    (r'shutil\.rmtree\s*\([^)]*["\']?/["\']?', "Blocked: shutil.rmtree() on root paths"),
-    (r'shutil\.rmtree\s*\([^)]*["\']?~', "Blocked: shutil.rmtree() on home directory"),
-]
+# Security: Forbidden Python elements
+FORBIDDEN_BUILTINS = {'eval', 'exec', 'compile', '__import__', 'breakpoint', 'globals', 'locals', '__builtins__'}
+DANGEROUS_MODULES = {'os', 'subprocess', 'shutil', 'sys', 'socket', 'requests', 'aiohttp', 'httpx', 'importlib', 'builtins', 'pickle', 'ctypes', 'pty', 'marshal', 'shelve', 'urllib'}
+DANGEROUS_METHODS = {'system', 'popen', 'spawn', 'Popen', 'rmtree', 'check_output', 'check_call'}
+FORBIDDEN_ATTRIBUTES = {'__subclasses__', '__globals__', '__builtins__', '__dict__'}
 
 
 def _validate_python_code(code: str) -> tuple[bool, str]:
-    """Validate Python code against dangerous patterns."""
+    """Validate Python code against dangerous patterns using AST analysis."""
     if not code or not code.strip():
         return False, "Empty code not allowed"
+    try:
+        tree = ast.parse(code)
+    except Exception as e:
+        return False, f"Python parsing error: {str(e)}"
 
-    for pattern, message in DANGEROUS_PYTHON_PATTERNS:
-        if re.search(pattern, code, re.IGNORECASE):
-            return False, message
-
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split('.')[0] in DANGEROUS_MODULES:
+                    return False, f"Blocked: import of dangerous module '{alias.name}'"
+        elif isinstance(node, ast.ImportFrom):
+            if (node.module and node.module.split('.')[0] in DANGEROUS_MODULES) or \
+               any(a.name.split('.')[0] in DANGEROUS_MODULES for a in node.names):
+                return False, "Blocked: import of dangerous module"
+        elif isinstance(node, ast.Name) and node.id in FORBIDDEN_BUILTINS:
+            return False, f"Blocked: use of forbidden builtin '{node.id}'"
+        elif isinstance(node, ast.Attribute):
+            if node.attr in DANGEROUS_METHODS:
+                return False, f"Blocked: use of dangerous method '{node.attr}'"
+            if node.attr in FORBIDDEN_ATTRIBUTES:
+                return False, f"Blocked: access to forbidden attribute '{node.attr}'"
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == 'getattr':
+            if len(node.args) >= 2:
+                arg = node.args[1]
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                    if arg.value in (DANGEROUS_METHODS | FORBIDDEN_ATTRIBUTES):
+                        return False, f"Blocked: getattr access to '{arg.value}'"
+                elif not isinstance(arg, ast.Constant):
+                    return False, "Blocked: dynamic getattr is not allowed for security"
     return True, ""
 
 
