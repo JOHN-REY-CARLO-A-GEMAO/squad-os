@@ -669,9 +669,11 @@ if not selected_project:
                     with st.expander(f"👤 {p['role']}"):
                         st.write(f"**Goal:** {p['goal']}")
                         st.write(f"**Tools:** {', '.join(json.loads(p['tools']))}")
-                        if st.button(f"🗑️ Delete {p['role']}", key=f"del_{p['role']}"):
-                            asyncio.run(delete_persona(p['role']))
-                            st.rerun()
+                        with st.popover("🗑️ Delete", use_container_width=True):
+                            st.warning(f"Delete '{p['role']}'?")
+                            if st.button("Confirm Delete", type="primary", key=f"conf_del_{p['role']}", use_container_width=True, help=f"Permanently remove the {p['role']} persona"):
+                                asyncio.run(delete_persona(p['role']))
+                                st.rerun()
 
         with col_b:
             st.write("**Assemble New Agent**")
