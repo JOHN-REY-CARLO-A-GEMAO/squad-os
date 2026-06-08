@@ -518,6 +518,7 @@ if not selected_project:
                 format_func=lambda x: mission_labels.get(x),
                 selection_mode="single",
                 label_visibility="collapsed",
+                help="Select a mission to view its chat history and status.",
                 default=st.session_state.selected_session_id
             )
 
@@ -669,9 +670,11 @@ if not selected_project:
                     with st.expander(f"👤 {p['role']}"):
                         st.write(f"**Goal:** {p['goal']}")
                         st.write(f"**Tools:** {', '.join(json.loads(p['tools']))}")
-                        if st.button(f"🗑️ Delete {p['role']}", key=f"del_{p['role']}"):
-                            asyncio.run(delete_persona(p['role']))
-                            st.rerun()
+                        with st.popover("🗑️ Delete", use_container_width=True, help=f"Delete persona: {p['role']}", key=f"pop_del_{p['role']}"):
+                            st.warning(f"Are you sure you want to delete the '{p['role']}' persona?")
+                            if st.button("Confirm Delete", key=f"conf_del_{p['role']}", type="primary", use_container_width=True):
+                                asyncio.run(delete_persona(p['role']))
+                                st.rerun()
 
         with col_b:
             st.write("**Assemble New Agent**")
@@ -692,7 +695,7 @@ if not selected_project:
                 ]
                 selected_tools = st.multiselect("Assign Tools", all_tools)
                 
-                submit_agent = st.form_submit_button("💾 Save Persona")
+                submit_agent = st.form_submit_button("💾 Save Persona", help="Register this agent persona in the database.")
                 if submit_agent:
                     if new_role and new_goal and new_backstory:
                         asyncio.run(save_persona(new_role, new_goal, new_backstory, selected_tools))
@@ -755,9 +758,11 @@ if not selected_project:
                                     st.caption("No source")
                         with cols[2]:
                             if is_installed:
-                                if st.button(f"🗑️ Uninstall", key=f"uninstall_{pkg['id']}", use_container_width=True):
-                                    asyncio.run(AgentPackageLoader.uninstall_package(pkg["id"]))
-                                    st.rerun()
+                                with st.popover("🗑️ Uninstall", use_container_width=True, help=f"Uninstall package: {pkg['name']}", key=f"pop_un_{pkg['id']}"):
+                                    st.warning(f"Are you sure you want to uninstall '{pkg['name']}'?")
+                                    if st.button("Confirm Uninstall", key=f"conf_un_{pkg['id']}", type="primary", use_container_width=True):
+                                        asyncio.run(AgentPackageLoader.uninstall_package(pkg["id"]))
+                                        st.rerun()
                         st.divider()
             else:
                 st.info("No local packages found. Upload a .sqad package or explore the community registry below.")
