@@ -669,9 +669,11 @@ if not selected_project:
                     with st.expander(f"👤 {p['role']}"):
                         st.write(f"**Goal:** {p['goal']}")
                         st.write(f"**Tools:** {', '.join(json.loads(p['tools']))}")
-                        if st.button(f"🗑️ Delete {p['role']}", key=f"del_{p['role']}"):
-                            asyncio.run(delete_persona(p['role']))
-                            st.rerun()
+                        with st.popover(f"🗑️ Delete {p['role']}", use_container_width=True):
+                            st.warning("This action is permanent and will remove the persona from your registry.")
+                            if st.button(f"Confirm Deletion of {p['role']}", key=f"conf_del_{p['role']}", type="primary", use_container_width=True, help=f"Permanently remove the '{p['role']}' persona"):
+                                asyncio.run(delete_persona(p['role']))
+                                st.rerun()
 
         with col_b:
             st.write("**Assemble New Agent**")
@@ -692,7 +694,7 @@ if not selected_project:
                 ]
                 selected_tools = st.multiselect("Assign Tools", all_tools)
                 
-                submit_agent = st.form_submit_button("💾 Save Persona")
+                submit_agent = st.form_submit_button("💾 Save Persona", help="Register this agent persona in the system for use in future missions")
                 if submit_agent:
                     if new_role and new_goal and new_backstory:
                         asyncio.run(save_persona(new_role, new_goal, new_backstory, selected_tools))
