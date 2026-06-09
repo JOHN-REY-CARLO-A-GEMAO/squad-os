@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 import shlex
+import ast
 from typing import Dict, Any, Optional, List, Set
 
 try:
@@ -28,6 +29,22 @@ DANGEROUS_REGEX_PATTERNS: Set[str] = {
 
 # Trusted system directories for absolute command paths
 TRUSTED_SYSTEM_DIRS: Set[str] = {"/bin/", "/usr/bin/", "/usr/local/bin/"}
+
+# Security: Python execution restrictions
+FORBIDDEN_BUILTINS = {
+    'getattr', 'setattr', 'delattr', 'eval', 'exec', 'compile', '__import__'
+}
+
+DANGEROUS_MODULES = {
+    'os', 'subprocess', 'shutil', 'sys', 'socket', 'requests', 'aiohttp',
+    'httpx', 'importlib', 'builtins', 'pickle', 'ctypes', 'pty', 'marshal',
+    'shelve', 'urllib'
+}
+
+DANGEROUS_METHODS = {
+    'system', 'popen', 'spawn', 'Popen', 'rmtree', 'check_output',
+    'check_call', 'call', 'fork', 'startfile', 'run'
+}
 
 # Allowed safe commands for terminal
 ALLOWED_COMMANDS: Set[str] = {
@@ -169,36 +186,101 @@ def _validate_terminal_command(command: str, workspace: str) -> tuple[bool, str]
     return True, ""
 
 
-# Dangerous Python code patterns
-DANGEROUS_PYTHON_PATTERNS: List[tuple[str, str]] = [
-    (r'\b__import__\s*\(\s*["\']os["\']', "Blocked: dynamic import of os module"),
-    (r'\b__import__\s*\(\s*["\']subprocess["\']', "Blocked: dynamic import of subprocess"),
-    (r'\b__import__\s*\(\s*["\']sys["\']', "Blocked: dynamic import of sys module"),
-    (r'\b__import__\s*\(\s*["\']shutil["\']', "Blocked: dynamic import of shutil module"),
-    (r'\beval\s*\(', "Blocked: eval() is dangerous"),
-    (r'\bexec\s*\(', "Blocked: exec() is dangerous"),
-    (r'\bcompile\s*\(', "Blocked: compile() can be used for code injection"),
-    (r'os\.system\s*\(', "Blocked: os.system() is dangerous"),
-    (r'os\.popen\s*\(', "Blocked: os.popen() is dangerous"),
-    (r'os\.spawn', "Blocked: os.spawn* is dangerous"),
-    (r'os\.fork', "Blocked: os.fork() is dangerous"),
-    (r'subprocess\.call', "Blocked: subprocess.call() is dangerous"),
-    (r'subprocess\.run', "Blocked: subprocess.run() is dangerous"),
-    (r'subprocess\.Popen', "Blocked: subprocess.Popen() is dangerous"),
-    (r'subprocess\.check_output', "Blocked: subprocess.check_output() is dangerous"),
-    (r'shutil\.rmtree\s*\([^)]*["\']?/["\']?', "Blocked: shutil.rmtree() on root paths"),
-    (r'shutil\.rmtree\s*\([^)]*["\']?~', "Blocked: shutil.rmtree() on home directory"),
-]
+class SecurityVisitor(ast.NodeVisitor):
+    def __init__(self):
+        self.errors = []
+        self.aliases = {}  # alias -> original_module
+        self.imported_names = {}  # name -> original_module.method
+
+    def visit_Import(self, node):
+        for alias in node.names:
+            if alias.asname:
+                self.aliases[alias.asname] = alias.name
+            else:
+                self.aliases[alias.name] = alias.name
+
+            base_mod = alias.name.split('.')[0]
+            if base_mod in DANGEROUS_MODULES:
+                self.errors.append(f"Blocked: Import of dangerous module '{alias.name}'")
+        self.generic_visit(node)
+
+    def visit_ImportFrom(self, node):
+        if not node.module:
+            return
+
+        base_mod = node.module.split('.')[0]
+        if base_mod in DANGEROUS_MODULES:
+            self.errors.append(f"Blocked: Import from dangerous module '{node.module}'")
+
+        for alias in node.names:
+            full_name = f"{node.module}.{alias.name}"
+            if alias.asname:
+                self.imported_names[alias.asname] = full_name
+            else:
+                self.imported_names[alias.name] = full_name
+
+            if alias.name in DANGEROUS_METHODS and base_mod in DANGEROUS_MODULES:
+                self.errors.append(f"Blocked: Import of dangerous method '{full_name}'")
+        self.generic_visit(node)
+
+    def visit_Name(self, node):
+        if node.id in FORBIDDEN_BUILTINS:
+            self.errors.append(f"Blocked: Reference to forbidden built-in '{node.id}'")
+        self.generic_visit(node)
+
+    def visit_Call(self, node):
+        # Handle direct calls: func()
+        if isinstance(node.func, ast.Name):
+            name = node.func.id
+            if name in self.imported_names:
+                full_name = self.imported_names[name]
+                mod = full_name.rsplit('.', 1)[0] if '.' in full_name else ""
+                method = full_name.rsplit('.', 1)[1] if '.' in full_name else full_name
+                if method in DANGEROUS_METHODS and (mod in DANGEROUS_MODULES or not mod):
+                     self.errors.append(f"Blocked: Call to dangerous method '{full_name}'")
+
+        # Handle attribute calls: obj.method()
+        elif isinstance(node.func, ast.Attribute):
+            if isinstance(node.func.value, ast.Name):
+                obj_name = node.func.value.id
+                method_name = node.func.attr
+
+                if obj_name in self.aliases:
+                    module_name = self.aliases[obj_name]
+                    if module_name in DANGEROUS_MODULES and method_name in DANGEROUS_METHODS:
+                        self.errors.append(f"Blocked: Call to '{module_name}.{method_name}' via alias '{obj_name}'")
+
+                elif obj_name in self.imported_names:
+                    full_obj_name = self.imported_names[obj_name]
+                    if full_obj_name in DANGEROUS_MODULES and method_name in DANGEROUS_METHODS:
+                        self.errors.append(f"Blocked: Call to '{full_obj_name}.{method_name}'")
+
+        self.generic_visit(node)
+
+    def visit_Attribute(self, node):
+        if node.attr.startswith('__') and node.attr.endswith('__'):
+            if node.attr not in ('__init__', '__call__', '__name__', '__file__'):
+                 self.errors.append(f"Blocked: Access to sensitive attribute '{node.attr}'")
+        self.generic_visit(node)
 
 
 def _validate_python_code(code: str) -> tuple[bool, str]:
-    """Validate Python code against dangerous patterns."""
+    """Validate Python code against dangerous patterns using AST analysis."""
     if not code or not code.strip():
         return False, "Empty code not allowed"
 
-    for pattern, message in DANGEROUS_PYTHON_PATTERNS:
-        if re.search(pattern, code, re.IGNORECASE):
-            return False, message
+    try:
+        tree = ast.parse(code)
+        visitor = SecurityVisitor()
+        visitor.visit(tree)
+
+        if visitor.errors:
+            return False, "; ".join(visitor.errors)
+
+    except SyntaxError as e:
+        return False, f"Syntax error in code: {str(e)}"
+    except Exception as e:
+        return False, f"Error validating code: {str(e)}"
 
     return True, ""
 
