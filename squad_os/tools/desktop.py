@@ -4,6 +4,7 @@ import datetime
 import subprocess
 import platform
 import re
+import shlex
 from typing import Optional
 from squad_os.tools.base import BaseTool
 
@@ -228,7 +229,9 @@ class DesktopControlTool(BaseTool):
             p = self._platform
             try:
                 if p == "windows":
-                    subprocess.Popen(app, shell=True)
+                    # On Windows, passing the command string directly without shell=True is safe
+                    # and handles paths with spaces better than shlex.split (which uses POSIX rules).
+                    subprocess.Popen(app)
                 elif p == "darwin":
                     subprocess.Popen(["open", app])
                 elif p == "linux":
