@@ -228,7 +228,10 @@ class DesktopControlTool(BaseTool):
             p = self._platform
             try:
                 if p == "windows":
-                    subprocess.Popen(app, shell=True)
+                    # Security: shell=True is dangerous with user-controlled input.
+                    # On Windows, passing a string to Popen with shell=False is safe
+                    # and handles paths with spaces correctly.
+                    subprocess.Popen(app)
                 elif p == "darwin":
                     subprocess.Popen(["open", app])
                 elif p == "linux":
