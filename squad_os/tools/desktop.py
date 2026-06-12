@@ -228,7 +228,10 @@ class DesktopControlTool(BaseTool):
             p = self._platform
             try:
                 if p == "windows":
-                    subprocess.Popen(app, shell=True)
+                    # Security: shell=False prevents command injection.
+                    # On Windows, Popen accepts a string or sequence.
+                    # A string is passed to CreateProcess directly.
+                    subprocess.Popen(app, shell=False)
                 elif p == "darwin":
                     subprocess.Popen(["open", app])
                 elif p == "linux":
