@@ -143,39 +143,15 @@ class AgentPackageLoader:
             errors.append(f"Syntax error in tool '{module_name}': {e}")
             return PackageValidationResult(False, errors)
 
-        dangerous_calls = {
-            'os': ['system', 'popen', 'spawn', 'startfile'],
-            'subprocess': ['call', 'run', 'Popen', 'check_call', 'check_output'],
-            'shutil': ['rmtree', 'move', 'copytree']
-        }
-        network_modules = {'socket', 'requests', 'aiohttp', 'httpx', 'urllib', 'smtplib', 'telnetlib'}
+        from squad_os.tools.registry import SecurityVisitor
+        visitor = SecurityVisitor()
+        visitor.visit(tree)
+
+        for error in visitor.errors:
+            errors.append(f"Tool '{module_name}': {error}")
 
         for node in ast.walk(tree):
-            # Check imports
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    base_mod = alias.name.split('.')[0]
-                    if base_mod in network_modules:
-                        warnings.append(f"Tool '{module_name}' imports network module '{alias.name}'")
-            elif isinstance(node, ast.ImportFrom):
-                if node.module:
-                    base_mod = node.module.split('.')[0]
-                    if base_mod in network_modules:
-                        warnings.append(f"Tool '{module_name}' imports from network module '{node.module}'")
-
-            # Check calls
-            if isinstance(node, ast.Call):
-                if isinstance(node.func, ast.Attribute):
-                    if isinstance(node.func.value, ast.Name):
-                        module = node.func.value.id
-                        method = node.func.attr
-                        if module in dangerous_calls and method in dangerous_calls[module]:
-                            warnings.append(f"Tool '{module_name}' uses dangerous call: {module}.{method}")
-                elif isinstance(node.func, ast.Name):
-                    if node.func.id in ['eval', 'exec', 'compile', '__import__']:
-                        errors.append(f"Tool '{module_name}' uses forbidden built-in: {node.func.id}")
-
-            # Check for absolute paths in string literals
+            # Check for absolute paths in string literals (keep existing check)
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
                 if os.path.isabs(node.value) and not node.value.startswith(('/bin/', '/usr/bin/', '/usr/local/bin/')):
                     warnings.append(f"Tool '{module_name}' contains absolute path: {node.value}")
