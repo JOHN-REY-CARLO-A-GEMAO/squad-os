@@ -228,7 +228,9 @@ class DesktopControlTool(BaseTool):
             p = self._platform
             try:
                 if p == "windows":
-                    subprocess.Popen(app, shell=True)
+                    # Security: shell=False prevents command injection on Windows
+                    # and correctly handles application paths (even with spaces)
+                    subprocess.Popen(app, shell=False)
                 elif p == "darwin":
                     subprocess.Popen(["open", app])
                 elif p == "linux":
