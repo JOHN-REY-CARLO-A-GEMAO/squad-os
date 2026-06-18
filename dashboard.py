@@ -21,8 +21,8 @@ ARCHIVES_DIR = os.path.join(WORKSPACE_DIR, "archives")
 
 st.set_page_config(page_title="SquadOS: Project Command Center", layout="wide", page_icon="🛡️")
 
-# Auto-refresh every 5 seconds
-st_autorefresh(interval=5000, key="datarefresh")
+# Background auto-refresh every 30 seconds
+st_autorefresh(interval=30000, key="datarefresh")
 
 # Ensure workspace directories exist
 os.makedirs(PROJECTS_DIR, exist_ok=True)
@@ -417,8 +417,28 @@ def format_log_timestamp(ts_str):
 st.title("🛡️ SquadOS: Project Command Center")
 
 if st.session_state.get("mission_submitted"):
-    st.toast("✅ Mission dispatched successfully!")
+    st.toast("🚀 Mission dispatched successfully!", icon="🚀")
     st.session_state.mission_submitted = False
+
+if st.session_state.get("persona_created"):
+    st.toast("💾 Agent persona created!", icon="💾")
+    st.session_state.persona_created = False
+
+if st.session_state.get("persona_deleted"):
+    st.toast("🗑️ Persona removed.", icon="🗑️")
+    st.session_state.persona_deleted = False
+
+if st.session_state.get("package_installed"):
+    st.toast("📦 Package installed successfully!", icon="📦")
+    st.session_state.package_installed = False
+
+if st.session_state.get("package_uninstalled"):
+    st.toast("🗑️ Package removed.", icon="🗑️")
+    st.session_state.package_uninstalled = False
+
+if st.session_state.get("workflow_deployed"):
+    st.toast("🚀 Workflow deployed as mission!", icon="🚀")
+    st.session_state.workflow_deployed = False
 
 # Session state for mission chat sessions
 if "selected_session_id" not in st.session_state:
@@ -435,52 +455,82 @@ if 'is_active' not in st.session_state:
     st.session_state.is_active = True
 
 with st.sidebar:
+    if st.button("🔄 Refresh Data", use_container_width=True, help="Force update the dashboard data"):
+        st.rerun()
+
     st.subheader("📂 Branch Explorer")
 
+    # --- Active Projects ---
     st.write("**Active Projects**")
-    if not active_projects:
-        st.write("No active projects.")
-    for proj in active_projects:
-        proj_status = get_project_status(proj, True)
-        icon = "🟢" if proj_status == "Exploring" else "👀"
-        if proj == st.session_state.selected_proj: icon = "📍"
+    if active_projects:
+        active_options = []
+        active_labels = {}
+        for proj in active_projects:
+            proj_status = get_project_status(proj, True)
+            icon = "🟢" if proj_status == "Exploring" else "👀"
+            readable_name = format_project_label(proj)
+            active_options.append(proj)
+            active_labels[proj] = f"{icon} {readable_name}"
 
-        readable_name = format_project_label(proj)
-        label = f"{icon} {readable_name}"
-
-        if st.button(label, key=f"btn_act_{proj}", use_container_width=True, help=f"Open active project ({proj_status}): {proj}"):
-            st.session_state.selected_proj = proj
+        selected_active = st.pills(
+            "Active Projects List",
+            options=active_options,
+            format_func=lambda x: active_labels.get(x),
+            selection_mode="single",
+            label_visibility="collapsed",
+            key="pills_active",
+            default=st.session_state.selected_proj if st.session_state.is_active else None
+        )
+        if selected_active and selected_active != st.session_state.selected_proj:
+            st.session_state.selected_proj = selected_active
             st.session_state.is_active = True
             st.rerun()
+    else:
+        st.caption("No active projects.")
 
+    # --- Archived Projects ---
     st.write("**Archived Projects**")
-    if not archived_projects:
-        st.write("No archived projects.")
-    for proj in archived_projects:
-        icon = "📍" if proj == st.session_state.selected_proj else "📦"
-        readable_name = format_project_label(proj)
-        label = f"{icon} {readable_name}"
-        if st.button(label, key=f"btn_arc_{proj}", use_container_width=True, help=f"Open archived project: {proj}"):
-            st.session_state.selected_proj = proj
+    if archived_projects:
+        archived_options = []
+        archived_labels = {}
+        for proj in archived_projects:
+            readable_name = format_project_label(proj)
+            archived_options.append(proj)
+            archived_labels[proj] = f"📦 {readable_name}"
+
+        selected_archived = st.pills(
+            "Archived Projects List",
+            options=archived_options,
+            format_func=lambda x: archived_labels.get(x),
+            selection_mode="single",
+            label_visibility="collapsed",
+            key="pills_archived",
+            default=st.session_state.selected_proj if not st.session_state.is_active else None
+        )
+        if selected_archived and selected_archived != st.session_state.selected_proj:
+            st.session_state.selected_proj = selected_archived
             st.session_state.is_active = False
             st.rerun()
+    else:
+        st.caption("No archived projects.")
 
-    if st.button("Reset View (Go to Chat)", use_container_width=True, shortcut="Esc", help="Return to the main chat interface"):
+    st.divider()
+    if st.button("💬 Back to Chat", use_container_width=True, shortcut="Esc", help="Return to the main chat interface"):
         st.session_state.selected_proj = None
         st.rerun()
 
     # Global Stats
     stats = load_global_stats()
     st.markdown("---")
-    st.subheader("📊 Global Performance")
+    st.subheader("📊 System Health")
     col_s1, col_s2 = st.columns(2)
     col_s1.metric(
-        "Total Cost",
+        "LLM Investment",
         f"${stats[2] if stats[2] else 0.0:.4f}",
         help="The aggregate USD cost of all LLM requests across all missions."
     )
     col_s2.metric(
-        "Total Tokens",
+        "Intelligence Flow",
         f"{ (stats[0] or 0) + (stats[1] or 0) :,}",
         help="The combined count of prompt and completion tokens processed."
     )
@@ -500,25 +550,36 @@ if not selected_project:
 
         # --- Session Selector ---
         if not missions_df.empty:
+            st.write("**Recent Missions**")
             mission_options = []
             mission_labels = {}
             for _, row in missions_df.iterrows():
                 mid = row["id"]
-                status = row.get("status", "UNKNOWN")
-                goal_short = (str(row.get("goal", ""))[:28] + "..") if len(str(row.get("goal", ""))) > 30 else str(row.get("goal", ""))
-                icons = {"QUEUED": "⏳", "IN_PROGRESS": "⚡", "COMPLETED": "✅", "FAILED": "❌", "FOLLOWUP": "💬"}
-                icon = icons.get(status, "❓")
+                status = row.get("status", "UNKNOWN").upper()
+                goal_short = (str(row.get("goal", ""))[:32] + "..") if len(str(row.get("goal", ""))) > 35 else str(row.get("goal", ""))
+
+                # Standardized status mapping
+                status_icons = {
+                    "QUEUED": "⏳",
+                    "IN_PROGRESS": "⚡",
+                    "COMPLETED": "✅",
+                    "FAILED": "❌",
+                    "FOLLOWUP": "💬",
+                    "PENDING": "⌛"
+                }
+                icon = status_icons.get(status, "❓")
                 label = f"{icon} #{mid} {goal_short}"
                 mission_options.append(mid)
                 mission_labels[mid] = label
 
             selected_pill = st.pills(
-                "Select Mission Session",
+                "Mission Session Selection",
                 options=mission_options,
                 format_func=lambda x: mission_labels.get(x),
                 selection_mode="single",
                 label_visibility="collapsed",
-                default=st.session_state.selected_session_id
+                default=st.session_state.selected_session_id,
+                key="chat_session_pills"
             )
 
             if selected_pill != st.session_state.selected_session_id:
@@ -669,16 +730,19 @@ if not selected_project:
                     with st.expander(f"👤 {p['role']}"):
                         st.write(f"**Goal:** {p['goal']}")
                         st.write(f"**Tools:** {', '.join(json.loads(p['tools']))}")
-                        if st.button(f"🗑️ Delete {p['role']}", key=f"del_{p['role']}"):
-                            asyncio.run(delete_persona(p['role']))
-                            st.rerun()
+                        with st.popover("🗑️ Delete Persona"):
+                            st.warning(f"Are you sure you want to delete '{p['role']}'?")
+                            if st.button(f"Confirm Deletion", key=f"del_{p['role']}", type="primary", use_container_width=True):
+                                asyncio.run(delete_persona(p['role']))
+                                st.session_state.persona_deleted = True
+                                st.rerun()
 
         with col_b:
             st.write("**Assemble New Agent**")
-            with st.form("new_agent_form"):
-                new_role = st.text_input("Role Name", placeholder="e.g. Senior Security Auditor")
-                new_goal = st.text_area("Primary Goal", placeholder="Identify vulnerabilities in the provided codebase.")
-                new_backstory = st.text_area("Backstory", placeholder="An elite white-hat hacker with 20 years of experience...")
+            with st.form("new_agent_form", border=True):
+                new_role = st.text_input("🎭 Role Name", placeholder="e.g. Senior Security Auditor")
+                new_goal = st.text_area("🎯 Primary Goal", placeholder="Identify vulnerabilities in the provided codebase.")
+                new_backstory = st.text_area("📖 Backstory", placeholder="An elite white-hat hacker with 20 years of experience...")
 
                 all_tools = [
                     "web_search", "write_file", "read_file", "terminal", "python_runner",
@@ -692,11 +756,11 @@ if not selected_project:
                 ]
                 selected_tools = st.multiselect("Assign Tools", all_tools)
                 
-                submit_agent = st.form_submit_button("💾 Save Persona")
+                submit_agent = st.form_submit_button("💾 Save Persona", use_container_width=True)
                 if submit_agent:
                     if new_role and new_goal and new_backstory:
                         asyncio.run(save_persona(new_role, new_goal, new_backstory, selected_tools))
-                        st.success(f"Agent '{new_role}' added to the registry!")
+                        st.session_state.persona_created = True
                         st.rerun()
                     else:
                         st.error("Please fill in all fields.")
@@ -736,28 +800,33 @@ if not selected_project:
                         with cols[1]:
                             install_status = pkg.get("install_status", "NOT_INSTALLED")
                             if install_status == "ACTIVE":
-                                st.success("✅ Installed")
+                                st.success("✅ Active")
                             elif install_status == "REMOTE":
-                                if st.button(f"⬇️ Get from Registry", key=f"remote_{pkg['id']}", use_container_width=True):
+                                if st.button(f"⬇️ Get", key=f"remote_{pkg['id']}", use_container_width=True, help="Download and install from registry"):
                                     install_remote_package(pkg)
+                                    st.session_state.package_installed = True
                                     st.rerun()
                             else:
                                 sqad_path = pkg.get("source_url", "")
                                 if sqad_path and sqad_path.startswith("http"):
                                     st.caption("📡 Remote")
                                 elif sqad_path and os.path.exists(sqad_path):
-                                    if st.button(f"⬇️ Install", key=f"install_{pkg['id']}", use_container_width=True):
+                                    if st.button(f"⬇️ Install", key=f"install_{pkg['id']}", use_container_width=True, help="Install local package"):
                                         asyncio.run(AgentPackageLoader.install_package(
                                             AgentPackageLoader.load_sqad(sqad_path)
                                         ))
+                                        st.session_state.package_installed = True
                                         st.rerun()
                                 else:
                                     st.caption("No source")
                         with cols[2]:
                             if is_installed:
-                                if st.button(f"🗑️ Uninstall", key=f"uninstall_{pkg['id']}", use_container_width=True):
-                                    asyncio.run(AgentPackageLoader.uninstall_package(pkg["id"]))
-                                    st.rerun()
+                                with st.popover("🗑️ Uninstall"):
+                                    st.warning(f"Uninstall {pkg['name']}?")
+                                    if st.button(f"Confirm", key=f"uninst_{pkg['id']}", type="primary", use_container_width=True):
+                                        asyncio.run(AgentPackageLoader.uninstall_package(pkg["id"]))
+                                        st.session_state.package_uninstalled = True
+                                        st.rerun()
                         st.divider()
             else:
                 st.info("No local packages found. Upload a .sqad package or explore the community registry below.")
@@ -806,10 +875,10 @@ if not selected_project:
                         wf_name = wf.get("name", "Default workflow")
                         st.write(f"**Workflow:** {wf_name}")
                         st.code(json.dumps(wf, indent=2), language="json", line_numbers=True)
-                        if st.button(f"🚀 Deploy '{wf_name}' as Mission", key=f"deploy_{ip['package_id']}", use_container_width=True):
+                        if st.button(f"🚀 Deploy '{wf_name}' as Mission", key=f"deploy_{ip['package_id']}", use_container_width=True, help="Create a new mission using this workflow"):
                             success = deploy_store_workflow(ip["package_id"])
                             if success:
-                                st.success(f"Workflow '{wf_name}' queued as a mission!")
+                                st.session_state.workflow_deployed = True
                                 st.rerun()
                             else:
                                 st.error("Failed to deploy workflow.")
@@ -876,7 +945,7 @@ else:
     tab1, tab2, tab3, tab4 = st.tabs(["🛠️ Live Workspace", "📜 Live Logs", "🧠 Memory", "✅ Commit Review"])
 
     with tab1:
-        st.subheader("🛠️ Live Coder Workspace")
+        st.subheader("🛠️ Project Sandbox")
         EXTENSIONS_CODE = {'.py', '.js', '.ts', '.html', '.css', '.json', '.md', '.yaml', '.yml', '.toml', '.cfg', '.ini', '.sh', '.bat', '.ps1', '.sql', '.txt', '.env.example', '.gitignore'}
         EXTENSIONS_IMG = {'.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg', '.bmp'}
         EXTENSIONS_VID = {'.mp4', '.webm', '.avi', '.mov'}
