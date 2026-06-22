@@ -4,3 +4,8 @@
 **Vulnerability:** Absolute paths starting with `/` were incorrectly treated as command flags on POSIX systems, bypassing `is_safe_path` validation. Additionally, path-based commands (e.g., `./script.sh` or `/bin/ls`) were not consistently validated against the workspace or trusted directories.
 **Learning:** Heuristic-based token classification (e.g., "if it starts with / it is a flag") is dangerous when applied across different operating systems. POSIX absolute paths must always be treated as paths for security validation.
 **Prevention:** Explicitly check the operating system before applying flag-detection heuristics. Ensure that *all* tokens that look like paths, including the command name itself, are validated using `is_safe_path` or restricted to a strict whitelist of trusted system locations.
+
+## 2024-05-24 - Windows Command Injection in DesktopControlTool
+**Vulnerability:** `DesktopControlTool.open_app` used `subprocess.Popen(app, shell=True)` on Windows. If the `app` parameter is user-influenced, it allows arbitrary command execution via shell operators like `&`, `|`, or `;`.
+**Learning:** Defaulting to `shell=True` on Windows for convenience introduces severe security risks when handling dynamic strings. `subprocess.Popen` with a string input on Windows still allows passing arguments when `shell=False`, but it does so via the more secure `CreateProcess` API.
+**Prevention:** Always use `shell=False` when calling subprocesses with untrusted input, even on Windows. If complex command parsing is needed, use `shlex.split()` on POSIX or pass a string with `shell=False` on Windows for safer application execution.
