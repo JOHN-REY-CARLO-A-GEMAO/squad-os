@@ -277,7 +277,7 @@ def install_remote_package(pkg):
         pkg_obj = AgentPackageLoader.load_sqad(dest)
         if pkg_obj:
             asyncio.run(AgentPackageLoader.install_package(pkg_obj))
-            st.success(f"✅ {pkg['name']} installed from registry!")
+            st.session_state.package_installed = True
         else:
             st.error("Failed to validate package.")
     except Exception as e:
@@ -416,9 +416,18 @@ def format_log_timestamp(ts_str):
 
 st.title("🛡️ SquadOS: Project Command Center")
 
-if st.session_state.get("mission_submitted"):
-    st.toast("✅ Mission dispatched successfully!")
-    st.session_state.mission_submitted = False
+# Show toast notifications from session state
+for key, message, icon in [
+    ("mission_submitted", "Mission dispatched successfully!", "✅"),
+    ("persona_deleted", st.session_state.get("persona_deleted_msg", "Agent persona deleted."), "🗑️"),
+    ("persona_created", st.session_state.get("persona_created_msg", "New agent persona saved."), "💾"),
+    ("package_uninstalled", st.session_state.get("package_uninstalled_msg", "Package uninstalled."), "📦"),
+    ("package_installed", st.session_state.get("package_installed_msg", "Package installed."), "📥"),
+    ("workflow_deployed", st.session_state.get("workflow_deployed_msg", "Workflow deployed."), "🚀"),
+]:
+    if st.session_state.get(key):
+        st.toast(message, icon=icon)
+        st.session_state[key] = False
 
 # Session state for mission chat sessions
 if "selected_session_id" not in st.session_state:
@@ -669,9 +678,13 @@ if not selected_project:
                     with st.expander(f"👤 {p['role']}"):
                         st.write(f"**Goal:** {p['goal']}")
                         st.write(f"**Tools:** {', '.join(json.loads(p['tools']))}")
-                        if st.button(f"🗑️ Delete {p['role']}", key=f"del_{p['role']}"):
-                            asyncio.run(delete_persona(p['role']))
-                            st.rerun()
+                        with st.popover("🗑️ Delete Persona", use_container_width=True, help=f"Delete the persona: {p['role']}"):
+                            st.warning(f"Are you sure you want to delete the persona '{p['role']}'? This action cannot be undone.")
+                            if st.button("Confirm Deletion", key=f"del_{p['role']}", type="primary", use_container_width=True):
+                                asyncio.run(delete_persona(p['role']))
+                                st.session_state.persona_deleted = True
+                                st.session_state.persona_deleted_msg = f"Persona '{p['role']}' deleted."
+                                st.rerun()
 
         with col_b:
             st.write("**Assemble New Agent**")
@@ -692,11 +705,12 @@ if not selected_project:
                 ]
                 selected_tools = st.multiselect("Assign Tools", all_tools)
                 
-                submit_agent = st.form_submit_button("💾 Save Persona")
+                submit_agent = st.form_submit_button("💾 Save Persona", help="Save this persona to the registry for use in missions.", use_container_width=True)
                 if submit_agent:
                     if new_role and new_goal and new_backstory:
                         asyncio.run(save_persona(new_role, new_goal, new_backstory, selected_tools))
-                        st.success(f"Agent '{new_role}' added to the registry!")
+                        st.session_state.persona_created = True
+                        st.session_state.persona_created_msg = f"Persona '{new_role}' saved to registry."
                         st.rerun()
                     else:
                         st.error("Please fill in all fields.")
@@ -738,26 +752,32 @@ if not selected_project:
                             if install_status == "ACTIVE":
                                 st.success("✅ Installed")
                             elif install_status == "REMOTE":
-                                if st.button(f"⬇️ Get from Registry", key=f"remote_{pkg['id']}", use_container_width=True):
+                                if st.button(f"⬇️ Get from Registry", key=f"remote_{pkg['id']}", use_container_width=True, help=f"Download and install '{pkg['name']}' from the remote registry."):
                                     install_remote_package(pkg)
+                                    st.session_state.package_installed_msg = f"'{pkg['name']}' installed from registry."
                                     st.rerun()
                             else:
                                 sqad_path = pkg.get("source_url", "")
                                 if sqad_path and sqad_path.startswith("http"):
                                     st.caption("📡 Remote")
                                 elif sqad_path and os.path.exists(sqad_path):
-                                    if st.button(f"⬇️ Install", key=f"install_{pkg['id']}", use_container_width=True):
+                                    if st.button(f"⬇️ Install", key=f"install_{pkg['id']}", use_container_width=True, help=f"Install the local package: {pkg['name']}"):
                                         asyncio.run(AgentPackageLoader.install_package(
                                             AgentPackageLoader.load_sqad(sqad_path)
                                         ))
+                                        st.session_state.package_installed = True
                                         st.rerun()
                                 else:
                                     st.caption("No source")
                         with cols[2]:
                             if is_installed:
-                                if st.button(f"🗑️ Uninstall", key=f"uninstall_{pkg['id']}", use_container_width=True):
-                                    asyncio.run(AgentPackageLoader.uninstall_package(pkg["id"]))
-                                    st.rerun()
+                                with st.popover("🗑️ Uninstall", use_container_width=True, help=f"Uninstall the package: {pkg['name']}"):
+                                    st.warning(f"Are you sure you want to uninstall '{pkg['name']}'?")
+                                    if st.button("Confirm Uninstall", key=f"uninstall_{pkg['id']}", type="primary", use_container_width=True):
+                                        asyncio.run(AgentPackageLoader.uninstall_package(pkg["id"]))
+                                        st.session_state.package_uninstalled = True
+                                        st.session_state.package_uninstalled_msg = f"'{pkg['name']}' uninstalled."
+                                        st.rerun()
                         st.divider()
             else:
                 st.info("No local packages found. Upload a .sqad package or explore the community registry below.")
@@ -784,11 +804,13 @@ if not selected_project:
                                     "⬇️ Install Workflow",
                                     key=f"ci_install_{i+j}",
                                     use_container_width=True,
+                                    help=f"Download and install the '{pkg['name']}' workflow."
                                 ):
                                     with st.spinner(f"Ingesting {pkg['name']}..."):
                                         ok = install_registry_package(pkg)
                                         if ok:
-                                            st.toast(f"✅ {pkg['name']} installed!")
+                                            st.session_state.package_installed = True
+                                            st.session_state.package_installed_msg = f"'{pkg['name']}' installed from community registry."
                                             st.rerun()
             elif not catalog:
                 st.info("No community packages found. Be the first to submit one!")
@@ -806,10 +828,11 @@ if not selected_project:
                         wf_name = wf.get("name", "Default workflow")
                         st.write(f"**Workflow:** {wf_name}")
                         st.code(json.dumps(wf, indent=2), language="json", line_numbers=True)
-                        if st.button(f"🚀 Deploy '{wf_name}' as Mission", key=f"deploy_{ip['package_id']}", use_container_width=True):
+                        if st.button(f"🚀 Deploy '{wf_name}' as Mission", key=f"deploy_{ip['package_id']}", use_container_width=True, help=f"Launch a new mission using the '{wf_name}' workflow."):
                             success = deploy_store_workflow(ip["package_id"])
                             if success:
-                                st.success(f"Workflow '{wf_name}' queued as a mission!")
+                                st.session_state.workflow_deployed = True
+                                st.session_state.workflow_deployed_msg = f"Workflow '{wf_name}' deployed."
                                 st.rerun()
                             else:
                                 st.error("Failed to deploy workflow.")
