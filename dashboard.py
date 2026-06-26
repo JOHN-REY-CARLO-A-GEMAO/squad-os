@@ -66,15 +66,30 @@ def ensure_personas_table():
                 pass
 
 def load_missions():
+    """Optimized: Fetch only metadata for the sidebar/list to reduce latency and memory usage."""
     conn = get_db_connection()
     if conn:
         try:
-            df = pd.read_sql_query("SELECT * FROM missions ORDER BY id ASC", conn)
+            # Only fetch necessary columns to avoid loading massive conversation histories in the list view
+            df = pd.read_sql_query("SELECT id, goal, status, uploaded_files FROM missions ORDER BY id ASC", conn)
             conn.close()
             return df
         except Exception:
             pass
     return pd.DataFrame()
+
+def load_mission_details(mission_id):
+    """Lazy Loading: Fetch full mission details only when a specific mission is selected."""
+    conn = get_db_connection()
+    if conn:
+        try:
+            # Use Pandas for consistency and safer dictionary conversion of the single row
+            df = pd.read_sql_query("SELECT * FROM missions WHERE id = ?", conn, params=(mission_id,))
+            conn.close()
+            return df.iloc[0].to_dict() if not df.empty else None
+        except Exception:
+            pass
+    return None
 
 def save_uploaded_files(uploaded_files):
     if not uploaded_files:
@@ -534,17 +549,17 @@ if not selected_project:
 
         with chat_container:
             if selected_id is not None:
-                mission_row = missions_df[missions_df["id"] == selected_id]
-                if mission_row.empty:
+                # Lazy load the full details including history
+                mission_data = load_mission_details(selected_id)
+                if not mission_data:
                     st.write("Mission not found.")
                 else:
-                    row = mission_row.iloc[0]
-                    prompt_text = str(row.get("goal", ""))
-                    status = row.get("status", "UNKNOWN").upper()
+                    prompt_text = str(mission_data.get("goal", ""))
+                    status = mission_data.get("status", "UNKNOWN").upper()
 
                     with st.chat_message("user"):
                         st.write(prompt_text)
-                        uploaded_files_json = row.get("uploaded_files")
+                        uploaded_files_json = mission_data.get("uploaded_files")
                         if uploaded_files_json:
                             try:
                                 files = json.loads(uploaded_files_json)
@@ -570,7 +585,7 @@ if not selected_project:
                         else:
                             st.write(f"Status: {status}")
 
-                    conv_history = json.loads(row.get("conversation_history") or "[]")
+                    conv_history = json.loads(mission_data.get("conversation_history") or "[]")
                     for msg in conv_history:
                         role = msg.get("role", "")
                         content = msg.get("content", "")
@@ -627,6 +642,7 @@ if not selected_project:
             uploaded_files = st.file_uploader("📎 Attach documents, images, videos, etc.", accept_multiple_files=True, label_visibility="collapsed", help="Total upload limit: 500MB (200MB per file)", key=f"mission_file_uploader_{st.session_state.upload_key}")
 
             if selected_id is not None:
+                # Use metadata from missions_df for status check instead of reloading everything
                 mission_row = missions_df[missions_df["id"] == selected_id]
                 is_active = False
                 if not mission_row.empty:
