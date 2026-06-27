@@ -66,15 +66,31 @@ def ensure_personas_table():
                 pass
 
 def load_missions():
+    """Fetches only metadata for the mission list to optimize dashboard auto-refresh performance."""
     conn = get_db_connection()
     if conn:
         try:
-            df = pd.read_sql_query("SELECT * FROM missions ORDER BY id ASC", conn)
+            # Optimization: Avoid selecting heavy TEXT columns (conversation_history, workflow_json)
+            # during the frequent 5-second autorefresh cycle.
+            df = pd.read_sql_query("SELECT id, goal, status, uploaded_files FROM missions ORDER BY id ASC", conn)
             conn.close()
             return df
         except Exception:
             pass
     return pd.DataFrame()
+
+def load_mission_details(mission_id):
+    """Fetches all columns for a specific mission for on-demand detail viewing."""
+    conn = get_db_connection()
+    if conn:
+        try:
+            query = "SELECT * FROM missions WHERE id = ?"
+            df = pd.read_sql_query(query, conn, params=(mission_id,))
+            conn.close()
+            return df.iloc[0].to_dict() if not df.empty else None
+        except Exception:
+            pass
+    return None
 
 def save_uploaded_files(uploaded_files):
     if not uploaded_files:
@@ -534,11 +550,12 @@ if not selected_project:
 
         with chat_container:
             if selected_id is not None:
-                mission_row = missions_df[missions_df["id"] == selected_id]
-                if mission_row.empty:
+                # Optimization: Lazy-load full mission details (conversation history, workflow)
+                # only when a specific mission is selected for viewing.
+                row = load_mission_details(selected_id)
+                if not row:
                     st.write("Mission not found.")
                 else:
-                    row = mission_row.iloc[0]
                     prompt_text = str(row.get("goal", ""))
                     status = row.get("status", "UNKNOWN").upper()
 
@@ -627,10 +644,11 @@ if not selected_project:
             uploaded_files = st.file_uploader("📎 Attach documents, images, videos, etc.", accept_multiple_files=True, label_visibility="collapsed", help="Total upload limit: 500MB (200MB per file)", key=f"mission_file_uploader_{st.session_state.upload_key}")
 
             if selected_id is not None:
-                mission_row = missions_df[missions_df["id"] == selected_id]
+                # Use metadata from missions_df to avoid redundant detailed query for status check
+                mission_meta = missions_df[missions_df["id"] == selected_id]
                 is_active = False
-                if not mission_row.empty:
-                    s = mission_row.iloc[0].get("status", "").upper()
+                if not mission_meta.empty:
+                    s = mission_meta.iloc[0].get("status", "").upper()
                     is_active = s in ("IN_PROGRESS", "QUEUED", "FOLLOWUP")
 
                 if is_active:
