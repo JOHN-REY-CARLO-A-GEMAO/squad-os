@@ -4,6 +4,7 @@ import datetime
 import subprocess
 import platform
 import re
+import shlex
 from typing import Optional
 from squad_os.tools.base import BaseTool
 
@@ -228,10 +229,18 @@ class DesktopControlTool(BaseTool):
             p = self._platform
             try:
                 if p == "windows":
-                    subprocess.Popen(app, shell=True)
+                    # Security: Use shell=False and shlex.split to prevent command injection.
+                    # We use posix=False to properly handle Windows paths with spaces.
+                    parts = shlex.split(app, posix=False)
+                    # Manually strip quotes to avoid double-quoting regressions on paths with spaces
+                    # when passing to subprocess.Popen with shell=False.
+                    parts = [part.strip('"') for part in parts]
+                    subprocess.Popen(parts, shell=False)
                 elif p == "darwin":
-                    subprocess.Popen(["open", app])
+                    # Use -- to prevent argument injection
+                    subprocess.Popen(["open", "--", app])
                 elif p == "linux":
+                    # Note: xdg-open often doesn't support --, but list-based Popen is already safe from command injection.
                     subprocess.Popen(["xdg-open", app])
                 else:
                     return f"Error: Unsupported platform '{p}' for open_app."
