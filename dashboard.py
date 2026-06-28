@@ -420,6 +420,14 @@ if st.session_state.get("mission_submitted"):
     st.toast("✅ Mission dispatched successfully!")
     st.session_state.mission_submitted = False
 
+if st.session_state.get("persona_deleted"):
+    st.toast(st.session_state.get("persona_deleted_msg", "Persona deleted"), icon="🗑️")
+    st.session_state.persona_deleted = False
+
+if st.session_state.get("package_uninstalled"):
+    st.toast(st.session_state.get("package_uninstalled_msg", "Package uninstalled"), icon="📦")
+    st.session_state.package_uninstalled = False
+
 # Session state for mission chat sessions
 if "selected_session_id" not in st.session_state:
     st.session_state.selected_session_id = None
@@ -669,9 +677,15 @@ if not selected_project:
                     with st.expander(f"👤 {p['role']}"):
                         st.write(f"**Goal:** {p['goal']}")
                         st.write(f"**Tools:** {', '.join(json.loads(p['tools']))}")
-                        if st.button(f"🗑️ Delete {p['role']}", key=f"del_{p['role']}"):
-                            asyncio.run(delete_persona(p['role']))
-                            st.rerun()
+
+                        delete_popover = st.popover(f"🗑️ Delete {p['role']}", use_container_width=True, help=f"Delete the persona: {p['role']}")
+                        with delete_popover:
+                            st.warning(f"Are you sure you want to delete the persona '{p['role']}'? This action cannot be undone.")
+                            if st.button("Confirm Delete", key=f"conf_del_{p['role']}", type="primary", use_container_width=True):
+                                asyncio.run(delete_persona(p['role']))
+                                st.session_state.persona_deleted = True
+                                st.session_state.persona_deleted_msg = f"Persona '{p['role']}' deleted."
+                                st.rerun()
 
         with col_b:
             st.write("**Assemble New Agent**")
@@ -755,9 +769,14 @@ if not selected_project:
                                     st.caption("No source")
                         with cols[2]:
                             if is_installed:
-                                if st.button(f"🗑️ Uninstall", key=f"uninstall_{pkg['id']}", use_container_width=True):
-                                    asyncio.run(AgentPackageLoader.uninstall_package(pkg["id"]))
-                                    st.rerun()
+                                uninstall_popover = st.popover("🗑️ Uninstall", use_container_width=True, help=f"Uninstall the package: {pkg['name']}")
+                                with uninstall_popover:
+                                    st.warning(f"Are you sure you want to uninstall '{pkg['name']}'? This will remove all associated tools and workflows.")
+                                    if st.button("Confirm Uninstall", key=f"conf_uninst_{pkg['id']}", type="primary", use_container_width=True):
+                                        asyncio.run(AgentPackageLoader.uninstall_package(pkg["id"]))
+                                        st.session_state.package_uninstalled = True
+                                        st.session_state.package_uninstalled_msg = f"Package '{pkg['name']}' uninstalled."
+                                        st.rerun()
                         st.divider()
             else:
                 st.info("No local packages found. Upload a .sqad package or explore the community registry below.")
