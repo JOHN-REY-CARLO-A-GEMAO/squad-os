@@ -69,12 +69,27 @@ def load_missions():
     conn = get_db_connection()
     if conn:
         try:
-            df = pd.read_sql_query("SELECT * FROM missions ORDER BY id ASC", conn)
+            # Optimization: Only fetch metadata to reduce database I/O and memory usage
+            # during the frequent 5-second auto-refresh cycle.
+            df = pd.read_sql_query("SELECT id, goal, status, uploaded_files FROM missions ORDER BY id ASC", conn)
             conn.close()
             return df
         except Exception:
             pass
     return pd.DataFrame()
+
+def load_mission_details(mission_id: int):
+    """Fetch full mission details including heavy columns on-demand (lazy loading)."""
+    conn = get_db_connection()
+    if conn:
+        try:
+            df = pd.read_sql_query("SELECT * FROM missions WHERE id = ?", conn, params=(mission_id,))
+            conn.close()
+            if not df.empty:
+                return df.iloc[0].to_dict()
+        except Exception:
+            pass
+    return None
 
 def save_uploaded_files(uploaded_files):
     if not uploaded_files:
@@ -534,11 +549,12 @@ if not selected_project:
 
         with chat_container:
             if selected_id is not None:
-                mission_row = missions_df[missions_df["id"] == selected_id]
-                if mission_row.empty:
+                # Optimization: Load heavy columns (conversation_history) only when a mission is selected.
+                mission_details = load_mission_details(selected_id)
+                if not mission_details:
                     st.write("Mission not found.")
                 else:
-                    row = mission_row.iloc[0]
+                    row = mission_details
                     prompt_text = str(row.get("goal", ""))
                     status = row.get("status", "UNKNOWN").upper()
 
