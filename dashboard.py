@@ -416,9 +416,26 @@ def format_log_timestamp(ts_str):
 
 st.title("🛡️ SquadOS: Project Command Center")
 
+# Centralized toast notification system
 if st.session_state.get("mission_submitted"):
-    st.toast("✅ Mission dispatched successfully!")
+    st.toast("🚀 Mission dispatched successfully!")
     st.session_state.mission_submitted = False
+
+if st.session_state.get("persona_deleted"):
+    st.toast(f"🗑️ {st.session_state.get('persona_deleted_msg', 'Persona deleted')}")
+    st.session_state.persona_deleted = False
+
+if st.session_state.get("persona_saved"):
+    st.toast(f"💾 {st.session_state.get('persona_saved_msg', 'Persona saved')}")
+    st.session_state.persona_saved = False
+
+if st.session_state.get("package_uninstalled"):
+    st.toast(f"📦 {st.session_state.get('package_uninstalled_msg', 'Package uninstalled')}")
+    st.session_state.package_uninstalled = False
+
+if st.session_state.get("workflow_deployed"):
+    st.toast(f"📥 {st.session_state.get('workflow_deployed_msg', 'Workflow deployed')}")
+    st.session_state.workflow_deployed = False
 
 # Session state for mission chat sessions
 if "selected_session_id" not in st.session_state:
@@ -669,9 +686,15 @@ if not selected_project:
                     with st.expander(f"👤 {p['role']}"):
                         st.write(f"**Goal:** {p['goal']}")
                         st.write(f"**Tools:** {', '.join(json.loads(p['tools']))}")
-                        if st.button(f"🗑️ Delete {p['role']}", key=f"del_{p['role']}"):
-                            asyncio.run(delete_persona(p['role']))
-                            st.rerun()
+
+                        delete_popover = st.popover(f"🗑️ Delete {p['role']}", use_container_width=True, help=f"Remove {p['role']} from the registry")
+                        with delete_popover:
+                            st.warning(f"Are you sure you want to delete the '{p['role']}' persona?")
+                            if st.button("Confirm Delete", key=f"conf_del_{p['role']}", type="primary", use_container_width=True):
+                                asyncio.run(delete_persona(p['role']))
+                                st.session_state.persona_deleted = True
+                                st.session_state.persona_deleted_msg = f"Persona '{p['role']}' deleted."
+                                st.rerun()
 
         with col_b:
             st.write("**Assemble New Agent**")
@@ -692,11 +715,12 @@ if not selected_project:
                 ]
                 selected_tools = st.multiselect("Assign Tools", all_tools)
                 
-                submit_agent = st.form_submit_button("💾 Save Persona")
+                submit_agent = st.form_submit_button("💾 Save Persona", help="Register this persona for use in future missions")
                 if submit_agent:
                     if new_role and new_goal and new_backstory:
                         asyncio.run(save_persona(new_role, new_goal, new_backstory, selected_tools))
-                        st.success(f"Agent '{new_role}' added to the registry!")
+                        st.session_state.persona_saved = True
+                        st.session_state.persona_saved_msg = f"Persona '{new_role}' saved to the registry!"
                         st.rerun()
                     else:
                         st.error("Please fill in all fields.")
@@ -755,9 +779,14 @@ if not selected_project:
                                     st.caption("No source")
                         with cols[2]:
                             if is_installed:
-                                if st.button(f"🗑️ Uninstall", key=f"uninstall_{pkg['id']}", use_container_width=True):
-                                    asyncio.run(AgentPackageLoader.uninstall_package(pkg["id"]))
-                                    st.rerun()
+                                uninstall_popover = st.popover("🗑️ Uninstall", use_container_width=True, help=f"Remove {pkg['name']} package")
+                                with uninstall_popover:
+                                    st.warning(f"Uninstall '{pkg['name']}'?")
+                                    if st.button("Confirm Uninstall", key=f"conf_un_{pkg['id']}", type="primary", use_container_width=True):
+                                        asyncio.run(AgentPackageLoader.uninstall_package(pkg["id"]))
+                                        st.session_state.package_uninstalled = True
+                                        st.session_state.package_uninstalled_msg = f"Package '{pkg['name']}' uninstalled."
+                                        st.rerun()
                         st.divider()
             else:
                 st.info("No local packages found. Upload a .sqad package or explore the community registry below.")
@@ -806,10 +835,11 @@ if not selected_project:
                         wf_name = wf.get("name", "Default workflow")
                         st.write(f"**Workflow:** {wf_name}")
                         st.code(json.dumps(wf, indent=2), language="json", line_numbers=True)
-                        if st.button(f"🚀 Deploy '{wf_name}' as Mission", key=f"deploy_{ip['package_id']}", use_container_width=True):
+                        if st.button(f"🚀 Deploy '{wf_name}' as Mission", key=f"deploy_{ip['package_id']}_{wf_name}", use_container_width=True, help=f"Launch a new mission using the '{wf_name}' workflow"):
                             success = deploy_store_workflow(ip["package_id"])
                             if success:
-                                st.success(f"Workflow '{wf_name}' queued as a mission!")
+                                st.session_state.workflow_deployed = True
+                                st.session_state.workflow_deployed_msg = f"Workflow '{wf_name}' queued as a mission!"
                                 st.rerun()
                             else:
                                 st.error("Failed to deploy workflow.")
