@@ -4,6 +4,7 @@ import datetime
 import subprocess
 import platform
 import re
+import shlex
 from typing import Optional
 from squad_os.tools.base import BaseTool
 
@@ -228,11 +229,18 @@ class DesktopControlTool(BaseTool):
             p = self._platform
             try:
                 if p == "windows":
-                    subprocess.Popen(app, shell=True)
+                    # Security: Use list-based Popen with shell=False to prevent command injection.
+                    # shlex.split(posix=False) preserves Windows-style quotes.
+                    parts = shlex.split(app, posix=False)
+                    # Manually strip quotes to avoid double-quoting regressions on Windows.
+                    sanitized_parts = [p.strip('"') for p in parts]
+                    subprocess.Popen(sanitized_parts, shell=False)
                 elif p == "darwin":
-                    subprocess.Popen(["open", app])
+                    # Security: Use -- separator to prevent argument injection.
+                    subprocess.Popen(["open", "--", app])
                 elif p == "linux":
-                    subprocess.Popen(["xdg-open", app])
+                    # Security: Use -- separator to prevent argument injection.
+                    subprocess.Popen(["xdg-open", "--", app])
                 else:
                     return f"Error: Unsupported platform '{p}' for open_app."
             except FileNotFoundError as e:
@@ -240,7 +248,7 @@ class DesktopControlTool(BaseTool):
                     return (
                         "Error: 'xdg-open' is not installed on this Linux system. "
                         "Install it with: sudo apt install xdg-utils (Debian/Ubuntu) or "
-                        "sudo dnf install xdg-utils (Fedora)."
+                        "sudo dnf install xdotool (Fedora)."
                     )
                 return f"Error opening app '{app}': {e}"
             except Exception as e:
@@ -750,4 +758,3 @@ class DesktopControlTool(BaseTool):
                 return f"Dragged from ({sx}, {sy}) to ({ex}, {ey})"
             except Exception as e:
                 return f"Error during drag: {e}"
-
