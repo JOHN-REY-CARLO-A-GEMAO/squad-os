@@ -66,15 +66,30 @@ def ensure_personas_table():
                 pass
 
 def load_missions():
+    """Fetch only mission metadata to minimize database I/O during auto-refresh."""
     conn = get_db_connection()
     if conn:
         try:
-            df = pd.read_sql_query("SELECT * FROM missions ORDER BY id ASC", conn)
+            # Bolt: Optimize by excluding heavy columns (conversation_history, workflow_json)
+            df = pd.read_sql_query("SELECT id, goal, status, uploaded_files FROM missions ORDER BY id ASC", conn)
             conn.close()
             return df
         except Exception:
             pass
     return pd.DataFrame()
+
+def load_mission_details(mission_id):
+    """Fetch full mission details, including heavy columns, on-demand for a single mission."""
+    conn = get_db_connection()
+    if conn:
+        try:
+            # Bolt: Selective fetching for specific mission details reduces total DB load
+            df = pd.read_sql_query("SELECT * FROM missions WHERE id = ?", conn, params=(mission_id,))
+            conn.close()
+            return df.iloc[0].to_dict() if not df.empty else None
+        except Exception:
+            pass
+    return None
 
 def save_uploaded_files(uploaded_files):
     if not uploaded_files:
@@ -534,11 +549,12 @@ if not selected_project:
 
         with chat_container:
             if selected_id is not None:
-                mission_row = missions_df[missions_df["id"] == selected_id]
-                if mission_row.empty:
+                # Bolt: Lazy-load heavy details (conversation history) only when a mission is selected
+                mission_details = load_mission_details(selected_id)
+                if not mission_details:
                     st.write("Mission not found.")
                 else:
-                    row = mission_row.iloc[0]
+                    row = mission_details
                     prompt_text = str(row.get("goal", ""))
                     status = row.get("status", "UNKNOWN").upper()
 
@@ -627,6 +643,7 @@ if not selected_project:
             uploaded_files = st.file_uploader("📎 Attach documents, images, videos, etc.", accept_multiple_files=True, label_visibility="collapsed", help="Total upload limit: 500MB (200MB per file)", key=f"mission_file_uploader_{st.session_state.upload_key}")
 
             if selected_id is not None:
+                # Note: missions_df still contains status, so we use it for responsiveness
                 mission_row = missions_df[missions_df["id"] == selected_id]
                 is_active = False
                 if not mission_row.empty:
