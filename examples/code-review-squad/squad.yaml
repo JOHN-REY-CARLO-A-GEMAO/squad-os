@@ -34,7 +34,7 @@ topology:
       child: architecture-reviewer
     - parent: security-reviewer
       child: critical-fixer
-      condition: "task_output.contains('CRITICAL')"
+      condition: "'CRITICAL' in task_1"
 
 runtime:
   required_tools:

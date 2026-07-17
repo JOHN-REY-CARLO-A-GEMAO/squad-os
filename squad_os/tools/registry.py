@@ -363,6 +363,7 @@ def _translate_unix_to_windows(command: str) -> str:
 class TerminalTool(BaseTool):
     name = "terminal"
     description = "Execute shell commands. Restricted to the current project branch."
+    destructive = True
     parameters = {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}
     def __init__(self, branch_id: Optional[str] = None):
         self.workspace = os.path.realpath(os.path.join("workspace", "projects", branch_id)) if branch_id else os.path.realpath("workspace")
@@ -390,6 +391,7 @@ class TerminalTool(BaseTool):
 class PythonRunnerTool(BaseTool):
     name = "python_runner"
     description = "Execute Python code. Restricted to the current project branch."
+    destructive = True
     parameters = {"type": "object", "properties": {"code": {"type": "string"}, "filename": {"type": "string"}}, "required": ["code", "filename"]}
     def __init__(self, branch_id: Optional[str] = None):
         self.workspace = os.path.join("workspace", "projects", branch_id) if branch_id else "workspace"
@@ -463,6 +465,7 @@ class GetSharedValueTool(BaseTool):
 class CommitProjectTool(BaseTool):
     name = "commit_project"
     description = "Commit the current project branch, moving specified artifacts to final_outputs and archiving the branch."
+    destructive = True
     parameters = {
         "type": "object",
         "properties": {

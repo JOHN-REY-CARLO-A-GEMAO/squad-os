@@ -1,3 +1,4 @@
+import os
 import asyncio
 import json
 import warnings
@@ -67,12 +68,41 @@ from squad_os.tools.hitl import (
     HITLWebSocketServer
 )
 
+# MULTIMEDIA / CREATIVE ENGINE (Phase 2‑3)
+from squad_os.tools.media import ImageGenTool, VideoGenTool, NeuralAudioTool, AdvancedVideoEditorTool
+
+# MCP CONNECTIVITY (Phase 1)
+from squad_os.tools.mcp_hub import MCPWrapperTool, MCPListTool, MCPRegisterTool
+
+# SYSTEM MONITORING (Phase 1)
+from squad_os.tools.system import SystemMonitorTool, SystemSummaryTool
+
+# SQUAD SYNC / INTERCONNECT (Phase 3)
+from squad_os.tools.sync import SquadDiscoverTool, SquadBlackboardTool, SquadResourceTool
+
+# GPU OFFLOAD / COMPUTE DELEGATE (Phase 3)
+from squad_os.tools.compute import ComputeDelegateTool, ComputeStatusTool, GPUInfoTool
+
+# SELF‑IMPROVEMENT / EVOLUTION (Phase 3)
+from squad_os.tools.evolution import EvolutionTool
+
 from squad_os.database.session import init_db, get_next_queued_mission, update_mission, get_next_followup_mission
+
+
+# Code version — bump this when making breaking changes so old workers detect stale code
+WORKER_VERSION = "2026-05-31-v2"
 
 # Clean up terminal warnings
 warnings.filterwarnings("ignore", category=ResourceWarning)
 
 async def run_worker():
+    # Stale-code guard: compare source version against an env marker set by the launcher
+    expected = os.environ.get("SQUAD_OS_WORKER_VERSION", WORKER_VERSION)
+    if expected != WORKER_VERSION:
+        print(f"[Worker] CODE VERSION MISMATCH: expected={expected}, loaded={WORKER_VERSION}")
+        print("[Worker] Restart required. Shutting down for launcher to respawn.")
+        return
+
     # 1. Initialize the database and create the new Blackboard table
     await init_db()
     
@@ -127,12 +157,55 @@ async def run_worker():
         # RICH HITL:
         RichApprovalTool(),
         NotifyHumanTool(),
-        HITLInterruptTool()
+        HITLInterruptTool(),
+
+        # MULTIMEDIA / CREATIVE ENGINE:
+        ImageGenTool(),
+        VideoGenTool(),
+        NeuralAudioTool(),
+        AdvancedVideoEditorTool(),
+
+        # MCP CONNECTIVITY:
+        MCPWrapperTool(),
+        MCPListTool(),
+        MCPRegisterTool(),
+
+        # SYSTEM MONITORING:
+        SystemMonitorTool(),
+        SystemSummaryTool(),
+
+        # SQUAD SYNC / INTERCONNECT:
+        SquadDiscoverTool(),
+        SquadBlackboardTool(),
+        SquadResourceTool(),
+
+        # GPU OFFLOAD / COMPUTE DELEGATE:
+        ComputeDelegateTool(),
+        ComputeStatusTool(),
+        GPUInfoTool(),
+
+        # SELF-IMPROVEMENT / EVOLUTION:
+        EvolutionTool()
     ]
-    
+
+    # Discover tools from installed .sqad packages and add to inventory
+    try:
+        from squad_os.tools.marketplace import SkillRegistry
+        registry = SkillRegistry.get_instance()
+        existing_names = {t.name for t in inventory}
+        for info in registry.list_tools():
+            name = info["name"]
+            if name not in existing_names:
+                tool = registry.get_tool(name)
+                if tool:
+                    inventory.append(tool)
+                    existing_names.add(name)
+    except Exception as e:
+        print(f"[Worker] Package tool discovery: {e}")
+
     # 3. Initialize the Manager with the full toolset
-    # Using free Ollama cloud model
-    manager = Manager(tool_inventory=inventory, model_name="ollama/glm-4.7")
+    # Using Gemma via Ollama Cloud
+    manager = Manager(tool_inventory=inventory, model_name="ollama/gemma4:31b-cloud")
 
     print("\n🛰️  SquadOS 'Integrated Ecosystem' Worker is ONLINE.")
     print("🚀 Level 6 Capabilities Active: Dynamic Hiring + Agent-to-Agent Delegation.")

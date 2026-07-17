@@ -1,0 +1,92 @@
+spec_version: "1.0.0"
+
+metadata:
+  name: "AI SaaS Launch Pipeline"
+  version: "1.0.0"
+  author: "commander"
+  description: "Multi-agent workflow for researching, validating, planning, and preparing a SaaS product launch."
+
+topology:
+  engine: "dag"
+
+  agents:
+
+    - id: intake-agent
+      role: "Idea Intake Specialist"
+      system_prompt: >
+        Analyze the user's SaaS idea and structure it into a JSON brief.
+        Include target audience, pain points, monetization ideas, and category.
+      llm_default: "gpt-4o-mini"
+      tools: []
+
+    - id: market-research-agent
+      role: "Market Research Analyst"
+      system_prompt: >
+        Research competitors and market trends.
+        MUST use web_research_tool tool.
+      llm_default: "gpt-4o-mini"
+      tools: ["web_research_tool"]
+
+    - id: technical-feasibility-agent
+      role: "Technical Architect"
+      system_prompt: >
+        Evaluate scalability, architecture, APIs, infrastructure needs,
+        and implementation difficulty.
+        MUST use tech_stack_analyzer tool.
+      llm_default: "gpt-4o-mini"
+      tools: ["tech_stack_analyzer"]
+
+    - id: marketing-agent
+      role: "Growth Marketing Strategist"
+      system_prompt: >
+        Generate launch messaging, landing page copy,
+        social hooks, and positioning strategy.
+      llm_default: "gpt-4o-mini"
+      tools: []
+
+    - id: launch-planner-agent
+      role: "Launch Operations Coordinator"
+      system_prompt: >
+        Create a SaaS launch checklist and operational roadmap.
+        MUST use launch_checklist_tool tool.
+      llm_default: "gpt-4o-mini"
+      tools: ["launch_checklist_tool"]
+
+    - id: investor-readiness-agent
+      role: "Investor Pitch Analyst"
+      system_prompt: >
+        Create investor readiness feedback and funding recommendations.
+      llm_default: "gpt-4o-mini"
+      tools: []
+
+  dependencies:
+
+    - parent: intake-agent
+      child: market-research-agent
+
+    - parent: intake-agent
+      child: technical-feasibility-agent
+
+    - parent: market-research-agent
+      child: marketing-agent
+
+    - parent: technical-feasibility-agent
+      child: launch-planner-agent
+
+    - parent: market-research-agent
+      child: investor-readiness-agent
+      condition: "'b2b' in task_0 or 'enterprise' in task_0 or 'B2B' in task_0 or 'Enterprise' in task_0"
+
+    - parent: marketing-agent
+      child: launch-planner-agent
+
+runtime:
+
+  required_tools:
+    - name: "web_research_tool"
+    - name: "tech_stack_analyzer"
+    - name: "launch_checklist_tool"
+
+  environment_defaults:
+    LOG_LEVEL: "INFO"
+    ENABLE_CACHE: "true"

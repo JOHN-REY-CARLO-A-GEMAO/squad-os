@@ -17,7 +17,7 @@ from squad_os.store.loader import AgentPackageLoader
 
 def print_summary(pkg):
     """Print a summary table of the package contents."""
-    print("\n📦 Package Summary")
+    print("\n--- Package Summary ---")
     print(f"{'='*40}")
     print(f"ID:          {pkg.package_id}")
     print(f"Name:        {pkg.name}")
@@ -48,24 +48,24 @@ async def install_deps_command(package_id):
             row = await cursor.fetchone()
 
         if not row:
-            print(f"❌ Error: Package '{package_id}' is not installed.")
+            print(f"[ERR] Error: Package '{package_id}' is not installed.")
             return
 
         version, install_path = row
         req_path = os.path.join(install_path, "requirements.txt")
 
         if not os.path.exists(req_path):
-            print(f"ℹ️ Package '{package_id}' has no requirements.txt.")
+            print(f"[INFO] Package '{package_id}' has no requirements.txt.")
             return
 
         with open(req_path, "r") as f:
             deps = [line.strip() for line in f if line.strip() and not line.startswith("#")]
 
         if not deps:
-            print(f"ℹ️ requirements.txt for '{package_id}' is empty.")
+            print(f"[INFO] requirements.txt for '{package_id}' is empty.")
             return
 
-        print(f"📋 Dependencies for {package_id} v{version}:")
+        print(f"  Dependencies for {package_id} v{version}:")
         for dep in deps:
             print(f"  - {dep}")
 
@@ -74,12 +74,12 @@ async def install_deps_command(package_id):
             print("Aborted.")
             return
 
-        print(f"🚀 Installing {len(deps)} dependencies...")
+        print(f"  Installing {len(deps)} dependencies...")
         try:
             subprocess.check_call([sys.executable, "-m", "pip", "install"] + deps)
-            print("\n✅ Dependencies installed successfully.")
+            print("\n[OK] Dependencies installed successfully.")
         except subprocess.CalledProcessError as e:
-            print(f"\n❌ Failed to install dependencies: {e}")
+            print(f"\n[ERR] Failed to install dependencies: {e}")
 
 
 def main():
@@ -109,7 +109,7 @@ def main():
             sys.exit(1)
 
         result_path = AgentPackageLoader.build_sqad_from_yaml(yaml_path, output_path)
-        print(f"✅ Built: {result_path}")
+        print(f"[OK] Built: {result_path}")
 
         if verbose:
             pkg = AgentPackageLoader.load_sqad(result_path)

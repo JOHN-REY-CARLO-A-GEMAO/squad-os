@@ -11,7 +11,7 @@ import urllib.request
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
 import graphviz
-from squad_os.database.session import save_persona, get_all_personas, delete_persona
+from squad_os.database.session import save_persona, get_all_personas, delete_persona, get_task_interrupt, update_interrupt_guidance
 from squad_os.utils.dashboard_helpers import DB_PATHS, format_project_label, format_log_timestamp, ensure_personas_table
 WORKSPACE_DIR = "workspace"
 PROJECTS_DIR = os.path.join(WORKSPACE_DIR, "projects")
@@ -898,6 +898,28 @@ if not selected_project:
 
                     if selected_task.get("error"):
                         st.error(f"Error: {selected_task['error']}")
+
+                    # ── HITL Interrupt Resolution ───────────────────────────
+                    if selected_task["status"] == "PAUSED_FOR_REVIEW":
+                        interrupt = asyncio.run(get_task_interrupt(
+                            active_mission["id"], selected_task["id"]
+                        ))
+                        if interrupt and interrupt["status"] == "PENDING":
+                            st.warning(f"🚦 Task paused — awaiting human review")
+                            st.caption(f"Context: {interrupt.get('context', '')}")
+                            with st.form(key=f"hitl_form_{selected_task['id']}"):
+                                verdict = st.text_area(
+                                    "Type APPROVED to allow execution, or provide rejection guidance:",
+                                    placeholder="APPROVED — this looks safe",
+                                    height=100
+                                )
+                                col1, col2 = st.columns([1, 1])
+                                if col1.form_submit_button("✅ Submit Verdict", use_container_width=True):
+                                    asyncio.run(update_interrupt_guidance(interrupt["id"], verdict))
+                                    st.success("Interrupt resolved! The system will pick this up on the next wave.")
+                                    st.rerun(scope="fragment")
+                                if col2.form_submit_button("🔄 Refresh", use_container_width=True):
+                                    st.rerun(scope="fragment")
 
                     # ── Isolated Log Stream (partial refresh) ───────────────
                     @st.fragment

@@ -540,6 +540,17 @@ async def update_interrupt_guidance(interrupt_id: int, user_guidance: str):
         )
         await db.commit()
 
+async def get_task_interrupt(mission_id: int, task_idx: int) -> Optional[Dict[str, Any]]:
+    """Return the latest interrupt for a given mission+task, or None."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM mission_interrupts WHERE mission_id = ? AND task_idx = ? ORDER BY id DESC LIMIT 1",
+            (mission_id, task_idx)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
 # --- AGENT PERSONA HELPERS ---
 
 async def save_persona(role: str, goal: str, backstory: str, tools: List[str]):

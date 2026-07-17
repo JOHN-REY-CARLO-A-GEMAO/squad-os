@@ -10,7 +10,7 @@ import os
 import shutil
 import aiosqlite
 from squad_os.agents.base import BaseAgent
-from squad_os.database.session import create_mission, create_task, update_task, update_mission, update_blackboard, DB_PATH, get_all_personas, append_conversation, get_conversation, get_mission, get_task, set_mission_status
+from squad_os.database.session import create_mission, create_task, update_task, update_mission, update_blackboard, DB_PATH, get_all_personas, append_conversation, get_conversation, get_mission, get_task, set_mission_status, create_interrupt, get_task_interrupt
 from squad_os.core.projects import ProjectBranch
 from squad_os.tools.self_healing import health_monitor
 from squad_os.core.utils import is_safe_path
@@ -609,6 +609,21 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
             agent.task_workspace = task_workspace
             print(f"  [Manager]: Task {task_idx} isolated workspace: {task_workspace}")
 
+        # --- HITL BREAKPOINT ---
+        # If the agent carries destructive tools, pause for human review before executing.
+        destructive_names = [n for n, t in agent.tools.items() if getattr(t, 'destructive', False)]
+        if destructive_names:
+            interrupt_id = await create_interrupt(
+                mission_id=mission_id,
+                task_idx=task_idx,
+                context=f"Agent '{agent.role}' has access to destructive tools: {destructive_names}. Task: {task_data.description}",
+                error_message=f"Task paused: destructive tools ({', '.join(destructive_names)}) require human approval."
+            )
+            await update_task(task_id, status="PAUSED_FOR_REVIEW")
+            task_states[task_idx] = "PAUSED_FOR_REVIEW"
+            print(f"  [HITL]: Task {task_idx} paused (interrupt #{interrupt_id}). Destructive tools: {destructive_names}")
+            return True  # Not a failure — DAG will check back once human resolves
+
         start_time = datetime.now()
         try:
             result = await agent.execute_task(task_data.description, context)
@@ -754,7 +769,7 @@ FINAL CONSENSUS:"""
 
     async def execute_dag(self, tasks: List[TaskPlan], mission_id: int, enriched_goal: str, shared_branch: ProjectBranch):
         """DAG-BASED PARALLEL EXECUTION"""
-        # State values: "PENDING" | "RUNNING" | "COMPLETED" | "FAILED" | "SKIPPED"
+        # State values: "PENDING" | "RUNNING" | "COMPLETED" | "FAILED" | "SKIPPED" | "PAUSED_FOR_REVIEW"
         task_states = {}
         task_results = {}  # task_idx -> output_text
         task_ids = {}  # task_idx -> database task_id
@@ -767,9 +782,31 @@ FINAL CONSENSUS:"""
         _memory_written = False
         sem = asyncio.Semaphore(getattr(self.plan_mission_obj, 'suggested_parallelism', 2))
         
-        while any(state == "PENDING" for state in task_states.values()) and wave < max_waves:
+        while (any(state in ("PENDING", "PAUSED_FOR_REVIEW") for state in task_states.values())
+               and wave < max_waves):
             wave += 1
-            
+
+            # --- HITL RESOLUTION CHECK ---
+            # If a PAUSED_FOR_REVIEW task's interrupt has been resolved by the human,
+            # either approve (re-queue as PENDING) or reject (mark FAILED with guidance).
+            for i in range(len(tasks)):
+                if task_states.get(i) != "PAUSED_FOR_REVIEW":
+                    continue
+                interrupt = await get_task_interrupt(mission_id, i)
+                if interrupt and interrupt["status"] == "RESOLVED":
+                    guidance = (interrupt.get("user_guidance") or "").strip()
+                    if guidance.upper().startswith("APPROVED"):
+                        print(f"  [HITL]: Task {i} approved by human. Resuming.")
+                        task_states[i] = "PENDING"
+                        if i in task_ids:
+                            await update_task(task_ids[i], status="PENDING")
+                    else:
+                        print(f"  [HITL]: Task {i} rejected by human: {guidance}")
+                        task_states[i] = "FAILED"
+                        if i in task_ids:
+                            await update_task(task_ids[i], status="FAILED",
+                                              error=f"Rejected by human: {guidance}")
+
             # Find tasks that are ready to execute
             ready_tasks = []
             for i in range(len(tasks)):

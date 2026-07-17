@@ -53,6 +53,7 @@ class BaseTool:
     parameters: Optional[Dict[str, Any]] = None
     fallback_name: Optional[str] = None  # Name of fallback tool; resolved by agent through tool_inventory
     fallback_tool: Optional[Any] = None  # Direct tool instance; used if set
+    destructive: bool = False  # If True, execution pauses for human approval before first use
 
     def __init__(self, parameters: Optional[Dict[str, Any]] = None):
         if parameters is None:
