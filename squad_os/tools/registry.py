@@ -483,12 +483,55 @@ class CommitProjectTool(BaseTool):
         branch = self.active_branch or (self.agent.active_branch if self.agent else None)
         if not branch:
             return "Error: No active project branch to commit."
+
+        project_root = branch.project_path
+        all_files = self._auto_discover(project_root)
+
+        if not artifacts:
+            artifacts = all_files
+        elif all_files:
+            specified_exists = [a for a in artifacts if self._file_exists(project_root, a)]
+            if specified_exists:
+                # Merge: keep what LLM remembered, fill in what it missed
+                specified_set = set(os.path.basename(a) for a in artifacts)
+                missed = [f for f in all_files if os.path.basename(f) not in specified_set]
+                if missed:
+                    print(f"  [Commit] Also including {len(missed)} auto-discovered file(s) not in artifacts list.")
+                artifacts = specified_exists + missed
+            else:
+                # LLM guessed wrong names — fall back to auto-discovered entirely
+                print("  [Commit] No specified artifacts found — falling back to auto-discovered files.")
+                artifacts = all_files
+
         try:
             committed_paths = await branch.commit(artifacts)
             return f"Project committed successfully. Artifacts moved to: {committed_paths}. Branch archived."
         except Exception as e:
             print(f"  [CommitProjectTool ERROR]: {str(e)}")
             return f"Commit error: {str(e)}"
+
+    @staticmethod
+    def _file_exists(project_root: str, artifact: str) -> bool:
+        if os.path.exists(os.path.join(project_root, artifact)):
+            return True
+        artifact_name = os.path.basename(artifact)
+        for root, dirs, files in os.walk(project_root):
+            for f in files:
+                if f == artifact_name or f.startswith(artifact_name):
+                    return True
+        return False
+
+    @staticmethod
+    def _auto_discover(project_root: str) -> List[str]:
+        if not os.path.isdir(project_root):
+            return []
+        found = []
+        for root, dirs, files in os.walk(project_root):
+            for f in files:
+                if f not in ("project_memory.md", "session_log.jsonl") and not f.endswith(".jsonl"):
+                    rel = os.path.relpath(os.path.join(root, f), project_root)
+                    found.append(rel)
+        return found
 class DelegateTaskTool(BaseTool):
     name = "delegate_task"
     description = "Hire a specialized sub-agent for an expert task. Returns findings."

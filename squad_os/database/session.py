@@ -78,6 +78,11 @@ MISSIONS_COLUMNS = {
     "conversation_history": "ALTER TABLE missions ADD COLUMN conversation_history TEXT DEFAULT '[]'",
 }
 
+TASKS_COLUMNS = {
+    "verification_status": "ALTER TABLE tasks ADD COLUMN verification_status TEXT",
+    "verification_details": "ALTER TABLE tasks ADD COLUMN verification_details TEXT",
+}
+
 
 async def _run_migrations(db: aiosqlite.Connection):
     """Detect missing columns on existing tables and add them."""
@@ -89,6 +94,17 @@ async def _run_migrations(db: aiosqlite.Connection):
             try:
                 await db.execute(alter_sql)
                 print(f"[DB Migration] Added column '{col}' to missions table.")
+            except aiosqlite.Error as e:
+                print(f"[DB Migration] Note: Could not add '{col}': {e}")
+
+    cursor = await db.execute("PRAGMA table_info(tasks)")
+    existing_tasks = {row[1] for row in await cursor.fetchall()}
+
+    for col, alter_sql in TASKS_COLUMNS.items():
+        if col not in existing_tasks:
+            try:
+                await db.execute(alter_sql)
+                print(f"[DB Migration] Added column '{col}' to tasks table.")
             except aiosqlite.Error as e:
                 print(f"[DB Migration] Note: Could not add '{col}': {e}")
 
@@ -354,6 +370,16 @@ async def get_mission(mission_id: int) -> Optional[Dict[str, Any]]:
         return dict(row)
 
 
+async def get_task(task_id: int) -> Optional[Dict[str, Any]]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return dict(row)
+
+
 async def get_next_followup_mission() -> Optional[Dict[str, Any]]:
     """Get the next mission awaiting a follow-up (status='FOLLOWUP'), ordered by oldest first."""
     async with aiosqlite.connect(DB_PATH) as db:
@@ -392,7 +418,7 @@ async def update_task(task_id: int, **kwargs):
         "mission_id", "description", "assigned_agent", "status",
         "input_data", "output_data", "error", "prompt_tokens",
         "completion_tokens", "cost_usd", "execution_ms", "retry_count",
-        "created_at"
+        "created_at", "verification_status", "verification_details"
     }
     invalid_keys = [k for k in kwargs.keys() if k not in allowed_columns]
     if invalid_keys:

@@ -1,7 +1,7 @@
 import os
 import sqlite3
 import pytest
-from dashboard import format_project_label, format_log_timestamp, ensure_personas_table
+from squad_os.utils.dashboard_helpers import format_project_label, format_log_timestamp, ensure_personas_table, DB_PATHS
 
 def test_format_project_label():
     # Standard format
@@ -28,7 +28,7 @@ def test_format_log_timestamp():
 
 def test_ensure_personas_table_creates_table(monkeypatch):
     db_path = "test_palette_personas.db"
-    monkeypatch.setattr("dashboard.DB_PATHS", [db_path])
+    monkeypatch.setattr("squad_os.utils.dashboard_helpers.DB_PATHS", [db_path])
     try:
         conn = sqlite3.connect(db_path)
         conn.execute("CREATE TABLE missions (id INTEGER PRIMARY KEY)")
@@ -47,7 +47,7 @@ def test_ensure_personas_table_creates_table(monkeypatch):
 
 def test_ensure_personas_table_idempotent(monkeypatch):
     db_path = "test_palette_idempotent.db"
-    monkeypatch.setattr("dashboard.DB_PATHS", [db_path])
+    monkeypatch.setattr("squad_os.utils.dashboard_helpers.DB_PATHS", [db_path])
     try:
         conn = sqlite3.connect(db_path)
         conn.execute("CREATE TABLE missions (id INTEGER PRIMARY KEY)")

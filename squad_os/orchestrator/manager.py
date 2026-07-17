@@ -10,11 +10,13 @@ import os
 import shutil
 import aiosqlite
 from squad_os.agents.base import BaseAgent
-from squad_os.database.session import create_mission, create_task, update_task, update_mission, update_blackboard, DB_PATH, get_all_personas, append_conversation, get_conversation, get_mission, set_mission_status
+from squad_os.database.session import create_mission, create_task, update_task, update_mission, update_blackboard, DB_PATH, get_all_personas, append_conversation, get_conversation, get_mission, get_task, set_mission_status
 from squad_os.core.projects import ProjectBranch
 from squad_os.tools.self_healing import health_monitor
 from squad_os.core.utils import is_safe_path
 from squad_os.core.evaluator import SafeEvaluator, build_condition_context
+from squad_os.core.gates import GateSuite, TestGate, LintGate, TypeCheckGate, FileExistsGate, Gate
+from squad_os.agents.verifier import VerifierAgent
 
 class TaskPlan(BaseModel):
     description: str
@@ -25,13 +27,14 @@ class TaskPlan(BaseModel):
     is_swarm: bool = Field(default=False, description="Whether this task should be executed as a swarm (multiple agents)")
     swarm_roles: List[str] = Field(default_factory=list, description="List of roles to include in the swarm if is_swarm is True")
     conditions: List[str] = Field(default_factory=list, description="Condition expressions gating this task (evaluated against parent outputs)")
+    verification_gates: List[str] = Field(default_factory=list, description="Which gates to run: test_suite, lint, type_check, file_exists:<path>, all. Empty = default set.")
 
 class MissionPlan(BaseModel):
     tasks: List[TaskPlan]
     suggested_parallelism: int = Field(default=2, description="Recommended number of concurrent tasks")
 
 class Manager:
-    def __init__(self, tool_inventory: List[Any], model_name: str = "gpt-4o-mini"):
+    def __init__(self, tool_inventory: List[Any], model_name: str = "gpt-4o-mini", verification_enabled: bool = True):
         self.tool_inventory = {t.name: t for t in tool_inventory}
         self.model_name = model_name
         self.max_retries = 3
@@ -39,6 +42,8 @@ class Manager:
         self.agent_metrics = {}  # role -> {"tasks_completed": int, "tasks_failed": int, "total_time": float}
         self.agent_load = {}  # role -> current number of active tasks
         self.plan_mission_obj = None
+        self.verifier = VerifierAgent() if verification_enabled else None
+        self.verification_disabled_tasks: set = set()  # task indices to skip verification for
 
     def _repair_json(self, content: str) -> str:
         """Deep clean JSON, handling severe LLM hallucinations."""
@@ -103,11 +108,13 @@ Structure: {{ "squad": [ {{ "role": "...", "goal": "...", "backstory": "...", "t
         for attempt in range(self.max_retries):
             try:
                 response = await acompletion(model=self.model_name, messages=[{"role": "user", "content": prompt}])
-                cleaned = self._repair_json(response.choices[0].message.content)
+                raw_content = response.choices[0].message.content
+                print(f"\n🔍 [DEBUG] Raw LLM response (attempt {attempt+1}):\n{raw_content[:500]}...\n")
+                cleaned = self._repair_json(raw_content)
+                print(f"🔍 [DEBUG] Cleaned JSON:\n{cleaned[:500]}...\n")
                 hire_data = json.loads(cleaned)
 
                 self.active_agents = {}
-                commit_keywords = ["devops", "version control", "deployment", "release", "version", "coordinator", "control", "operator", "manager"]
 
                 # Create a map of custom personas for easy lookup
                 persona_map = {p['role']: p for p in custom_personas}
@@ -127,10 +134,8 @@ Structure: {{ "squad": [ {{ "role": "...", "goal": "...", "backstory": "...", "t
                         backstory = member['backstory']
                         goal_text = member['goal']
 
-                    role_lower = role_name.lower()
-                    if any(kw in role_lower for kw in commit_keywords):
-                        if "commit_project" in self.tool_inventory and self.tool_inventory["commit_project"] not in assigned:
-                            assigned.append(self.tool_inventory["commit_project"])
+                    if "commit_project" in self.tool_inventory and self.tool_inventory["commit_project"] not in assigned:
+                        assigned.append(self.tool_inventory["commit_project"])
 
                     print(f"🤝 [Manager]: Hired '{role_name}'")
                     self.active_agents[role_name] = BaseAgent(
@@ -160,8 +165,9 @@ RULES:
 7. Set priority (0-3) based on importance: 3=critical, 2=high, 1=normal, 0=low.
 8. Estimate complexity: "low", "medium", "high".
 9. For "high" complexity tasks, consider setting is_swarm to true and selecting 2-3 swarm_roles for consensus.
-10. Return ONLY JSON. No other text.
-Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", "depends_on": [0, 1], "priority": 1, "estimated_complexity": "medium", "is_swarm": false, "swarm_roles": [] }} ], "suggested_parallelism": 2 }}"""
+10. If the mission goal mentions gates (TestGate, LintGate, TypeCheckGate, file_exists:<path>, or 'all'), set verification_gates on the tasks that need them.
+11. Return ONLY JSON. No other text.
+Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", "depends_on": [0, 1], "priority": 1, "estimated_complexity": "medium", "is_swarm": false, "swarm_roles": [], "verification_gates": [] }} ], "suggested_parallelism": 2 }}"""
 
         for attempt in range(self.max_retries):
             try:
@@ -177,6 +183,28 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
                     for sr in t.swarm_roles:
                         if sr not in valid_roles:
                             raise ValueError(f"Invalid swarm role: {sr}")
+
+                # Inject verification_gates from goal keywords for any task that has none set
+                goal_lower = goal.lower()
+                gate_keywords = {
+                    "testsuite": "test_suite", "testgate": "test_suite", "test": "test_suite",
+                    "lintgate": "lint", "lint": "lint",
+                    "typecheckgate": "type_check", "type_check": "type_check",
+                    "typecheck": "type_check", "mypy": "type_check",
+                }
+                implied_gates = set()
+                for kw, gate_name in gate_keywords.items():
+                    if kw in goal_lower:
+                        implied_gates.add(gate_name)
+                if "all" in goal_lower or "all gates" in goal_lower:
+                    implied_gates = {"test_suite", "lint", "type_check"}
+                if implied_gates:
+                    for t in plan.tasks:
+                        existing = set(g.lower() for g in t.verification_gates)
+                        merged = list(implied_gates | existing)
+                        t.verification_gates = merged
+                    print(f"  [Manager]: Gates {implied_gates} applied to {len(plan.tasks)} task(s) (merged with any LLM-set gates).")
+
                 return plan
             except Exception as e:
                 print(f" [Manager]: Planning JSON Error. Retrying... ({attempt+1}/{self.max_retries})")
@@ -574,6 +602,13 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
         task_id = await create_task(mission_id, task_data.description, agent.role)
         task_ids[task_idx] = task_id
 
+        # Create per-task isolated workspace so parallel agents don't collide
+        if agent.active_branch:
+            task_workspace = os.path.join(agent.active_branch.project_path, f"task_{task_idx}")
+            os.makedirs(task_workspace, exist_ok=True)
+            agent.task_workspace = task_workspace
+            print(f"  [Manager]: Task {task_idx} isolated workspace: {task_workspace}")
+
         start_time = datetime.now()
         try:
             result = await agent.execute_task(task_data.description, context)
@@ -596,18 +631,76 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
         self.agent_metrics[task_data.assigned_agent_role]["total_time"] += elapsed
         self.agent_load[task_data.assigned_agent_role] -= 1
 
-        # Success path
-        await update_task(task_id, status="COMPLETED", output_data=output_text)
-        task_results[task_idx] = output_text
-        task_states[task_idx] = "COMPLETED"
-        self.agent_metrics[task_data.assigned_agent_role]["tasks_completed"] += 1
-        health_monitor.record_success(task_data.assigned_agent_role)
+        # --- VERIFICATION GATE ---
+        # The maker never grades its own work. An external oracle checks it.
+        verification_passed = True
+        verification_report = None
+        if self.verifier and task_idx not in self.verification_disabled_tasks and agent.active_branch:
+            # Resolve workspace with fallback chain:
+            # 1. task_workspace (if set and still exists)
+            # 2. project root (if exists)
+            # 3. archive path (if project was archived mid-task)
+            workspace = (agent.task_workspace if agent.task_workspace and os.path.isdir(agent.task_workspace)
+                         else agent.active_branch.project_path if os.path.isdir(agent.active_branch.project_path)
+                         else None)
+            if workspace is None:
+                archive_candidate = os.path.join(agent.active_branch.base_dir, "archives", agent.active_branch.task_id)
+                if os.path.isdir(archive_candidate):
+                    workspace = archive_candidate
+            if workspace:
+                print(f"  [Verifier]: Running gates against task {task_idx} workspace...")
+                gate_names = task_data.verification_gates if task_data.verification_gates else None
+                report = await self.verifier.verify(
+                    workspace=workspace,
+                    task_description=task_data.description,
+                    agent_output=output_text,
+                    task_idx=task_idx,
+                    gate_names=gate_names,
+                )
+                if report.all_required_passed:
+                    # Enforce: if gates were explicitly requested but none could execute, treat as failure
+                    if task_data.verification_gates and not report.results:
+                        print(f"  [Verifier]: Task {task_idx} — required gates {task_data.verification_gates} could NOT be executed (no matching gate implementations).")
+                        verification_passed = False
+                        verification_report = report.to_dict()
+                        verification_report["reason"] = f"Required gates {task_data.verification_gates} have no matching implementation"
+                    else:
+                        print(f"  [Verifier]: Task {task_idx} — all gates PASSED ({report.total_duration_ms:.0f}ms)")
+                else:
+                    print(f"  [Verifier]: Task {task_idx} — gates FAILED ({report.total_duration_ms:.0f}ms)")
+                    print(f"  [Verifier]: Report:\n{report.summary()}")
+                    verification_passed = False
+                    verification_report = report.to_dict()
+            else:
+                print(f"  [Verifier]: Task {task_idx} workspace not found (project was archived by commit). Skipping file gates for meta-task.")
 
-        # Write result to blackboard for other tasks
-        await update_blackboard(f"task_{task_idx}_result", output_text)
+        # Success path (only if verification passed)
+        if verification_passed:
+            await update_task(task_id, status="COMPLETED", output_data=output_text,
+                              verification_status="PASSED" if verification_report else "NOT_VERIFIED",
+                              verification_details=json.dumps(verification_report) if verification_report else None)
+            task_results[task_idx] = output_text
+            task_states[task_idx] = "COMPLETED"
+            self.agent_metrics[task_data.assigned_agent_role]["tasks_completed"] += 1
+            health_monitor.record_success(task_data.assigned_agent_role)
 
-        print(f"✅ [Manager]: Task {task_idx} completed in {elapsed:.1f}s.")
-        return True
+            # Write result to blackboard for other tasks
+            await update_blackboard(f"task_{task_idx}_result", output_text)
+
+            print(f"✅ [Manager]: Task {task_idx} completed in {elapsed:.1f}s.")
+            return True
+        else:
+            await update_task(task_id, status="FAILED", output_data=output_text,
+                              error=f"Verification failed: {json.dumps(verification_report)[:500]}",
+                              verification_status="FAILED",
+                              verification_details=json.dumps(verification_report))
+            task_results[task_idx] = output_text
+            task_states[task_idx] = "FAILED"
+            self.agent_metrics[task_data.assigned_agent_role]["tasks_failed"] += 1
+            health_monitor.record_failure(task_data.assigned_agent_role, f"Verification failed: {json.dumps(verification_report)[:200]}")
+
+            print(f"❌ [Manager]: Task {task_idx} FAILED verification in {elapsed:.1f}s.")
+            return False
 
     async def execute_swarm_task(self, task_idx: int, context: str, mission_id: int, task_states, task_results, task_ids) -> bool:
         """Execute a task using a swarm of agents for consensus."""
@@ -821,6 +914,21 @@ FINAL CONSENSUS:"""
                     for dep_idx in tasks[task_idx].depends_on:
                         if dep_idx in task_results:
                             context_parts.append(f"Result from Task {dep_idx}: {task_results[dep_idx]}")
+                    # Inject previous verification failure details
+                    if task_idx in task_ids:
+                        try:
+                            prev_task = await get_task(task_ids[task_idx])
+                            if prev_task and prev_task.get("verification_details"):
+                                details = json.loads(prev_task["verification_details"])
+                                context_parts.append(
+                                    f"--- PREVIOUS ATTEMPT VERIFICATION FAILURES ---\n"
+                                    f"The previous attempt failed automated verification. "
+                                    f"Fix the specific issues below:\n"
+                                    f"{json.dumps(details, indent=2)}"
+                                )
+                                print(f"  [Manager]: Injected verification failure context for task {task_idx} retry.")
+                        except Exception as e:
+                            logging.warning(f"Could not load verification details for task {task_idx}: {e}")
                     new_context = "\n\n".join(context_parts)
                     
                     # Retry

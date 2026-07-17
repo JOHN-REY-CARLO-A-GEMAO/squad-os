@@ -10,11 +10,9 @@ import pathlib
 import urllib.request
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
+import graphviz
 from squad_os.database.session import save_persona, get_all_personas, delete_persona
-
-
-# Configuration
-DB_PATHS = ["shared_memory.db", "instance/shared_memory.db"]
+from squad_os.utils.dashboard_helpers import DB_PATHS, format_project_label, format_log_timestamp, ensure_personas_table
 WORKSPACE_DIR = "workspace"
 PROJECTS_DIR = os.path.join(WORKSPACE_DIR, "projects")
 ARCHIVES_DIR = os.path.join(WORKSPACE_DIR, "archives")
@@ -44,26 +42,6 @@ def get_db_connection():
         except Exception:
             pass
     return None
-
-def ensure_personas_table():
-    for path in DB_PATHS:
-        if os.path.exists(path):
-            try:
-                conn = sqlite3.connect(path)
-                conn.execute("""
-                    CREATE TABLE IF NOT EXISTS agent_personas (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        role TEXT UNIQUE NOT NULL,
-                        goal TEXT NOT NULL,
-                        backstory TEXT NOT NULL,
-                        tools TEXT NOT NULL,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                """)
-                conn.commit()
-                conn.close()
-            except Exception:
-                pass
 
 def load_missions():
     conn = get_db_connection()
@@ -194,6 +172,142 @@ def load_global_stats():
         except Exception:
             pass
     return (0, 0, 0.0)
+
+def compute_success_rate():
+    """Return (success_rate_pct, completed_count, failed_count, active_count, total_count)."""
+    conn = get_db_connection()
+    if not conn:
+        return 0.0, 0, 0, 0, 0
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT status, COUNT(*) FROM missions GROUP BY status")
+        rows = cursor.fetchall()
+        conn.close()
+        counts = {r[0]: r[1] for r in rows}
+        completed = counts.get("COMPLETED", 0)
+        failed = counts.get("FAILED", 0)
+        active = counts.get("IN_PROGRESS", 0) + counts.get("QUEUED", 0) + counts.get("FOLLOWUP", 0)
+        total = sum(counts.values())
+        rate = (completed / (completed + failed) * 100) if (completed + failed) > 0 else 0.0
+        return rate, completed, failed, active, total
+    except Exception:
+        conn.close()
+        return 0.0, 0, 0, 0, 0
+
+
+def load_active_mission():
+    """Return the single active (IN_PROGRESS) mission row as a dict, or None."""
+    conn = get_db_connection()
+    if not conn:
+        return None
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, goal, status, created_at FROM missions WHERE status = 'IN_PROGRESS' ORDER BY id ASC LIMIT 1"
+        )
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            return {"id": row[0], "goal": row[1], "status": row[2], "created_at": row[3]}
+        return None
+    except Exception:
+        conn.close()
+        return None
+
+
+def load_mission_tasks(mission_id: int):
+    """Return all tasks for a mission as a list of dicts with: id, description, assigned_agent, status, prompt_tokens, completion_tokens, cost_usd, error, dependencies."""
+    conn = get_db_connection()
+    if not conn:
+        return []
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """SELECT id, description, assigned_agent, status,
+                      prompt_tokens, completion_tokens, cost_usd, error, input_data
+               FROM tasks WHERE mission_id = ? ORDER BY id ASC""",
+            (mission_id,),
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        tasks = []
+        for r in rows:
+            deps = []
+            inp = r[8] or ""
+            if inp:
+                try:
+                    parsed = json.loads(inp)
+                    if isinstance(parsed, dict) and "depends_on" in parsed:
+                        deps = parsed["depends_on"]
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            tasks.append({
+                "id": r[0],
+                "description": r[1],
+                "assigned_agent": r[2],
+                "status": r[3],
+                "prompt_tokens": r[4] or 0,
+                "completion_tokens": r[5] or 0,
+                "cost_usd": r[6] or 0.0,
+                "error": r[7],
+                "dependencies": deps,
+            })
+        return tasks
+    except Exception:
+        conn.close()
+        return []
+
+
+def load_task_logs(mission_id: int, task_idx: int, max_lines: int = 20):
+    """Return recent log lines for a given task by scanning project session_log.jsonl."""
+    conn = get_db_connection()
+    if not conn:
+        return []
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT goal FROM missions WHERE id = ?", (mission_id,)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        if not row:
+            return []
+        goal = row[0]
+        slug = "".join(c if c.isalnum() or c in " _-" else "" for c in goal)[:50].strip().replace(" ", "_")
+        # Scan project directories for a matching mission branch
+        import glob as glob_mod
+        pattern = f"workspace/projects/*{slug}*/session_log.jsonl"
+        matches = glob_mod.glob(pattern)
+        if not matches:
+            # Try broader scan
+            pattern = f"workspace/projects/*/session_log.jsonl"
+            all_logs = glob_mod.glob(pattern)
+            # Pick the most recent one
+            if all_logs:
+                matches = sorted(all_logs, reverse=True)[:1]
+        if not matches:
+            return []
+        log_path = matches[0]
+        lines = []
+        try:
+            with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    # Filter: if input_data contains task_idx reference, or just show all
+                    lines.append(entry)
+            # Return last max_lines
+            return lines[-max_lines:]
+        except Exception:
+            return []
+    except Exception:
+        return []
+
 
 REGISTRY_URL = "https://raw.githubusercontent.com/JOHN-REY-CARLO-A-GEMAO/squad-os/main/packages.json"
 
@@ -350,7 +464,7 @@ def list_installed_packages():
     try:
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT i.package_id, i.version, i.install_path, i.installed_at,
+            SELECT i.id, i.package_id, i.version, i.install_path, i.installed_at,
                    p.name, p.description, w.workflow
             FROM installed_packages i
             JOIN store_packages p ON i.package_id = p.id
@@ -391,27 +505,6 @@ def get_project_status(project_id, is_active):
         return "Awaiting Commit"
     return "Exploring"
 
-def format_project_label(project_id):
-    """Transforms a project ID like '20241027_123456_my_project' into '12:34:56 - My Project'."""
-    parts = project_id.split("_")
-    if len(parts) >= 3 and len(parts[0]) == 8 and len(parts[1]) == 6:
-        # It follows the 20240101_120000_slug pattern
-        time_part = parts[1]
-        formatted_time = f"{time_part[:2]}:{time_part[2:4]}:{time_part[4:6]}"
-        slug_part = " ".join(parts[2:]).title()
-        return f"{formatted_time} - {slug_part}"
-    return project_id.replace("_", " ").title()
-
-def format_log_timestamp(ts_str):
-    """Converts ISO timestamp strings to HH:MM:SS format for cleaner logs."""
-    if not ts_str:
-        return ""
-    try:
-        # Handle cases with 'Z' or other ISO variations
-        dt = datetime.fromisoformat(str(ts_str).replace('Z', '+00:00'))
-        return dt.strftime('%H:%M:%S')
-    except Exception:
-        return str(ts_str)
 # --- UI ---
 
 st.title("🛡️ SquadOS: Project Command Center")
@@ -419,6 +512,44 @@ st.title("🛡️ SquadOS: Project Command Center")
 if st.session_state.get("mission_submitted"):
     st.toast("✅ Mission dispatched successfully!")
     st.session_state.mission_submitted = False
+
+# ── Top Metric Ribbon ─────────────────────────────────────
+METRIC_COLS = st.columns(5, gap="medium")
+stats = load_global_stats()
+rate_pct, completed_n, failed_n, active_n, total_n = compute_success_rate()
+
+prompt_tok, completion_tok, cost_usd = stats
+total_tokens = (prompt_tok or 0) + (completion_tok or 0)
+
+METRIC_COLS[0].metric(
+    "💰 Total Cost",
+    f"${cost_usd:.4f}",
+    help="Aggregate LLM cost across all missions.",
+)
+METRIC_COLS[1].metric(
+    "₿ Total Tokens",
+    f"{total_tokens:,}",
+    help=f"Prompt: {prompt_tok:,} · Completion: {completion_tok:,}",
+)
+METRIC_COLS[2].metric(
+    "✅ Success Rate",
+    f"{rate_pct:.1f}%",
+    delta=f"{completed_n} ok / {failed_n} fail",
+    delta_color="off" if completed_n == 0 and failed_n == 0 else "normal",
+    help="Completed missions vs total finished (completed + failed).",
+)
+METRIC_COLS[3].metric(
+    "⚡ Active",
+    str(active_n),
+    help="Missions in IN_PROGRESS, QUEUED, or FOLLOWUP state.",
+)
+METRIC_COLS[4].metric(
+    "📦 Total Missions",
+    str(total_n),
+    help="All missions ever created.",
+)
+
+st.divider()
 
 # Session state for mission chat sessions
 if "selected_session_id" not in st.session_state:
@@ -469,29 +600,13 @@ with st.sidebar:
         st.session_state.selected_proj = None
         st.rerun()
 
-    # Global Stats
-    stats = load_global_stats()
-    st.markdown("---")
-    st.subheader("📊 Global Performance")
-    col_s1, col_s2 = st.columns(2)
-    col_s1.metric(
-        "Total Cost",
-        f"${stats[2] if stats[2] else 0.0:.4f}",
-        help="The aggregate USD cost of all LLM requests across all missions."
-    )
-    col_s2.metric(
-        "Total Tokens",
-        f"{ (stats[0] or 0) + (stats[1] or 0) :,}",
-        help="The combined count of prompt and completion tokens processed."
-    )
-
 selected_project = st.session_state.selected_proj
 is_selected_active = st.session_state.is_active
 
 if not selected_project:
     st.info("👋 Welcome to SquadOS. Dispatch a new mission below, or click a project on the left to view details.")
 
-    main_tab1, main_tab2, main_tab3 = st.tabs(["💬 Mission Control", "🏗️ Agent Factory", "💾 Agent Store"])
+    pipeline_tab, main_tab1, main_tab2, main_tab3 = st.tabs(["🔀 Pipeline", "💬 Mission Control", "🏗️ Agent Factory", "💾 Agent Store"])
 
     @st.fragment
     def _render_chat():
@@ -649,6 +764,163 @@ if not selected_project:
                         st.session_state.mission_submitted = True
                         st.session_state.upload_key += 1
                         st.rerun()
+    with pipeline_tab:
+        active_mission = load_active_mission()
+        if active_mission is None:
+            st.info("No active mission in progress. Queue a mission from Mission Control to see the pipeline here.")
+        else:
+            st.subheader(f"Active Mission #{active_mission['id']}")
+            goal = active_mission["goal"]
+            st.caption(goal[:120] + ("..." if len(goal) > 120 else ""))
+
+            tasks = load_mission_tasks(active_mission["id"])
+
+            if not tasks:
+                st.info("Mission was picked up but no tasks have been created yet. Pipeline will populate shortly.")
+            else:
+                # ── Helper: layered topological sort ────────────────────────
+                def _layer_tasks(task_list):
+                    """Return list of layers (each layer is a list of task dicts)
+                    where all deps of a task in layer N are in layers < N."""
+                    remaining = {t["id"]: t for t in task_list}
+                    dep_map = {t["id"]: set(t.get("dependencies", [])) for t in task_list}
+                    layers = []
+                    while remaining:
+                        ready = [tid for tid, deps in dep_map.items() if tid in remaining and not deps]
+                        if not ready:
+                            break
+                        layers.append([remaining.pop(tid) for tid in ready])
+                        for deps in dep_map.values():
+                            deps -= set(ready)
+                    if remaining:
+                        layers.append(list(remaining.values()))
+                    return layers
+
+                status_colors = {
+                    "COMPLETED": "#4CAF50",
+                    "IN_PROGRESS": "#2196F3",
+                    "PENDING": "#9E9E9E",
+                    "FAILED": "#F44336",
+                    "QUEUED": "#FF9800",
+                }
+                status_icons = {
+                    "COMPLETED": "✅",
+                    "IN_PROGRESS": "🔄",
+                    "PENDING": "⏳",
+                    "FAILED": "❌",
+                    "QUEUED": "⏰",
+                }
+
+                task_map = {t["id"]: t for t in tasks}
+                layers = _layer_tasks(tasks)
+
+                # ── DAG Canvas ──────────────────────────────────────────────
+                def _has_dot():
+                    import shutil
+                    return shutil.which("dot") is not None
+
+                if _has_dot():
+                    dag = graphviz.Digraph()
+                    dag.attr(rankdir="TB", fontsize="12", bgcolor="transparent")
+                    dag.attr("node", shape="box", style="filled,rounded", fontname="sans-serif")
+                    for t in tasks:
+                        icon = status_icons.get(t["status"], "❓")
+                        label = f"{icon} #{t['id']}: {t['assigned_agent']}\\n{t['description'][:60]}"
+                        color = status_colors.get(t["status"], "#9E9E9E")
+                        fg = "white" if t["status"] in ("COMPLETED", "IN_PROGRESS") else "black"
+                        dag.node(str(t["id"]), label=label, fillcolor=color, fontcolor=fg)
+                    for t in tasks:
+                        for dep_id in t.get("dependencies", []):
+                            if dep_id in task_map:
+                                dag.edge(str(dep_id), str(t["id"]))
+                    st.graphviz_chart(dag, use_container_width=True)
+                else:
+                    # ── Native DAG renderer (no system dot needed) ──────────
+                    st.markdown("""
+                        <style>
+                        .dag-row { display: flex; justify-content: center; gap: 16px; margin: 8px 0; flex-wrap: wrap; }
+                        .dag-node { border-radius: 8px; padding: 8px 14px; min-width: 140px;
+                                    text-align: center; font-size: 13px; font-family: sans-serif;
+                                    border: 1px solid rgba(0,0,0,0.1); box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+                        .dag-arrow { text-align: center; font-size: 20px; color: #666; line-height: 1; margin: -2px 0; }
+                        </style>
+                    """, unsafe_allow_html=True)
+                    # Render each layer as a row of cards
+                    for li, layer in enumerate(layers):
+                        html_parts = []
+                        for t in layer:
+                            icon = status_icons.get(t["status"], "❓")
+                            color = status_colors.get(t["status"], "#9E9E9E")
+                            agent_short = t["assigned_agent"].split()[-1] if t["assigned_agent"] else "?"
+                            desc_short = t["description"][:40]
+                            html_parts.append(
+                                f'<div class="dag-node" style="background:{color}20;border-left:4px solid {color};">'
+                                f'<div style="font-weight:600;color:{color};">{icon} #{t["id"]} {agent_short}</div>'
+                                f'<div style="font-size:11px;color:#555;margin-top:2px;">{desc_short}</div>'
+                                f'</div>'
+                            )
+                        st.markdown(f'<div class="dag-row">{"".join(html_parts)}</div>', unsafe_allow_html=True)
+                        if li < len(layers) - 1:
+                            st.markdown('<div class="dag-arrow">▼</div>', unsafe_allow_html=True)
+
+                    # ── Edge annotations ────────────────────────────────────
+                    edges = [(d, t["id"]) for t in tasks for d in t.get("dependencies", []) if d in task_map]
+                    if edges:
+                        edge_str = "  →  ".join([f"#{s}→#{t}" for s, t in sorted(edges)])
+                        st.caption(f"Dependencies: {edge_str}")
+
+                # ── Per-Task Detail + Log Streams ───────────────────────────
+                st.markdown("### Task Details & Logs")
+                task_status_summary = sum(1 for t in tasks if t["status"] == "COMPLETED")
+                st.caption(f"{task_status_summary}/{len(tasks)} tasks completed")
+
+                # Session state for selected task
+                if "pipeline_selected_task" not in st.session_state:
+                    st.session_state.pipeline_selected_task = tasks[0]["id"] if tasks else None
+
+                task_options = {t["id"]: f"#{t['id']} {t['assigned_agent']} — {t['description'][:50]}" for t in tasks}
+                selected_task_id = st.selectbox(
+                    "Inspect Task",
+                    options=list(task_options.keys()),
+                    format_func=lambda x: task_options[x],
+                    key="pipeline_task_selector",
+                    label_visibility="collapsed",
+                )
+                st.session_state.pipeline_selected_task = selected_task_id
+
+                selected_task = task_map.get(selected_task_id)
+                if selected_task:
+                    cols = st.columns([1, 1, 1, 1])
+                    cols[0].metric("Status", selected_task["status"])
+                    cols[1].metric("Agent", selected_task["assigned_agent"])
+                    cols[2].metric("Tokens", f"{selected_task['prompt_tokens'] + selected_task['completion_tokens']:,}")
+                    cols[3].metric("Cost", f"${selected_task['cost_usd']:.4f}")
+
+                    if selected_task.get("error"):
+                        st.error(f"Error: {selected_task['error']}")
+
+                    # ── Isolated Log Stream (partial refresh) ───────────────
+                    @st.fragment
+                    def _task_log_stream(mission_id: int, task_idx: int):
+                        container = st.container(height=280)
+                        with container:
+                            log_entries = load_task_logs(mission_id, task_idx)
+                            if not log_entries:
+                                st.caption("No log entries yet for this task.")
+                            else:
+                                for entry in log_entries:
+                                    ts = entry.get("timestamp", "")
+                                    tool = entry.get("tool", "?")
+                                    output = str(entry.get("output", ""))[:200]
+                                    status_icon = "✅" if "error" not in output.lower()[:50] else "❌"
+                                    st.markdown(f"**{status_icon} `{tool}`** — {output}")
+                            if selected_task["status"] in ("IN_PROGRESS", "QUEUED", "PENDING"):
+                                if st.button("🔄 Refresh Log", key=f"ref_task_{task_idx}", use_container_width=True):
+                                    st.rerun(scope="fragment")
+                        return container
+
+                    _task_log_stream(active_mission["id"], selected_task["id"])
+
     with main_tab1:
         _render_chat()
 
@@ -806,7 +1078,7 @@ if not selected_project:
                         wf_name = wf.get("name", "Default workflow")
                         st.write(f"**Workflow:** {wf_name}")
                         st.code(json.dumps(wf, indent=2), language="json", line_numbers=True)
-                        if st.button(f"🚀 Deploy '{wf_name}' as Mission", key=f"deploy_{ip['package_id']}", use_container_width=True):
+                        if st.button(f"Deploy '{wf_name}' as Mission", key=f"deploy_{ip['id']}", use_container_width=True):
                             success = deploy_store_workflow(ip["package_id"])
                             if success:
                                 st.success(f"Workflow '{wf_name}' queued as a mission!")
