@@ -57,3 +57,19 @@ MCP servers are plug-and-play. Register once → tools appear as native `BaseToo
 ### Repository
 - Pushed to remote GitHub, fully synced
 - Worker idles on 3s poll. New missions can be queued at any time.
+
+### HITL Breakpoint Gates (v1.0 — July 17, 2026)
+**Asynchronous human-in-the-loop safety framework** for destructive tool execution. The system does NOT block a process thread waiting for human approval — it yields control back to the SQLite state machine and re-checks each wave cycle.
+
+**Design**:
+- `destructive` flag on `BaseTool` (opt-in, default `False`)
+- Marked as destructive: `TerminalTool`, `PythonRunnerTool`, `CommitProjectTool`
+- `execute_task()` inspects agent tools before running; if any are destructive → writes a `mission_interrupts` row → sets task to `PAUSED_FOR_REVIEW` → returns early (DAG continues other tasks)
+- DAG wave loop: each iteration polls `get_task_interrupt()` for resolved interrupts
+  - `APPROVED` prefix → re-queues as `PENDING` (tool runs normally)
+  - Any other guidance → marks `FAILED` with human's rejection message
+- Dashboard Pipeline tab: inline resolution panel with text area + submit button; verdict stored via `update_interrupt_guidance()`
+
+**Files**: `base.py` (flag), `registry.py` (3 tools), `session.py` (table + 3 helpers), `manager.py` (HITL check + DAG resolution), `dashboard.py` (resolution panel)
+
+**Status**: 70/70 tests passing, committed, pushed. Environment fully production-ready.
