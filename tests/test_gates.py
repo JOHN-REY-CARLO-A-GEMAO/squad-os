@@ -89,12 +89,12 @@ class TestTestGate:
 
 class TestGateSuite:
     @pytest.mark.asyncio
-    async def test_empty_suite(self):
+    async def test_empty_suite_loads_defaults(self):
         suite = GateSuite(gates=[])
         with tempfile.TemporaryDirectory() as tmpdir:
             report = await suite.run_all(tmpdir, "task", "output")
             assert report.passed
-            assert len(report.results) == 0
+            assert len(report.results) == 3
 
     @pytest.mark.asyncio
     async def test_all_gates_pass(self):

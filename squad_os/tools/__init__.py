@@ -8,7 +8,7 @@ from squad_os.tools.visual import BrowserControlTool, VisionAnalysisTool
 from squad_os.tools.desktop import DesktopControlTool
 from squad_os.tools.store import BrowseStoreTool, InstallPackageTool, RunWorkflowTool, UninstallPackageTool
 
-from squad_os.tools.mcp_hub import MCPWrapperTool, MCPListTool, MCPRegisterTool
+from squad_os.tools.mcp_hub import MCPWrapperTool, MCPListTool, MCPRegisterTool, MCPDiscoverTool
 from squad_os.tools.media import ImageGenTool, VideoGenTool, NeuralAudioTool, AdvancedVideoEditorTool
 from squad_os.tools.system import SystemMonitorTool, SystemSummaryTool
 from squad_os.tools.sync import SquadDiscoverTool, SquadBlackboardTool, SquadResourceTool

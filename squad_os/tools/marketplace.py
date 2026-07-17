@@ -12,6 +12,7 @@ import importlib
 import json
 import os
 import pkgutil
+import sys
 from typing import Optional, List, Dict, Any
 from squad_os.tools.base import BaseTool
 
@@ -40,7 +41,7 @@ class SkillRegistry:
                 module = importlib.import_module(f"squad_os.tools.{modname}")
                 self._scan_module(module, modname)
             except Exception as e:
-                print(f"⚠️ [SkillRegistry]: Failed to load tool from {modname}: {e}")
+                print(f"[ERR] [SkillRegistry]: Failed to load tool from {modname}: {e}")
 
         # Discover tools from installed .sqad packages
         try:
@@ -53,20 +54,36 @@ class SkillRegistry:
                         continue
                     module_name = tf[:-3]
                     try:
+                        spec_name = f"squad_os.tools.pkg_{module_name}"
                         spec = importlib.util.spec_from_file_location(
-                            f"squad_os.tools.pkg_{module_name}",
+                            spec_name,
                             os.path.join(tools_dir, tf)
                         )
                         if spec and spec.loader:
                             module = importlib.util.module_from_spec(spec)
+                            sys.modules[spec_name] = module
                             spec.loader.exec_module(module)
                             prefix = os.path.basename(os.path.dirname(tools_dir))
                             package_id = prefix.split("__")[0] if "__" in prefix else prefix
                             self._scan_module(module, module_name, package_prefix=package_id)
                     except Exception as e:
-                        print(f"⚠️ [SkillRegistry]: Failed to load package tool {module_name}: {e}")
+                        print(f"[ERR] [SkillRegistry]: Failed to load package tool {module_name}: {e}")
         except ImportError:
             pass
+
+        # Inject MCP native tools from all cached schemas
+        self._inject_mcp_tools()
+
+    def _inject_mcp_tools(self):
+        """Build and register dynamic BaseTool instances for every cached MCP tool schema."""
+        try:
+            from squad_os.tools.mcp_hub import MCPAggregator
+            agg = MCPAggregator.get_instance()
+            agg.inject_native_tools()
+        except ImportError:
+            pass
+        except Exception as e:
+            print(f"  [MCP] Injection error: {e}")
 
     def _scan_module(self, module, modname: str, package_prefix: str = None):
         """Scan a module for BaseTool subclasses and register them."""
@@ -96,7 +113,7 @@ class SkillRegistry:
                         self._categories[category] = []
                     self._categories[category].append(tool_name)
                 except Exception as e:
-                    print(f"⚠️ [SkillRegistry]: Failed to instantiate tool {attr_name}: {e}")
+                    print(f"[ERR] [SkillRegistry]: Failed to instantiate tool {attr_name}: {e}")
     
     def list_tools(self, category: Optional[str] = None) -> List[Dict]:
         """List all available tools, optionally filtered by category."""
@@ -105,17 +122,58 @@ class SkillRegistry:
             return [self._tools[name] for name in tool_names if name in self._tools]
         return list(self._tools.values())
     
+    def register_dynamic(self, tool_class: type) -> str:
+        """Register a dynamically-created tool class (e.g. from MCPNativeTool factory).
+
+        The class must be a ``BaseTool`` subclass with a ``name`` attribute.
+        Returns the registered tool name.
+        """
+        name = tool_class.name
+        self._tools[name] = {
+            "name": name,
+            "description": tool_class.description,
+            "category": getattr(tool_class, 'category', 'mcp'),
+            "parameters": tool_class.parameters,
+            "dynamic_class": tool_class,
+        }
+        cat = self._tools[name]["category"]
+        if cat not in self._categories:
+            self._categories[cat] = []
+        if name not in self._categories[cat]:
+            self._categories[cat].append(name)
+        return name
+
     def get_tool(self, name: str) -> Optional[BaseTool]:
-        """Get a tool instance by name."""
+        """Get a tool instance by name, with bare-name fallback for package tools."""
         tool_info = self._tools.get(name)
         if not tool_info:
+            for key, info in self._tools.items():
+                if isinstance(info, dict) and info.get("package") and key.endswith(f".{name}"):
+                    tool_info = info
+                    break
+        if not tool_info:
             return None
+
+        # Dynamic class (e.g. MCP native tools) — instantiate directly
+        dynamic_cls = tool_info.get("dynamic_class")
+        if dynamic_cls:
+            try:
+                return dynamic_cls()
+            except Exception as e:
+                print(f"[ERR] [SkillRegistry]: Failed to instantiate dynamic tool {name}: {e}")
+                return None
+
         try:
-            module = importlib.import_module(f"squad_os.tools.{tool_info['module']}")
+            modname = tool_info['module']
+            if tool_info.get("package"):
+                full_module = f"squad_os.tools.pkg_{modname}"
+            else:
+                full_module = f"squad_os.tools.{modname}"
+            module = importlib.import_module(full_module)
             tool_class = getattr(module, tool_info['class'])
             return tool_class()
         except Exception as e:
-            print(f"⚠️ [SkillRegistry]: Failed to instantiate tool {name}: {e}")
+            print(f"[ERR] [SkillRegistry]: Failed to instantiate tool {name}: {e}")
             return None
     
     def get_categories(self) -> List[str]:

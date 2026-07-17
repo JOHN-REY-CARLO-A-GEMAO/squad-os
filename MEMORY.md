@@ -40,8 +40,17 @@ Streamlit dashboard at `localhost:8501` with:
 - Pipeline Tab — Graphviz DAG with native HTML/CSS fallback when `dot` not in PATH
 - `@st.fragment` per-task log streams
 
+### MCP Aggregator (Native Tool Injection)
+MCP servers are plug-and-play. Register once → tools appear as native `BaseTool` entries.
+
+- **ConnectionPool**: Long-lived stdio subprocesses, Content-Length framing, auto-reconnect, Windows-safe teardown
+- **MCPAggregator**: Singleton, loads `workspace/mcp_servers.json`, `tools/list` discovery, schema caching, `call_tool()` routing
+- **Native Tool Factory**: `create_mcp_native_tool(server, schema)` → dynamic `BaseTool` subclass with namespaced names (`{server}_{tool}`)
+- **SkillRegistry hook**: `register_dynamic()` stores class ref directly; `get_tool()` instantiates without `importlib`
+- **Agent experience**: `github_issues_list(repo="squad-os")` — same as any built-in tool
+
 ### Testing
-- 70 unit tests all passing
+- 80 unit tests all passing (70 legacy + 10 MCP native tool)
 - Mission #23 (async web scraper, 5-agent delegation): 5/5 tasks, 0 fails, gates live-passing
 - All 7 missions in DB are COMPLETED or FAILED — no hanging tasks
 
