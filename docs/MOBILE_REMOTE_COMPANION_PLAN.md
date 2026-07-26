@@ -29,12 +29,23 @@ Rather than serving as a heavy administrative console mimicking desktop interfac
                   +--------------------------------------------+
 ```
 
-### Core Product Philosophy
+### 1.1 Core Product Philosophy
 1. **The Conversation is the Canvas:** The primary interface is a unified conversational timeline. Execution details, approvals, files, errors, and system status updates are delivered inline as rich interactive timeline cards rather than separated tabs or complex dashboard widgets.
 2. **Invisible Orchestration, Expandable Transparency:** The system defaults to a clean, natural assistant voice ("I am refactoring the authentication router now"). The heavy under-the-hood worker mechanics (DAG progression, planner phases, coder status) are represented as glanceable status streams that can be expanded on-demand.
 3. **One-Handed Actionability (HITL via AI Inbox):** Key human decisions—such as reviewing code changes, validating test passes, and confirming risky deployments—are packaged as swipeable, tap-friendly interactive approval cards inside a dedicated AI Inbox requiring minimal typing.
 4. **Instant Shared Context:** Every interaction, workspace context chip, and shared memory automatically synchronizes between mobile devices and the desktop control center, establishing a seamless loop of continuous work.
 5. **Production-Grade Scalability:** Built upon a resilient Event-Sourced architecture with formal schema versioning, strict sync protocol semantics, offline-first execution queues, capability negotiation, and multi-layered security.
+
+### 1.2 Architectural Invariants
+Regardless of future feature expansions or platforms, the Squad OS architecture enforces the following non-negotiable architectural invariants:
+1. **Event Log as Single Source of Truth:** Every state change is modeled as an append-only event. Projections and read models are completely secondary.
+2. **Disposable Projections:** Read-model projections can be fully discarded and deterministically replayed/rebuilt from the event log at any time.
+3. **Cached Snapshots, Not State:** Mission snapshots are optimized query-caches for accelerating WebSocket/reconnection startup, never authoritative state.
+4. **Strict API Versioning:** Every public-facing mobile/external API is versioned (e.g., prefixing `/api/v1`) to prevent breakage during protocol upgrades.
+5. **Capability Negotiation:** Clients must negotiate capabilities upon handshake to ensure backward and forward compatibility with mixed client/server versions.
+6. **Command Idempotency:** All client-initiated commands must carry a client-generated UUID `request_id` to prevent duplicate processing on retries/network glitches.
+7. **Offline Integrity:** Offline queues and synchronization engines must preserve transaction order and apply explicit conflict resolution policies without compromising server data integrity.
+8. **Namespace Sandbox Isolation:** Ecosystem plugins extend the platform through reserved event namespaces and strict contracts without ever altering core schemas.
 
 ---
 
@@ -49,8 +60,8 @@ Instead of treating `conversation_events` as an ephemeral database logging table
 Conversation Log (Append-Only Event Sourcing)
   ├── EVENT 101: CHAT.MESSAGE (User: "Refactor Auth")
   ├── EVENT 102: MISSION.STARTED (Mission #91)
-  ├── EVENT 103: AGENT.THINKING (Coder: "Identified route redundancy")
-  ├── EVENT 104: CODE.DIFF (Proposed changes in auth_service.dart)
+  ├── EVENT 103: MISSION.JOURNAL (Coder: "Identified route redundancy")
+  ├── EVENT 104: GIT.DEPLOY (Proposed changes in auth_service.dart)
   ├── EVENT 105: INBOX.APPROVAL_REQUESTED (Confirm deletion of legacy configs)
   └── EVENT 106: INBOX.APPROVAL_GRANTED (User approved deletion via mobile)
 ```
@@ -74,6 +85,34 @@ Workspace (Project Container)
                    │     └── Nested Children (Sub-events associated with a parent ID)
                    └── Mission Snapshot (Aggregated cache for quick-resume)
 ```
+
+### 2.3 Projection Layer
+Rather than querying raw event logs directly for UI binding, Squad OS leverages a dedicated **Projection Layer** to construct read-optimized, specialized state views.
+* **Conversation Projection:** Real-time summary tracking conversation IDs, the latest event payload, title, summary, and last activity time.
+* **Mission Projection:** Tracks active execution state, progress percentages, confidence levels, cost metrics, ETAs, and current agent thoughts.
+* **AI Inbox Projection:** Aggregates pending approval requests, warnings, and blocked states needing human-in-the-loop validation.
+* **Today Dashboard Projection:** Aggregates active crew streams, critical actions queue, and recent milestones.
+
+These read models are lightweight, optimized, and separate execution-heavy writes from rapid, high-concurrency UI reads.
+
+### 2.4 Event Replay
+Clients recovering from off-grid scenarios utilize the event replay mechanism to deterministically rebuild their local read models. By requesting `/api/v1/conversations/{id}` with a known `since_sequence_id`, the client receives and streams the tail end of the immutable event log. Replaying these ordered events from the exact state sequence guarantees flawless client-side UI synchronization.
+
+### 2.5 Snapshot Recovery
+To prevent long latency times when fetching huge conversation timelines with thousands of past events, the system utilizes **Mission Snapshots**.
+* Whenever an agent progress loop updates, the backend updates a cached, structured snapshot in the database.
+* Upon mobile websocket reconnects or cold app boots, the client instantly loads the active snapshot to render current active metrics (like progress bars or ETA) in milliseconds, while historical events are loaded asynchronously in the background.
+
+### 2.6 Sequence Numbers
+Every event logged to the system is assigned an auto-incrementing, contiguous, global `sequence_id` (independent of the physical table row primary ID).
+* **Global Order:** Sequence numbers provide absolute chronological order.
+* **Packet Loss Recovery:** When streaming over WebSockets, the mobile client verifies that received packets arrive in sequence. If a gap is detected (e.g., receiving sequence 105 immediately after 102), the sync engine immediately requests the missed packets from the server via sequence IDs.
+
+### 2.7 Versioning
+To enable the schema and runtime architectures to evolve independently without introducing breaking changes, Squad OS decouples versioning into three distinct boundaries:
+* **API Version:** Dictated in the URL route (e.g., `/api/v1/`). Evolved globally for protocol handshakes.
+* **Database Schema Version:** Tracks physical SQL tables and database structures (e.g., standard migration schema increments).
+* **Payload Schema Version:** Stored inline on every event as `payload_schema_version`. Allows structural payload JSON parameters to expand and transform over time without breaking historical event replays. Older payload formats are automatically translated via mapper functions.
 
 ---
 
@@ -118,11 +157,12 @@ To support separating metadata from project memory, persisting mission snapshots
                                       | id (PK)                 |
                                       | parent_event_id (FK)    | -- Support Nesting!
                                       | conversation_id (FK)    |
+                                      | sequence_id (Indexed)   | -- Replay sequence
                                       | event_namespace         | -- e.g. CHAT, MISSION, AGENT
                                       | event_type              | -- e.g. MESSAGE, STARTED, THINKING
                                       | payload_json            |
                                       | mission_id (FK, Opt)    |
-                                      | event_version           |
+                                      | payload_schema_version  | -- Versioned payloads
                                       | created_at              |
                                       +-------------------------+
                                                    |
@@ -189,17 +229,19 @@ CREATE TABLE IF NOT EXISTS conversation_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     parent_event_id INTEGER, -- Non-cyclic recursive foreign key allowing sub-events under a parent event card
     conversation_id INTEGER NOT NULL,
-    event_namespace TEXT NOT NULL, -- e.g. 'CHAT', 'MISSION', 'AGENT', 'TOOL', 'DEPLOY', 'PLUGIN', 'STORE', 'GIT', 'INBOX'
+    sequence_id INTEGER NOT NULL, -- Global ordered sequence ID for deterministic replay and packet loss recovery
+    event_namespace TEXT NOT NULL, -- e.g. 'CHAT', 'MISSION', 'SYSTEM', 'ERROR', 'WARNING', 'TOOL', 'SEARCH', 'UPLOAD', 'VOICE', 'IMAGE', 'GIT', 'DEPLOY', 'PLUGIN', 'STORE', 'AUTOMATION', 'MARKETPLACE', 'INBOX'
     event_type TEXT NOT NULL,      -- e.g. 'MESSAGE', 'STARTED', 'THINKING', 'ACTION', 'JOURNAL', 'APPROVAL_REQUESTED', 'COMPLETE'
     payload_json TEXT NOT NULL,    -- Schema-versioned event data payload
     mission_id INTEGER,            -- Optional direct foreign key connecting timeline events to database mission entries
-    event_version INTEGER DEFAULT 1, -- Incremental sequence ID for payload schema structures
+    payload_schema_version INTEGER DEFAULT 1, -- Incremental version ID for structured payload schema mapping
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (parent_event_id) REFERENCES conversation_events(id) ON DELETE CASCADE,
     FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
     FOREIGN KEY (mission_id) REFERENCES missions(id) ON DELETE SET NULL
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_events_sequence_id ON conversation_events(sequence_id);
 CREATE INDEX IF NOT EXISTS idx_events_conversation_id ON conversation_events(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_events_parent_id ON conversation_events(parent_event_id);
 CREATE INDEX IF NOT EXISTS idx_events_mission_id ON conversation_events(mission_id);
@@ -319,9 +361,10 @@ Must be requested by the mobile client immediately upon establishing connection 
     {
       "id": 101,
       "parent_event_id": null,
+      "sequence_id": 5001,
       "event_namespace": "CHAT",
       "event_type": "MESSAGE",
-      "event_version": 1,
+      "payload_schema_version": 1,
       "created_at": "2026-05-15T14:30:00Z",
       "payload": {
         "role": "user",
@@ -331,10 +374,11 @@ Must be requested by the mobile client immediately upon establishing connection 
     {
       "id": 102,
       "parent_event_id": null,
+      "sequence_id": 5002,
       "event_namespace": "MISSION",
       "event_type": "STARTED",
       "mission_id": 91,
-      "event_version": 1,
+      "payload_schema_version": 1,
       "created_at": "2026-05-15T14:30:15Z",
       "payload": {
         "goal": "Add verification helper to auth_service.dart",
@@ -343,11 +387,12 @@ Must be requested by the mobile client immediately upon establishing connection 
     },
     {
       "id": 103,
-      "parent_event_id": 102, -- Nested child event! Shows in expandable sub-history of Mission #91
-      "event_namespace": "AGENT",
+      "parent_event_id": 102,
+      "sequence_id": 5003,
+      "event_namespace": "TOOL",
       "event_type": "THINKING",
       "mission_id": 91,
-      "event_version": 1,
+      "payload_schema_version": 1,
       "created_at": "2026-05-15T14:30:45Z",
       "payload": {
         "agent": "CoderAgent",
@@ -358,10 +403,11 @@ Must be requested by the mobile client immediately upon establishing connection 
     {
       "id": 104,
       "parent_event_id": 102,
+      "sequence_id": 5004,
       "event_namespace": "INBOX",
       "event_type": "APPROVAL_REQUESTED",
       "mission_id": 91,
-      "event_version": 1,
+      "payload_schema_version": 1,
       "created_at": "2026-05-15T14:31:45Z",
       "payload": {
         "approval_id": 412,
@@ -409,7 +455,7 @@ Provides vector-based search across all historical messages, actions, files, err
 ```json
 {
   "query": "the login bug",
-  "engine_used": "vector_search", -- or "sqlite_fts"
+  "engine_used": "vector_search",
   "results": [
     {
       "event_id": 104,
@@ -435,7 +481,7 @@ Dispatched instantly whenever a critical state transition occurs in an active ru
 {
   "event_namespace": "MISSION",
   "event_type": "SNAPSHOT_UPDATE",
-  "event_version": 1,
+  "payload_schema_version": 1,
   "payload": {
     "mission_id": 91,
     "status": "IN_PROGRESS",
@@ -454,9 +500,9 @@ Dispatched instantly whenever a critical state transition occurs in an active ru
 Streamed frequently (every 500ms) during intensive execution blocks, designed to populate nested children under the active mission event.
 ```json
 {
-  "event_namespace": "AGENT",
+  "event_namespace": "TOOL",
   "event_type": "TICK",
-  "event_version": 1,
+  "payload_schema_version": 1,
   "payload": {
     "mission_id": 91,
     "parent_event_id": 102,
@@ -466,6 +512,19 @@ Streamed frequently (every 500ms) during intensive execution blocks, designed to
     "active_file": "lib/services/auth_service.dart",
     "current_action": "Writing jwt_verify_claims() function body...",
     "subtask_progression": ["Understand boundaries ✓", "Write tests ✓", "Implement ⚡", "Validate ○"]
+  }
+}
+```
+
+#### 3. Client Command Execution (Example of Idempotency)
+Whenever a mobile client transmits an execution command to the server (over WebSocket or REST), it submits a client-generated UUID `request_id` within the payload envelope to ensure complete command idempotency.
+```json
+{
+  "request_id": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+  "action": "INBOX.APPROVE",
+  "payload": {
+    "approval_id": 412,
+    "notes": "Approved legacy configurations deletion."
   }
 }
 ```
@@ -490,7 +549,7 @@ The interface adopts an elegant, accessible **4-Tab Navigation Layout** with str
 ```
 
 ### Tab 1: Today Dashboard (The Workspace Pulse)
-* **Design Philosophy:** Replaces default technical lists with a glanceable executive layout. It is only focused on what requires immediate attention *now*.
+* **Design Philosophy:** Replaces default technical lists with a glanceable executive layout. It is only focused on what requires immediate attention *now*. It serves as the primary/default launch screen to answer "What needs my attention?" in less than one second.
 * **UI Modules:**
   * **Critical Actions Required:** Card stack representing unhandled AI Inbox alerts (needs immediate verification/approvals).
   * **Active Missions Summary:** Miniature horizontal cards of currently running agents, displaying circular timers, ETA, and progress.
@@ -504,7 +563,7 @@ The interface adopts an elegant, accessible **4-Tab Navigation Layout** with str
   * **Visual Metrics:** Live duration ticker, running cost calculator ($0.00), confidence badge (`HIGH` / `MEDIUM` / `LOW`), and remaining ETA.
   * **Inline Quick Actions:** Tap buttons embedded inside completed/failed timeline entries (`Open Diff`, `Summarize`, `Deploy`, `Rollback`, `Share`).
 * **Global Command Palette Drawer:**
-  * Triggered via a downward swipe gesture anywhere, long press on the screen, or tapping the Search header icon.
+  * Triggered via a downward swipe gesture anywhere, long press on the screen, tapping the Search header icon, or hitting the hardware keyboard shortcut `Ctrl + K` when connected to physical tablet attachments.
   * Opens a fuzzy-matched overlay list mimicking Spotlight or Raycast. Allows searching and firing global actions (`/deploy`, `/switch-workspace`, `/create-mission`, `/clear-cache`, `/reconnect`).
 
 ### Tab 3: AI Inbox (The HITL Controller)
@@ -571,16 +630,17 @@ To completely eliminate the insecurity of manual password exchanges or raw local
 ```
 
 #### The Protocol Details:
-1. **QR Generation:** The Desktop client requests a signed ephemeral pairing ticket from the coordinator backend containing:
+1. **QR Generation:** The Desktop client requests a signed ephemeral pairing ticket from the coordinator backend containing the ticket version, nonce, and device metadata:
    ```json
    {
      "pairing_url": "squados://pair",
+     "ticket_version": 1,
      "nonce": "a7b3c9f28d...",
      "device_id": "desktop_coordinator_01",
      "expires_at": 1782531200
    }
    ```
-2. **Scanning:** Mobile scans the QR, validates the protocol scheme, and dispatches a pairing execution payload directly over HTTPS using TLS.
+2. **Scanning:** Mobile scans the QR, validates the protocol scheme and `ticket_version` (ensuring backward/forward compatibility), and dispatches a pairing execution payload directly over HTTPS using TLS.
 3. **Backend Validation & Pinning:** The backend caches the connection request.
 4. **Desktop HITL Clearance:** Desktop displays an overlay confirmation dialog: *"Allow 'iPhone 15 Pro' to pair and command this workspace?"*.
 5. **Session Initiation:** Upon confirmation, the backend flags the nonce as approved and generates an asymmetrical RSA public/private key-pair, issuing signed JWT refresh and access tokens pinned to that mobile device ID.
@@ -804,10 +864,24 @@ For a remote operations tool, security is paramount. The Mobile Companion applie
 Squad OS is built to be modular. To prevent schema bloating or UI breaking changes whenever third-party development packages (issued as `.sqad` extensions) are installed, we establish a standardized **Ecosystem Plugin Event Contract**.
 
 ### 9.1 Namespace Assignments
-The database and WebSocket routers reserve the following namespaces for external extensions:
-* `PLUGIN.*`: Dispatched by external tools to insert custom execution timelines.
-* `TOOL.*`: Emitted when agents utilize custom environment executors.
-* `STORE.*`: Triggered when packages are updated, verified, or uninstalled.
+The database and WebSocket routers reserve the following 17 namespaces permanently for all system and external extension events:
+* `CHAT`: Conversation interactions, user/agent messages.
+* `MISSION`: Direct mission-related start, stop, progress, and snapshot commands.
+* `SYSTEM`: Host environment states, notifications, sync tasks.
+* `ERROR`: Critical stack traces, task failures, runtime crashes.
+* `WARNING`: Non-fatal warning logs, compiler deprecations, resource limits.
+* `TOOL`: Tool execution loops, subprocess status.
+* `SEARCH`: Vector or semantic search index queries.
+* `UPLOAD`: File transmission metadata, target uploads.
+* `VOICE`: Voice-to-text transcriptions, speech synthesis markers.
+* `IMAGE`: Diagram renderings, screenshot inspections.
+* `GIT`: Repository commits, branch swappings, merge operations.
+* `DEPLOY`: CI/CD workflows, build pipelines, hot reload triggers.
+* `PLUGIN`: Custom third-party plugin scopes.
+* `STORE`: Package updates, sideloads, and uninstalls.
+* `AUTOMATION`: Background cron schedules, recurring triggers.
+* `MARKETPLACE`: Discovery listings, ratings, download handlers.
+* `INBOX`: Human-in-the-loop approvals, reviews, security alerts.
 
 ### 9.2 Standardized Custom UI Payloads (`PLUGIN.UI`)
 Plugins can inject custom UI modules directly into the conversation feed without native app compilation by emitting a structured `PLUGIN.UI` event with standard interactive layouts:
@@ -816,7 +890,7 @@ Plugins can inject custom UI modules directly into the conversation feed without
 {
   "event_namespace": "PLUGIN",
   "event_type": "UI",
-  "event_version": 1,
+  "payload_schema_version": 1,
   "payload": {
     "plugin_id": "stripe_billing_helper",
     "title": "Stripe Sync Completed",
@@ -869,7 +943,7 @@ To transition this production specification into active service, we structure de
 ### Phase 3: Real-Time Event Stream Routing
 * **Goals:** Introduce structured WebSocket emitters using namespaces and sequence IDs.
 * **Deliverables:**
-  - Update background worker dispatchers to emit structured JSON events matching namespaces (e.g. `AGENT.TICK`, `MISSION.SNAPSHOT_UPDATE`).
+  - Update background worker dispatchers to emit structured JSON events matching namespaces (e.g. `TOOL.TICK`, `MISSION.SNAPSHOT_UPDATE`).
   - Develop client-side event router in mobile Flutter codebase.
 * **Verification:** Automated WebSocket subscription test suites asserting correct sub-event grouping under parent event cards.
 
