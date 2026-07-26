@@ -1,5 +1,7 @@
 # Squad OS Mobile Remote Companion App: Version 2 Architecture & Product Design Blueprint
 
+---
+
 ## 1. Product Vision & Goals
 
 The Squad OS Mobile Companion is a high-performance, conversation-first **Remote Companion and AI Operating Controller**.
@@ -30,64 +32,116 @@ Rather than serving as a heavy administrative console mimicking desktop interfac
 ### Core Product Philosophy
 1. **The Conversation is the Canvas:** The primary interface is a unified conversational timeline. Execution details, approvals, files, errors, and system status updates are delivered inline as rich interactive timeline cards rather than separated tabs or complex dashboard widgets.
 2. **Invisible Orchestration, Expandable Transparency:** The system defaults to a clean, natural assistant voice ("I am refactoring the authentication router now"). The heavy under-the-hood worker mechanics (DAG progression, planner phases, coder status) are represented as glanceable status streams that can be expanded on-demand.
-3. **One-Handed Actionability (HITL):** Key human decisions—such as reviewing code changes, validating test passes, and confirming risky deployments—are packaged as swipeable, tap-friendly interactive approval cards requiring minimal typing.
+3. **One-Handed Actionability (HITL via AI Inbox):** Key human decisions—such as reviewing code changes, validating test passes, and confirming risky deployments—are packaged as swipeable, tap-friendly interactive approval cards inside a dedicated AI Inbox requiring minimal typing.
 4. **Instant Shared Context:** Every interaction, workspace context chip, and shared memory automatically synchronizes between mobile devices and the desktop control center, establishing a seamless loop of continuous work.
+5. **Production-Grade Scalability:** Built upon a resilient Event-Sourced architecture with formal schema versioning, strict sync protocol semantics, offline-first execution queues, capability negotiation, and multi-layered security.
 
 ---
 
-## 2. Information & State Hierarchy
+## 2. Event Sourcing & State Hierarchy
 
-To support a project-centric design, the mobile application moves away from flat chat history and adopts a robust hierarchical workspace structure similar to Claude Projects.
+To scale cleanly across years of multi-agent and multi-platform iterations, the Squad OS Mobile Companion moves away from raw state updates and adopts an **Event Sourced Architectural Model**.
+
+### 2.1 The Event-Sourced Model
+Instead of treating `conversation_events` as an ephemeral database logging table, the **Event Stream** is the **Single Source of Truth**. Every state transition—such as a user sending a message, a mission starting, an agent making a thought, a file being modified, or an approval being granted—is appended as an immutable event in the log.
+
+```
+Conversation Log (Append-Only Event Sourcing)
+  ├── EVENT 101: CHAT.MESSAGE (User: "Refactor Auth")
+  ├── EVENT 102: MISSION.STARTED (Mission #91)
+  ├── EVENT 103: AGENT.THINKING (Coder: "Identified route redundancy")
+  ├── EVENT 104: CODE.DIFF (Proposed changes in auth_service.dart)
+  ├── EVENT 105: INBOX.APPROVAL_REQUESTED (Confirm deletion of legacy configs)
+  └── EVENT 106: INBOX.APPROVAL_GRANTED (User approved deletion via mobile)
+```
+
+Both the desktop and mobile applications maintain memory-efficient projections (local state models) by reading this event stream. This design guarantees:
+* **Reliable Replays:** A mobile client recovering from a signal drop can replay missing sequence numbers rather than requesting full page refreshes.
+* **Seamless Multi-Device Sync:** The Desktop Control Center and Mobile Companion automatically project the exact same state because they listen and dispatch to the same immutable log.
+* **Rich Auditing & Diagnostics:** Complete deterministic replay of what an autonomous agent did, when it asked the user, and exactly what context was active.
+* **Simplified Agent Training:** The event history acts as high-fidelity offline training sequences for future coordination LLMs.
+
+### 2.2 Relational Information Hierarchy
+Within this event-driven architecture, the structural nesting organizes resources cleanly:
 
 ```
 Workspace (Project Container)
    └── Conversation
-           └── Context Memory & Context Chips
+           ├── Metadata (AI config: models, prompt, temp)
+           ├── Conversation Memory (Project context: branch, constraints, env)
            └── Unified Event Timeline
-                   ├── Messages (User Prompt / Assistant Response)
-                   ├── AI Session Card (Live WebSocket state card)
-                   ├── Agent Stream (Dynamic agent execution feedback)
-                   ├── Mission Event (Started, Completed, Failed milestones)
-                   ├── Approval Event (Interactive HITL decision cards)
-                   ├── File Upload / Attachment (Developer-focused media)
-                   └── System Notification (Out-of-band alerts)
+                   ├── Base Event (Immutable entry with namespace & type)
+                   │     └── Nested Children (Sub-events associated with a parent ID)
+                   └── Mission Snapshot (Aggregated cache for quick-resume)
 ```
-
-### Architectural Components
-* **Workspace:** Represents a logical boundaries or repository context (e.g., `Mobile App`, `SquadOS Backend`, `AI Research`). Conversations belong strictly to a Workspace.
-* **Conversation:** A persistent channel of coordination. Unlike simple chats, conversations hold active context memory which guides all future prompts sent within that thread.
-* **Context Memory:** A set of persistent variables (Active Branch, Environment, Preferred Framework, Target Goal, System Constraints) attached directly to the Conversation and editable via Context Chips.
-* **Unified Event Timeline:** A chronological stream where all forms of interaction (messages, logs, errors, attachments, system events, and task transitions) are merged into a single scrollable feed.
 
 ---
 
-## 3. Database Architecture & Schema Extensions
+## 3. Database Architecture & SQLite Schema Extensions
 
-To support the V2 architecture while preserving backward compatibility with the existing `missions`, `tasks`, and `approvals` tables, we extend the database using a set of relational tables. This schema ensures a conversation-first representation without disrupting desktop background workers.
+To support separating metadata from project memory, persisting mission snapshots, and allowing nested timeline events, the SQLite database is updated with clean relational mappings.
 
 ```
-   +-------------------+              +----------------------+
-   |    workspaces     |              |     conversations    |
-   |-------------------|              |----------------------|
-   | id (PK)           |1           * | id (PK)              |
-   | name              |------------->| workspace_id (FK)    |
-   | description       |              | title                |
-   | created_at        |              | context_memory_json  |
-   +-------------------+              +----------------------+
-                                                 |
-                                                 | 1
-                                                 |
-                                                 v *
-                                      +----------------------+
-                                      |  conversation_events |
-                                      |----------------------|
-                                      | id (PK)              |
-                                      | conversation_id (FK) |
-                                      | event_type           |
-                                      | payload_json         |
-                                      | created_at           |
-                                      | mission_id (FK, Opt) |
-                                      +----------------------+
+   +-------------------+              +-------------------------+
+   |    workspaces     |              |      conversations      |
+   |-------------------|              |-------------------------|
+   | id (PK)           |1           * | id (PK)                 |
+   | name              |------------->| workspace_id (FK)       |
+   | description       |              | title                   |
+   | created_at        |              | summary                 |
+   +-------------------+              | goal                    |
+                                      | system_prompt           |
+                                      | active_model            |
+                                      | temperature             |
+                                      | created_at, updated_at  |
+                                      +-------------------------+
+                                                   |
+                                                   | 1
+                                                   |
+                                                   v *
+                                      +-------------------------+
+                                      |  conversation_memories  |
+                                      |-------------------------|
+                                      | id (PK)                 |
+                                      | conversation_id (FK)    |
+                                      | memory_key (Indexed)    |
+                                      | memory_value            |
+                                      | updated_at              |
+                                      +-------------------------+
+                                                   |
+                                                   | 1
+                                                   |
+                                                   v *
+                                      +-------------------------+
+                                      |   conversation_events   |
+                                      |-------------------------|
+                                      | id (PK)                 |
+                                      | parent_event_id (FK)    | -- Support Nesting!
+                                      | conversation_id (FK)    |
+                                      | event_namespace         | -- e.g. CHAT, MISSION, AGENT
+                                      | event_type              | -- e.g. MESSAGE, STARTED, THINKING
+                                      | payload_json            |
+                                      | mission_id (FK, Opt)    |
+                                      | event_version           |
+                                      | created_at              |
+                                      +-------------------------+
+                                                   |
+                                                   | 1 (cached state)
+                                                   v 1 (optional mapping)
+                                      +-------------------------+
+                                      |    mission_snapshots    |
+                                      |-------------------------|
+                                      | mission_id (PK, FK)     |
+                                      | status                  |
+                                      | progress                |
+                                      | latest_thought          |
+                                      | next_action             |
+                                      | eta                     |
+                                      | confidence              |
+                                      | token_usage             |
+                                      | estimated_cost          |
+                                      | last_updated            |
+                                      +-------------------------+
 ```
 
 ### SQLite Schema Specification
@@ -101,51 +155,90 @@ CREATE TABLE IF NOT EXISTS workspaces (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- 2. Conversations Table (Supports Persistent Context Memory)
+-- 2. Conversations Table (Contains Metadata that directly changes AI execution parameters)
 CREATE TABLE IF NOT EXISTS conversations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     workspace_id INTEGER NOT NULL,
     title TEXT NOT NULL,
-    context_memory_json TEXT DEFAULT '{}', -- JSON containing Active Branch, Environment, Constraints, etc.
+    summary TEXT,
+    goal TEXT,
+    system_prompt TEXT,
+    active_model TEXT DEFAULT 'claude-3-5-sonnet',
+    temperature REAL DEFAULT 0.2,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
 );
 
--- Indexing for fast workspace-to-conversations retrieval
 CREATE INDEX IF NOT EXISTS idx_conversations_workspace_id ON conversations(workspace_id);
 
--- 3. Conversation Events Table (The Chronological Unified Timeline)
-CREATE TABLE IF NOT EXISTS conversation_events (
+-- 3. Conversation Memories Table (Contains Project-specific context fields modifying the workspace configuration)
+CREATE TABLE IF NOT EXISTS conversation_memories (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     conversation_id INTEGER NOT NULL,
-    event_type TEXT NOT NULL, -- 'MESSAGE', 'MISSION_EVENT', 'APPROVAL_EVENT', 'NOTIFICATION', 'FILE_UPLOAD', 'VOICE_MESSAGE', 'SYSTEM_EVENT'
-    payload_json TEXT NOT NULL, -- Contains fields specific to the event type
-    mission_id INTEGER, -- Optional foreign key connecting this timeline event to the running mission
+    memory_key TEXT NOT NULL, -- e.g. 'branch', 'framework', 'environment', 'constraints', 'preferences'
+    memory_value TEXT,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_conv_memory_key ON conversation_memories(conversation_id, memory_key);
+
+-- 4. Conversation Events Table (Immutable Event-Sourcing Timeline, Supporting Infinite Nesting)
+CREATE TABLE IF NOT EXISTS conversation_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    parent_event_id INTEGER, -- Non-cyclic recursive foreign key allowing sub-events under a parent event card
+    conversation_id INTEGER NOT NULL,
+    event_namespace TEXT NOT NULL, -- e.g. 'CHAT', 'MISSION', 'AGENT', 'TOOL', 'DEPLOY', 'PLUGIN', 'STORE', 'GIT', 'INBOX'
+    event_type TEXT NOT NULL,      -- e.g. 'MESSAGE', 'STARTED', 'THINKING', 'ACTION', 'JOURNAL', 'APPROVAL_REQUESTED', 'COMPLETE'
+    payload_json TEXT NOT NULL,    -- Schema-versioned event data payload
+    mission_id INTEGER,            -- Optional direct foreign key connecting timeline events to database mission entries
+    event_version INTEGER DEFAULT 1, -- Incremental sequence ID for payload schema structures
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (parent_event_id) REFERENCES conversation_events(id) ON DELETE CASCADE,
     FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
     FOREIGN KEY (mission_id) REFERENCES missions(id) ON DELETE SET NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_conversation_id ON conversation_events(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_events_parent_id ON conversation_events(parent_event_id);
 CREATE INDEX IF NOT EXISTS idx_events_mission_id ON conversation_events(mission_id);
+CREATE INDEX IF NOT EXISTS idx_events_namespace_type ON conversation_events(event_namespace, event_type);
 
--- 4. Devices Table (Push Notification Support)
+-- 5. Mission Snapshots Table (Accelerated State Recovery Cache for Web Socket Dropouts)
+CREATE TABLE IF NOT EXISTS mission_snapshots (
+    mission_id INTEGER PRIMARY KEY,
+    status TEXT NOT NULL, -- 'QUEUED', 'IN_PROGRESS', 'COMPLETED', 'FAILED', 'FOLLOWUP'
+    progress REAL DEFAULT 0.0, -- Percentage complete (0.0 to 1.0)
+    latest_thought TEXT,
+    next_action TEXT,
+    eta INTEGER DEFAULT 0, -- Estimated completion time remaining in seconds
+    confidence TEXT DEFAULT 'HIGH', -- 'HIGH', 'MEDIUM', 'LOW'
+    token_usage INTEGER DEFAULT 0,
+    estimated_cost REAL DEFAULT 0.0, -- USD Cost
+    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (mission_id) REFERENCES missions(id) ON DELETE CASCADE
+);
+
+-- 6. Devices Table (Enhanced Push Notification Support with Revocation & Security Fields)
 CREATE TABLE IF NOT EXISTS devices (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id TEXT DEFAULT 'default_user',
     push_token TEXT NOT NULL UNIQUE,
     platform TEXT NOT NULL, -- 'ios' or 'android'
-    registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    device_model TEXT,
+    is_active INTEGER DEFAULT 1, -- Boolean tracking revocation status
+    registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- 5. Notifications Table
+-- 7. System Notifications Table
 CREATE TABLE IF NOT EXISTS system_notifications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     device_id INTEGER NOT NULL,
     title TEXT NOT NULL,
     body TEXT NOT NULL,
-    deep_link TEXT, -- e.g., 'squados://conversations/14?event_id=102'
+    deep_link TEXT, -- e.g. 'squados://conversations/14?event_id=102'
     status TEXT DEFAULT 'PENDING', -- 'PENDING', 'SENT', 'FAILED'
     sent_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -157,22 +250,39 @@ CREATE TABLE IF NOT EXISTS system_notifications (
 
 ## 4. REST & WebSocket API Specification
 
+Every API endpoint is strictly versioned under `/api/v1` to support continuous schema evolution.
+
 ### 4.1 REST API Endpoints
 
-#### 1. List Workspaces with Nesting
-* **Endpoint:** `GET /api/v1/workspaces`
+#### 1. Capability Negotiation (Handshake)
+Must be requested by the mobile client immediately upon establishing connection to discover API limitations, supported features, and schema versions.
+* **Endpoint:** `POST /api/v1/handshake`
+* **Request:**
+```json
+{
+  "client_version": "2.0.0",
+  "capabilities": [
+    "voice_input",
+    "live_agent_streams",
+    "nested_events",
+    "mission_snapshots",
+    "qr_pairing"
+  ]
+}
+```
 * **Response:**
 ```json
 {
-  "workspaces": [
-    {
-      "id": 1,
-      "name": "Mobile App Backend",
-      "description": "Flutter mobile repository and Supabase backend",
-      "created_at": "2026-05-10T08:00:00Z",
-      "conversations_count": 3
-    }
-  ]
+  "server_version": "2.0.4",
+  "schema_version": "1.2.0",
+  "negotiated_capabilities": {
+    "voice_input": true,
+    "live_agent_streams": true,
+    "nested_events": true,
+    "mission_snapshots": true,
+    "qr_pairing": true
+  },
+  "max_payload_mb": 15
 }
 ```
 
@@ -186,37 +296,32 @@ CREATE TABLE IF NOT EXISTS system_notifications (
       "id": 14,
       "workspace_id": 1,
       "title": "JWT Auth Migration",
-      "context_memory": {
-        "framework": "Flutter",
-        "database": "Supabase",
-        "branch": "feature/auth",
-        "goal": "Refactor authentication to secure JWT",
-        "preferences": "Use Riverpod, no Provider patterns"
-      },
+      "summary": "Refactoring outdated authentication handlers in secure modules",
+      "goal": "Introduce robust refresh-token rotation",
+      "active_model": "claude-3-5-sonnet",
+      "temperature": 0.2,
+      "system_prompt": "You are a senior security engineer specializing in Flutter and Supabase.",
       "last_event_at": "2026-05-15T14:32:00Z"
     }
   ]
 }
 ```
 
-#### 3. Fetch Unified Timeline (Conversation Details)
+#### 3. Fetch Unified Timeline (Event Log Retrieval)
 * **Endpoint:** `GET /api/v1/conversations/{id}`
-* **Query Parameters:** `limit` (int, default: 50), `cursor` (string, optional - for pagination)
+* **Query Parameters:** `limit` (int, default: 50), `parent_only` (bool, default: false - retrieves top-level event cards only to support nested client hydration), `cursor` (string, optional)
 * **Response:**
 ```json
 {
   "conversation_id": 14,
   "workspace_id": 1,
-  "title": "JWT Auth Migration",
-  "context_memory": {
-    "framework": "Flutter",
-    "branch": "feature/auth",
-    "goal": "Refactor authentication"
-  },
   "events": [
     {
       "id": 101,
+      "parent_event_id": null,
+      "event_namespace": "CHAT",
       "event_type": "MESSAGE",
+      "event_version": 1,
       "created_at": "2026-05-15T14:30:00Z",
       "payload": {
         "role": "user",
@@ -225,19 +330,38 @@ CREATE TABLE IF NOT EXISTS system_notifications (
     },
     {
       "id": 102,
-      "event_type": "MISSION_EVENT",
+      "parent_event_id": null,
+      "event_namespace": "MISSION",
+      "event_type": "STARTED",
       "mission_id": 91,
+      "event_version": 1,
       "created_at": "2026-05-15T14:30:15Z",
       "payload": {
-        "status": "STARTED",
         "goal": "Add verification helper to auth_service.dart",
         "message": "Assistant spawned Mission #91 to refactor auth_service.dart."
       }
     },
     {
       "id": 103,
-      "event_type": "APPROVAL_EVENT",
+      "parent_event_id": 102, -- Nested child event! Shows in expandable sub-history of Mission #91
+      "event_namespace": "AGENT",
+      "event_type": "THINKING",
       "mission_id": 91,
+      "event_version": 1,
+      "created_at": "2026-05-15T14:30:45Z",
+      "payload": {
+        "agent": "CoderAgent",
+        "thought": "I detected 4 unused configuration templates in the auth package that conflict with the new JWT helper.",
+        "confidence": "HIGH"
+      }
+    },
+    {
+      "id": 104,
+      "parent_event_id": 102,
+      "event_namespace": "INBOX",
+      "event_type": "APPROVAL_REQUESTED",
+      "mission_id": 91,
+      "event_version": 1,
       "created_at": "2026-05-15T14:31:45Z",
       "payload": {
         "approval_id": 412,
@@ -251,6 +375,7 @@ CREATE TABLE IF NOT EXISTS system_notifications (
 ```
 
 #### 4. Update Conversation Memory (Context Chips)
+Updating the active configuration memory of a conversational context.
 * **Endpoint:** `PUT /api/v1/conversations/{id}/context`
 * **Request:**
 ```json
@@ -258,8 +383,8 @@ CREATE TABLE IF NOT EXISTS system_notifications (
   "context_memory": {
     "framework": "Flutter",
     "branch": "feature/jwt-refresh",
-    "goal": "Secure session handling",
-    "preferences": "Prefer JWT secure storage over standard shared_preferences"
+    "environment": "Supabase Production",
+    "constraints": "Do not use legacy provider classes. Use modern Riverpod structures."
   }
 }
 ```
@@ -270,47 +395,28 @@ CREATE TABLE IF NOT EXISTS system_notifications (
   "updated_context_memory": {
     "framework": "Flutter",
     "branch": "feature/jwt-refresh",
-    "goal": "Secure session handling",
-    "preferences": "Prefer JWT secure storage over standard shared_preferences"
+    "environment": "Supabase Production",
+    "constraints": "Do not use legacy provider classes. Use modern Riverpod structures."
   }
 }
 ```
 
-#### 5. Submit Message / Unified Prompt
-* **Endpoint:** `POST /api/v1/conversations/{id}/messages`
-* **Request (Multipurpose Form Data for Text, Voice, or Code attachments):**
-```json
-{
-  "content": "Incorporate OTP login validation inside auth_service.dart",
-  "attachment": {
-    "type": "CODE_SNIPPET",
-    "name": "otp_handler.dart",
-    "payload": "class OtpValidator { bool verify(String code) { return code == '123456'; } }"
-  }
-}
-```
-* **Response:**
-```json
-{
-  "routing_decision": "SPAWN_MISSION",
-  "message": "Understood. Starting Mission #92 to integrate OTP validation.",
-  "mission_id": 92,
-  "conversation_event_id": 104
-}
-```
-
-#### 6. Universal Conversation Search
+#### 5. Universal Semantic Search Endpoint
+Provides vector-based search across all historical messages, actions, files, errors, and approvals, falling back cleanly to SQLite full-text search (FTS) based on backend capabilities.
 * **Endpoint:** `GET /api/v1/conversations/{id}/search`
-* **Query Parameters:** `q` (string, required), `filter_type` (string, optional - e.g., 'MESSAGES', 'MISSIONS', 'FILES', 'ERRORS')
+* **Query Parameters:** `q` (string, required), `filter_namespace` (string, optional), `limit` (int, default: 20)
 * **Response:**
 ```json
 {
-  "query": "JWT",
+  "query": "the login bug",
+  "engine_used": "vector_search", -- or "sqlite_fts"
   "results": [
     {
-      "event_id": 103,
-      "event_type": "APPROVAL_EVENT",
-      "matched_snippet": "...review the **JWT** verification key rotation mechanism...",
+      "event_id": 104,
+      "event_namespace": "INBOX",
+      "event_type": "APPROVAL_REQUESTED",
+      "similarity_score": 0.892,
+      "matched_snippet": "Reviewing security exception caused by expired sessions during **login** validations in auth_service.dart.",
       "timestamp": "2026-05-15T14:31:45Z"
     }
   ]
@@ -321,35 +427,40 @@ CREATE TABLE IF NOT EXISTS system_notifications (
 
 ### 4.2 WebSocket Event Streams
 
-Clients maintain a single persistent WebSocket connection per active session: `ws://<host>:<port>/api/v1/streams?conversation_id={id}`. This connection delivers real-time timeline modifications and fine-grained agent activity.
+Clients maintain a single persistent connection per active session: `ws://<host>:<port>/api/v1/streams?conversation_id={id}`. Authenticators expect standard JWT headers or a validated ticket passed during handshake negotiation.
 
-#### 1. AI Session Card Update
-Pushed immediately whenever the high-level mission state changes, including thoughts and expected timelines.
+#### 1. AI Session Card Update (Snapshots)
+Dispatched instantly whenever a critical state transition occurs in an active running mission.
 ```json
 {
-  "event_type": "SESSION_CARD_UPDATE",
+  "event_namespace": "MISSION",
+  "event_type": "SNAPSHOT_UPDATE",
+  "event_version": 1,
   "payload": {
     "mission_id": 91,
-    "goal": "Refactor authentication to secure JWT",
     "status": "IN_PROGRESS",
-    "progress_percent": 75,
-    "elapsed_time_seconds": 322,
-    "remaining_time_seconds": 120,
-    "latest_thought": "I detected a missing validation boundary for access token expiry inside auth_service.dart. I will write a custom verification wrapper.",
-    "next_planned_action": "Updating validation wrappers and executing the Flutter test suite.",
-    "awaiting_approval": false
+    "progress": 0.75,
+    "eta": 120,
+    "latest_thought": "I detected a missing validation boundary for access token expiry inside auth_service.dart. Writing a custom verification wrapper.",
+    "next_action": "Updating validation wrappers and executing the Flutter test suite.",
+    "confidence": "HIGH",
+    "token_usage": 24551,
+    "estimated_cost": 0.3202
   }
 }
 ```
 
-#### 2. Fine-Grained Agent Activity Stream (Agent Streaming)
-Pushed frequently (e.g., every 500ms - 1s) while an active agent is modifying code, inspecting files, or compiling.
+#### 2. Fine-Grained Agent Activity (Agent Ticks)
+Streamed frequently (every 500ms) during intensive execution blocks, designed to populate nested children under the active mission event.
 ```json
 {
-  "event_type": "AGENT_STREAM_TICK",
+  "event_namespace": "AGENT",
+  "event_type": "TICK",
+  "event_version": 1,
   "payload": {
     "mission_id": 91,
-    "agent_role": "CoderAgent",
+    "parent_event_id": 102,
+    "agent": "CoderAgent",
     "status": "WORKING",
     "activity": "EDITING",
     "active_file": "lib/services/auth_service.dart",
@@ -363,130 +474,229 @@ Pushed frequently (e.g., every 500ms - 1s) while an active agent is modifying co
 
 ## 5. Mobile UI & UX Screen Architecture
 
-The application adopts an accessible, high-contrast, clutter-free **3-Tab Navigation Architecture** with contextual overlays.
+The interface adopts an elegant, accessible **4-Tab Navigation Layout** with structural overlays.
 
 ```
 +-----------------------------------------------------+
 |                                                     |
 |                   SQUAD OS MOBILE                   |
 |                                                     |
-|        +----------+   +-------------+   +--------+  |
-|        |   Chat   |   |  Approvals  |   | Settings| |
-|        |   [01]   |   |     [02]    |   |  [03]  |  |
-|        +----------+   +-------------+   +--------+  |
+|  +-------+   +--------+   +-----------+   +------+  |
+|  | Today |   |  Chat  |   | AI Inbox  |   | Settings|
+|  |  [T]  |   |  [C]   |   |   [A!]    |   |  [S]  |  |
+|  +-------+   +--------+   +-----------+   +------+  |
 |                                                     |
 +-----------------------------------------------------+
 ```
 
-### 1. Chat Tab (The Project Canvas)
-* **Editable Context Chips (Top):** Horizontal list of tags (`Flutter`, `feature/auth`, `Supabase`, `Riverpod`). Tapping any tag displays an inline overlay with quick dropdowns and text inputs to modify the conversation's active memory.
-* **Unified Scroll Feed:** Messages, system logs, code snippets, git diffs, and milestones populate chronologically.
-* **Inline AI Session Card:** When a mission runs, a floating or anchored card highlights the active crew. It shows:
-  - Estimated Time of Arrival (ETA) with a circular progress indicator.
-  - Expandable Agent Stream panel (collapsing developer noise into clean, bite-sized ticks).
-* **Smart Contextual Quick Actions (Bottom):** Context-aware pill-buttons appearing above the text input after events (e.g. `Retry`, `Explain Failure`, `Summarize Output`, `Run Tests`, `Open Desktop`, `Deploy`).
-* **Input Gateway:** Multi-attachment selector (`+` icon) supporting camera, gallery, standard documents, code snippets, git diffs, stack traces, and markdown text alongside a hold-to-record voice gateway.
+### Tab 1: Today Dashboard (The Workspace Pulse)
+* **Design Philosophy:** Replaces default technical lists with a glanceable executive layout. It is only focused on what requires immediate attention *now*.
+* **UI Modules:**
+  * **Critical Actions Required:** Card stack representing unhandled AI Inbox alerts (needs immediate verification/approvals).
+  * **Active Missions Summary:** Miniature horizontal cards of currently running agents, displaying circular timers, ETA, and progress.
+  * **Recent Milestones:** Completed tasks from today/yesterday shown in high-level clean formats.
 
-### 2. Approvals Tab (Interactive HITL Inbox)
-* **Single-Card Execution Focus:** High-contrast queue of items requiring developer clearance. Each approval card uses green/primary styles for "Approve", orange/secondary for "Request Adjustments", and includes a direct input field for optional natural language guidance.
-* **Context-First Preview:** Tapping an approval reveals an inline expander showing the exact git diff (collapsible) or file modifications proposed, keeping reviews lightweight yet secure.
+### Tab 2: Chat Canvas (The Project Interface)
+* **Custom Context Chips (Header):** Tap-friendly pills at the top (`🌿 feature/jwt`, `📱 Flutter`, `☁️ Supabase`). Tapping a pill triggers a native sliding sheet with quick selection wheels to change environmental targets on-the-fly.
+* **Unified Event Stream:** Vertical list displaying formatted events.
+* **AI Session Card (Sticky/Anchored):** Displays details when a mission is active:
+  * **Auto-Collapse Feature:** To avoid huge scrolling timelines, granular compilation/thinking logs under the mission are collapsed by default. The card displays a summary line: *"Coder is editing auth_service.dart (14 sub-events hidden) [Show]"*.
+  * **Visual Metrics:** Live duration ticker, running cost calculator ($0.00), confidence badge (`HIGH` / `MEDIUM` / `LOW`), and remaining ETA.
+  * **Inline Quick Actions:** Tap buttons embedded inside completed/failed timeline entries (`Open Diff`, `Summarize`, `Deploy`, `Rollback`, `Share`).
+* **Global Command Palette Drawer:**
+  * Triggered via a downward swipe gesture anywhere, long press on the screen, or tapping the Search header icon.
+  * Opens a fuzzy-matched overlay list mimicking Spotlight or Raycast. Allows searching and firing global actions (`/deploy`, `/switch-workspace`, `/create-mission`, `/clear-cache`, `/reconnect`).
 
-### 3. Settings Tab (Administration & Synchronization)
-* **Desktop Coordination Profiles:** Quick configurations for active environments, pairing codes, and backend instances.
-* **Ecosystem Store Administration:** Lists active installed packages (`.sqad` modules), system statistics (token usage, execution cost), and offline sync diagnostic utilities.
+### Tab 3: AI Inbox (The HITL Controller)
+* **Design Philosophy:** Replaces simple flat "Approvals" with a multi-layered action hub.
+* **Inbox Folders / Filters (Top):** Horizontal segmented pill controls:
+  `[ All ]  [ Needs Approval ]  [ Needs Review ]  [ Needs Attention ]  [ Warnings ]`
+* **Card UI Elements:**
+  * Displays details of why the human is blocking progress.
+  * Collapsible Unified Git Diff view highlighting additions in green and deletions in red with syntax-aware line formatting.
+  * Touch-friendly control elements: Primary green "Approve", secondary orange "Request Changes", and an integrated keyboard voice prompt input to dictate quick guidance.
 
----
-
-## 6. Comprehensive Feature Specifications
-
-### 6.1 Conversational Projects & Workspaces
-Instead of treating conversations as a flat, chronological feed of historical actions, conversations are logically organized under Workspaces.
-* **Structure:** A slider-drawer from the left (accessible via `[=]` hamburger or slide swipe) allows swapping between active projects (e.g., `Mobile App`, `Main Core`). Swapping workspaces immediately updates the conversation feed and context memory active on screen.
-* **Hierarchy Display:**
-```
-📂 MOBILE APP
-  • JWT Auth Migration (Active ⚡)
-  • Payments Integration (Idle)
-📂 SQUAD OS CORE
-  • Secure Sandboxing (Active ⚡)
-```
-
-### 6.2 Conversation Timeline (Unified Event Stream)
-Every element in the timeline is an event. To avoid visual cognitive fatigue, events have highly distinct, card-based designs:
-* **User Messages:** Right-aligned, dark/primary background, highlighting attached files or transcribed voice records.
-* **Assistant Responses:** Left-aligned, light grey background, utilizing standard Markdown styling.
-* **Mission Milestones:** Anchored, center-aligned, border-accented cards showing state changes (e.g., `[⚡] Mission #91 Started`, `[✅] Mission #91 Completed`).
-* **Approval Actions:** Chronologically inserted approval requests which freeze conversation input until answered, providing immediate continuity.
-
-### 6.3 Live Agent Stream
-Visualizes developer micro-activity in real time:
-* **UI Behavior:** A miniature panel within the active AI Session Card displays current agent activity.
-* **State Visualization:**
-  - **Planner:** `Done (14s)`
-  - **Researcher:** `Done (42s)`
-  - **Coder:** `Running ⚡ Editing auth_service.dart (line 112)`
-  - **Tester:** `Waiting`
-* When an agent updates a file or runs an execution loop, the stream displays temporary text ticks (e.g. `[Compiler] Successfully compiled lib/services/auth_service.dart in 450ms`, `[Test Engine] 12/14 test cases passed`). This mimics an active developer terminal but filters out verbose environment noise.
-
-### 6.4 Conversation Memory (Claude-style Projects)
-Conversations maintain persistent key-value parameters:
-* **Environment:** `Flutter (Dart 3.3.0)`
-* **Active Branch:** `feature/jwt-validation`
-* **Goal:** `Incorporate secure token claims handling`
-* **User Preferences:** `Do not use legacy provider classes. Use modern Riverpod structures.`
-* **Implementation:** These memory keys are added as hidden instructions to every conversational prompt sent to the model behind `/api/v1/messages`, ensuring the developer's contextual specifications are remembered from the first message through implementation.
-
-### 6.5 Interactive Attachments Selector
-The `+` drawer opens an expandable tray supporting diverse assets:
-* **Developer Asset Handling:**
-  - **Code Snippet:** Includes language-specific syntax highlighting and formatting.
-  - **Git Diff:** Parses files into red/green unified formats, allowing scrollable, side-by-side verification before sending.
-  - **Stack Trace:** Highlights key execution files and packages involved in crashes, automatically omitting standard environment library frames.
-  - **Terminal Logs:** Highlights error bounds and warning segments.
-
-### 6.6 Custom Context Chips
-* **Visual Representation:** Positioned at the header of the chat, these horizontal capsules display primary memory values:
-  `[ 🌿 feature/jwt ]  [ 📱 Flutter ]  [ ☁️ Supabase ]`
-* **Interaction:** Tapping any chip opens a sliding sheet from the bottom, allowing developers to change the active branch, environment variables, or goal specifications on-the-fly. This instantly triggers a `PUT /api/v1/conversations/{id}/context` call, reflecting adjustments in future mission prompts.
-
-### 6.7 Contextual Quick Actions
-Contextual buttons appear dynamically above the chat box to accelerate inputs:
-* **Mission Failed:** `[ 🔄 Retry Execution ]  [ ❓ Explain Failure ]  [ 🔎 Analyze Log ]`
-* **Mission Succeeded:** `[ 🚀 Deploy Staging ]  [ 🖥️ Open Desktop ]  [ 📝 Summarize Changes ]`
-* **Awaiting Review:** `[ ✅ Approve All ]  [ ❌ Reject & Fix ]`
-
-### 6.8 Seamless Desktop Handoff
-Provides unified state transition coordination between mobile and desktop devices.
-* **Handoff Mechanism:** When viewing an active conversation on a mobile client, tapping `[🖥️ Open Desktop]` triggers a localized handoff protocol.
-* **The Handoff Sequence:**
-  1. Mobile client dispatches handoff request containing `workspace_id`, `conversation_id`, and `mission_id` to the coordinator.
-  2. The coordinator validates the developer's credentials.
-  3. The coordinator broadcasts a secure handoff event via Local WebSockets or shared SQLite databases.
-  4. The Desktop Dashboard automatically focuses, bringing the identical Workspace, Conversation context, Live logs, DAG workflow diagrams, and code preview to the user's primary monitor.
-
-### 6.9 Live Activities & OS-Level Updates
-Enables real-time mission monitoring from outside the companion app.
-* **Dynamic Island (iOS):** Displays compact agent execution indicators: `[⚡] Auth Coder: auth_service.dart`.
-* **Lock Screen / Live Activity (iOS & Android Notification):**
-  - Displays Mission Goal and high-level progress (e.g., `Progress: [████████░░] 80%`).
-  - Active Step indicator: `Coder is validating secure token cookies`.
-  - Simple action buttons: `[ Pause ]  [ View Details ]`.
-
-### 6.10 Universal Timeline Search
-* **Capabilities:** Search handles free-text parsing across messages, file names, approvals, logs, and errors.
-* **UX Flow:** Tapping the search icon at the top of the conversation opens an overlays bar. Search results highlight matched occurrences (e.g., matching the word "JWT" in code segments, chat messages, or task logs) and allow immediate timeline jump-scroll.
-
-### 6.11 Resilient Offline Mode
-To protect productivity during connectivity drops:
-* **Caching Layer:** Local SQLite database caches the conversation timelines, context parameters, pending approvals, and assets locally.
-* **Outbound Message Queue:** When connection is lost, messages are held in a pending state locally with a `⏳` icon.
-* **Automatic Re-synchronization:** Once connectivity is restored, the mobile companion dispatches the pending queue sequentially, applies an active clock-skew synchronization pattern, and prompts conflict resolutions if shared resources were modified out-of-sync.
+### Tab 4: Settings & Diagnostics
+* **Active Environment Configuration:** Connects to backends via hostname, WebSockets, or pairing.
+* **Trusted Devices Registry:** List of authorized devices with individual revoke capability buttons.
+* **Background Sync Diagnostics:** Shows latency stats, offline outbound queues, and synchronization health indicators.
 
 ---
 
-## 7. Comprehensive Mockups & Conversational Timelines
+## 6. Feature Specifications
 
-### Unified Conversation Timeline with AI Session Card
+### 6.1 Context Chips as Live Objects
+Custom Context Chips located at the top of the Chat Canvas represent key variables of the conversation's active memory (`branch`, `framework`, `environment`).
+* **Behavior:** Tapping a Context Chip displays an interactive modal list of options dynamically fetched from the workspace server (e.g., active branches on the git repo, configured runtime environments).
+* **Sync Loop:** When a user selects a new value (e.g., swapping active branch from `main` to `feature/jwt-refresh`), the client triggers:
+  1. A native visual transition on the chip (flashes to indicate updating).
+  2. A REST `PUT /api/v1/conversations/{id}/context` request.
+  3. A local database write to ensure offline persistence.
+  4. An instant local broadcast. The Desktop Control Center listening to the WebSocket stream receives the update and automatically executes a git checkout to match the user's mobile target.
+
+### 6.2 Secure Desktop QR Pairing Protocol
+To completely eliminate the insecurity of manual password exchanges or raw local network scans, Squad OS implements a multi-step **Trusted Device Handshake via QR Code**.
+
+```
+  [Desktop App]                                                 [Mobile App]
+        |                                                             |
+        | 1. Generates short-lived session nonce                      |
+        | 2. Renders secure pairing QR                                |
+        |                                                             |
+        |             =================================>              |
+        |                        [Scan QR]                            |
+        |                                                             |
+        |                                                             | 3. Parses URI & extracts:
+        |                                                             |    - Nonce, Host, DeviceID
+        |                                                             | 4. Requests token via secure HTTPS
+        |                                                             |
+        |<============================================================|
+        |                 [POST /api/v1/pair/request]                 |
+        |                                                             |
+        |                                                             |
+        | 5. Prompts Confirmation Dialog:                             |
+        |    "Approve Mobile Device #12?"                             |
+        |                                                             |
+        |             =================================>              |
+        |                     [Admin Clicks Approve]                  |
+        |                                                             |
+        | 6. Generates Cryptographic Keys                             |
+        | 7. Issues JWT Token Pairs                                   |
+        |                                                             |
+        |<============================================================|
+        |                      [GET /v1/pair/token]                   |
+        |                                                             |
+        |                                                             | 8. Saves Secure JWT in Keychain
+        |                                                             | 9. Connects via Secure WSS
+```
+
+#### The Protocol Details:
+1. **QR Generation:** The Desktop client requests a signed ephemeral pairing ticket from the coordinator backend containing:
+   ```json
+   {
+     "pairing_url": "squados://pair",
+     "nonce": "a7b3c9f28d...",
+     "device_id": "desktop_coordinator_01",
+     "expires_at": 1782531200
+   }
+   ```
+2. **Scanning:** Mobile scans the QR, validates the protocol scheme, and dispatches a pairing execution payload directly over HTTPS using TLS.
+3. **Backend Validation & Pinning:** The backend caches the connection request.
+4. **Desktop HITL Clearance:** Desktop displays an overlay confirmation dialog: *"Allow 'iPhone 15 Pro' to pair and command this workspace?"*.
+5. **Session Initiation:** Upon confirmation, the backend flags the nonce as approved and generates an asymmetrical RSA public/private key-pair, issuing signed JWT refresh and access tokens pinned to that mobile device ID.
+6. **Encrypted WebSocket Handshake:** Future communication is established using secure WSS with message payloads fully validated against active device registries.
+
+### 6.3 Background Sync Engine Architecture
+To survive low-coverage areas, transit tunnels, and active signal drops, the mobile companion relies on a dedicated background system sync engine.
+
+```
++-------------------------------------------------------------------------+
+|                          CLIENT APPLICATION LAYER                       |
++-------------------------------------------------------------------------+
+                                 |         ^
+                                 v         | [Notify updates]
++-------------------------------------------------------------------------+
+|                           LOCAL CACHE DATABASE                          |
++-------------------------------------------------------------------------+
+        |                                                         ^
+        v [Read / Write Events]                                   | [Hydrate Cache]
++----------------------------------------------------+   +----------------+
+|               OUTBOUND EVENT QUEUE                 |   | DOWNLOAD ENGINE|
++----------------------------------------------------+   +----------------+
+        |                                                         ^
+        v [Batch dispatch]                                        | [Poll / Stream]
++----------------------------------------------------+            |
+|              SYNC CONTROLLER & RESOLVER            |<===========+
++----------------------------------------------------+
+        |                                  ^
+        v [WSS / HTTPS]                    | [Push Trigger Notification]
++-------------------------------------------------------------------------+
+|                           BACKEND SERVICE API                           |
++-------------------------------------------------------------------------+
+```
+
+* **Core Components:**
+  * **Outbound Queue:** Houses serialized requests (JSON updates, timeline comments, approvals) in chronological order with logical sequence markers.
+  * **Retry & Backoff Manager:** Executes connection attempts using exponential backoff logic (e.g. 1s -> 2s -> 4s -> 8s -> 16s -> maximum 60s cap) with added jitter to prevent API request storms.
+  * **Conflict Resolution Processor:** Reconciles differences when offline events overlap with changes updated on the remote host during signal drops.
+
+### 6.4 Offline Conflict Resolution Policy Matrix
+Because Squad OS is collaborative, conflicting state modifications are possible while offline. The Sync Engine applies strict policy bindings per table resource:
+
+| Resource Type | Conflict Scenario | Applied Policy | Technical Resolution |
+| :--- | :--- | :--- | :--- |
+| **Chat Timeline Messages** | User posts message offline while another user/agent posts messages online | **Merge** | Chronological ordering using verified client-side sequence clock tracking with absolute server-receive indexing. |
+| **Mission State Execution** | User pauses mission offline, but worker finishes mission online | **Server Wins** | The active agent execution state on the server takes precedence; client adjusts its visual state to match server logs. |
+| **Workspace Settings** | Editing environmental values offline while updated elsewhere | **Last Write Wins** | Field updates compare cryptographic timestamps; the highest epoch value overwrites previous states. |
+| **Files & Code Assets** | Modifying attachments offline that are changed on disk | **Manual Resolve** | The event log flags the attachment with a conflicted state. The user must choose whether to overwrite, download server state, or split into a branch. |
+| **AI Inbox Approvals** | User attempts to approve an item that was cancelled/processed online | **Server Wins** | The transaction rejects on the client; UI prompts a warning notification: *"This approval request was already processed."* |
+
+### 6.5 Mission Journal Architecture
+Upon successful completion of any mission, the orchestrator automatically generates a **Mission Journal**, recording it as an immutable timeline event.
+
+* **Markdown Document Specification:**
+  ```markdown
+  # Mission Complete: #91 Refactor Authentication
+
+  ## 📝 Executive Summary
+  Successfully integrated OAuth validation handlers and migrated configuration schemas to secure token formats inside lib/services/auth_service.dart.
+
+  ## 📂 Files Modified
+  - `lib/services/auth_service.dart` (+42 lines, -12 lines)
+  - `test/auth_test.dart` (+15 lines)
+
+  ## 🧪 Testing Results
+  - Total Tests Run: 14
+  - Passed: 14 (100% Green)
+  - Coverage: 92.4% (No regressions detected)
+
+  ## ⏱️ Execution Metrics
+  - Total Duration: 4 minutes 12 seconds
+  - AI Models Used: Claude 3.5 Sonnet, GPT-4o
+  - Token Consumption: 28,144 Input | 4,212 Output
+  - Estimated Session Cost: **$0.34 USD**
+
+  ## 💡 Lessons Learned & Technical Debt
+  Identified legacy Provider bindings in adjacent modules during router integration. Recommending a future refactoring sweep of the payments package to align with modern Riverpod patterns.
+  ```
+
+---
+
+## 7. Comprehensive UI & UX Mockups
+
+### 7.1 Today Dashboard (Tab 1 Landing)
+
+```
++-------------------------------------------------------------+
+|  📅 TODAY                                    [🔍 Palette] [⚙️] |
++-------------------------------------------------------------+
+|                                                             |
+|  🚨 ACTION REQUIRED                                         |
+|  +-------------------------------------------------------+  |
+|  | [AI INBOX] Mission #91: Delete legacy secure configs |  |
+|  | Requested by: CoderAgent | Status: PENDING            |  |
+|  | > Confirm deletion of 48 config files.                |  |
+|  |                                                       |  |
+|  |     [❌ Reject]               [⚡ Quick Review]        |  |
+|  +-------------------------------------------------------+  |
+|                                                             |
+|  ⚡ ACTIVE CREW                                              |
+|  +-------------------------------------------------------+  |
+|  | Mission #94: Run Payment Migrations                   |  |
+|  | Running 2m 4s | ETA: 4m 12s | Progress: [████░░░░] 50% |  |
+|  | Active Agent: CoderAgent (editing stripe_service.dart) |  |
+|  +-------------------------------------------------------+  |
+|                                                             |
+|  ✅ COMPLETED YESTERDAY                                      |
+|  - Mission #90: Setup secure cookie parsing (Cost: $0.12)   |
+|  - Mission #89: Configure SSL proxy routes (Cost: $0.08)     |
+|                                                             |
++-------------------------------------------------------------+
+|  [Today]          Chat            AI Inbox         Settings |
++-------------------------------------------------------------+
+```
+
+### 7.2 Unified Conversation Timeline with AI Session Card (Tab 2)
 
 ```
 +-------------------------------------------------------------+
@@ -504,6 +714,7 @@ To protect productivity during connectivity drops:
 |  ==================== ACTIVE SQUAD ======================== |
 |  [⚡] Mission #91: Refactor Authentication                   |
 |  Elapsed: 3m 42s | ETA: 1m 30s | Status: RUNNING [██████░░] |
+|  Confidence: HIGH (94%) | Est. Cost: $0.28                  |
 |                                                             |
 |  Planner    ✓ Understanding boundaries                       |
 |  Researcher ✓ Analyzing security patterns                   |
@@ -513,6 +724,8 @@ To protect productivity during connectivity drops:
 |  Latest Thought: "Detected a missing validation helper for  |
 |  access tokens in JWT parser. Writing test cases now."      |
 |  Next Action: "Run local unit tests."                       |
+|                                                             |
+|  [+] 14 detailed compiler sub-events hidden...         [v] |
 |  ========================================================== |
 |                                                             |
 |  💬 You                                                      |
@@ -524,57 +737,21 @@ To protect productivity during connectivity drops:
 +-------------------------------------------------------------+
 |  [+] Message...                                        [🎤] |
 +-------------------------------------------------------------+
-|       Chat              Approvals              Settings     |
+|   Today          [Chat]           AI Inbox         Settings |
 +-------------------------------------------------------------+
 ```
 
-### Context Editing Sheet (Bottom Slide-out)
+### 7.3 High-Contrast AI Inbox (Tab 3 UI)
 
 ```
 +-------------------------------------------------------------+
+|  📥 AI INBOX                                            [1] |
 |                                                             |
-|                      Edit Context                           |
-|                                                             |
-|  Active Branch                                              |
-|  [ feature/jwt-refresh                                 ]   |
-|                                                             |
-|  Target Environment                                         |
-|  [ Supabase / Flutter Production                       ]   |
-|                                                             |
-|  Implementation Constraints                                 |
-|  (e.g., Do not use Provider classes)                        |
-|  +-------------------------------------------------------+  |
-|  | Prefer JWT secure storage over standard               |  |
-|  | shared_preferences. Keep dependencies lightweight.   |  |
-|  +-------------------------------------------------------+  |
-|                                                             |
-|                     [ 💾 Apply Changes ]                     |
-+-------------------------------------------------------------+
-```
-
-### Mobile Developer Attachments Selector
-
-```
-+-------------------------------------------------------------+
-|                                                             |
-|  Select Developer Attachment                                |
-|                                                             |
-|  [📷 Camera]        [🖼️ Gallery]       [📁 Standard Files]  |
-|  [📋 Clipboard]     [🎤 Voice Record]  [📦 ZIP Archive]     |
-|  [💻 Code Snippet]  [➕ Git Diff]       [⚠️ Stack Trace]      |
-|                                                             |
-+-------------------------------------------------------------+
-```
-
-### High-Contrast Approvals Card
-
-```
-+-------------------------------------------------------------+
-|  Approvals Queue                                        [1] |
+|  [ All ]  [ Needs Approval (1) ]  [ Needs Attention ]  [✔]  |
 +-------------------------------------------------------------+
 |  CARD 1 OF 1                                                |
 |  Mission: #91 Refactor Authentication                       |
-|  Requested by: CoderAgent                                   |
+|  Requested by: CoderAgent | Level: HIGH CONFIDENCE (91%)    |
 |                                                             |
 |  ⚠️ ACTION REQUIRED                                         |
 |  "The team wants to delete 48 obsolete security config      |
@@ -582,6 +759,8 @@ To protect productivity during connectivity drops:
 |                                                             |
 |  +-------------------------------------------------------+  |
 |  | 📂 View Proposed Deletion Diff (48 files)         [v] |  |
+|  | - config/secure/legacy_rsa.json (DELETED)             |  |
+|  | - config/secure/temp_key.pem (DELETED)                |  |
 |  +-------------------------------------------------------+  |
 |                                                             |
 |  +-------------------------------------------------------+  |
@@ -594,92 +773,137 @@ To protect productivity during connectivity drops:
 |  | Optional feedback (e.g. Keep config.json)             |  |
 |  +-------------------------------------------------------+  |
 +-------------------------------------------------------------+
-|       Chat             [Approvals]             Settings     |
+|   Today           Chat           [AI Inbox]        Settings |
 +-------------------------------------------------------------+
 ```
 
 ---
 
-## 8. Migration & Implementation Roadmap
+## 8. Security & Trust Architecture
 
-To transition the mobile companion design into a production specification, we organize development into **8 iterative, product-maturity-driven phases**. This avoids breaking current backend tasks while sequentially unlocking features.
+For a remote operations tool, security is paramount. The Mobile Companion applies strict defense-in-depth principles across all components.
 
-### Phase 1: Conversation Foundation
-* **Goals:** Create database extensions for conversations, timelines, and basic endpoints while ensuring the backend supports core routing.
+1. **Cryptographic Key Storage:**
+   * Local session cookies, API tokens, and JWT payloads are encrypted at rest using platform-native hardware security wrappers: **Apple Keychain Services** (iOS) and **Android Keystore System** (Android).
+2. **Access Token & Refresh Flow:**
+   * Uses short-lived access tokens (15-minute expiration) paired with securely stored refresh tokens.
+   * Access tokens are automatically rotated without interrupting current UI streaming threads.
+3. **Hardware Device Binding & Revocation:**
+   * Every paired device is tied to a unique platform fingerprint and cryptographic key pair.
+   * The Desktop app or Administrator console can issue a one-click revocation signal, instantly invalidating the device's refresh token on the database.
+4. **Encrypted WebSocket Authentications:**
+   * WebSockets require a secure authentication handshake ticket. Initial connection passes a short-lived token over query parameters, which is immediately validated and destroyed upon connection setup.
+5. **Human-In-The-Loop Audit Trails:**
+   * Sensitive tasks (code compilation, deployments, structural deletions) require verifiable signatures.
+   * Every action taken in the **AI Inbox** is logged as an immutable, signed ledger event under the `conversation_events` table for high-fidelity compliance audits.
+
+---
+
+## 9. Plugin & Event Contract
+
+Squad OS is built to be modular. To prevent schema bloating or UI breaking changes whenever third-party development packages (issued as `.sqad` extensions) are installed, we establish a standardized **Ecosystem Plugin Event Contract**.
+
+### 9.1 Namespace Assignments
+The database and WebSocket routers reserve the following namespaces for external extensions:
+* `PLUGIN.*`: Dispatched by external tools to insert custom execution timelines.
+* `TOOL.*`: Emitted when agents utilize custom environment executors.
+* `STORE.*`: Triggered when packages are updated, verified, or uninstalled.
+
+### 9.2 Standardized Custom UI Payloads (`PLUGIN.UI`)
+Plugins can inject custom UI modules directly into the conversation feed without native app compilation by emitting a structured `PLUGIN.UI` event with standard interactive layouts:
+
+```json
+{
+  "event_namespace": "PLUGIN",
+  "event_type": "UI",
+  "event_version": 1,
+  "payload": {
+    "plugin_id": "stripe_billing_helper",
+    "title": "Stripe Sync Completed",
+    "layout_components": [
+      {
+        "type": "HEADER",
+        "text": "Stripe Webhook Sync"
+      },
+      {
+        "type": "METRIC_ROW",
+        "label": "Webhooks Registered",
+        "value": "12 Active"
+      },
+      {
+        "type": "STATUS_INDICATOR",
+        "state": "SUCCESS",
+        "text": "All test hooks passed."
+      },
+      {
+        "type": "BUTTON",
+        "action_id": "trigger_test_webhook",
+        "label": "Send Test Event"
+      }
+    ]
+  }
+}
+```
+The mobile client parses these standardized JSON UI descriptors and renders them natively using a modular design system, ensuring complete interface consistency across the entire ecosystem.
+
+---
+
+## 10. Migration & Implementation Roadmap
+
+To transition this production specification into active service, we structure development into **8 iterative phases**, protecting current operational stability while introducing these new layers.
+
+### Phase 1: Event Sourcing & Core DB Transition
+* **Goals:** Create SQLite tables supporting event-sourcing schemas and separated conversation metadata.
 * **Deliverables:**
-  - Establish SQLite schema changes (`workspaces`, `conversations`, `conversation_events`).
-  - Implement basic REST API CRUD endpoints (`/conversations` list, retrieve details, and post prompts).
-  - Modify backend task managers to hook conversational milestones.
-* **Dependencies:** None.
-* **Risks:** Database migrations locking SQLite files during intensive runs.
-* **Success Criteria:** Retrieve a complete chronologically-ordered conversation history from the database in <10ms.
+  - Execute schema migration establishing `workspaces`, `conversations`, `conversation_memories`, `conversation_events`, and `mission_snapshots`.
+  - Populate initial records and run backward-compatibility adapters mapping old `missions` feeds to basic timeline entries.
+* **Verification:** Unit tests verifying relational database inserts, nested queries, and sequence-based fetching under 5ms.
 
-### Phase 2: Workspace Architecture
-* **Goals:** Create logical workspace boundary layers and group conversations cleanly.
+### Phase 2: Handshake & Versioned REST Endpoints
+* **Goals:** Deploy capability negotiation handshake and versioned REST endpoints under `/api/v1`.
 * **Deliverables:**
-  - Deploy `workspaces` table and relations.
-  - Implement side-drawer navigation on mobile to swap workspaces.
-  - Build workspace API endpoints (`GET /api/v1/workspaces`).
-* **Dependencies:** Phase 1 complete.
-* **Risks:** Unassociated historical conversation threads losing structural grouping.
-* **Success Criteria:** Swap workspaces, bringing the correct workspace-specific conversations and context models to the active viewport immediately.
+  - Implement `POST /api/v1/handshake` logic on backend.
+  - Establish `GET /api/v1/conversations/{id}` endpoints supporting `parent_only` hierarchy parsing.
+* **Verification:** Simulated client handshake runs asserting correct schema and feature flag configurations.
 
-### Phase 3: Live Agent Streams
-* **Goals:** Establish granular agent-tick WebSocket events to visualize actions dynamically.
+### Phase 3: Real-Time Event Stream Routing
+* **Goals:** Introduce structured WebSocket emitters using namespaces and sequence IDs.
 * **Deliverables:**
-  - Build a centralized streaming coordinator on the backend to publish task transitions.
-  - Expose the agent ticks payload over WebSocket paths.
-  - Implement the UI agent-activity panel highlighting currently active steps and logs.
-* **Dependencies:** Phase 1 WebSocket routing.
-* **Risks:** High network overhead on mobile cellular connections due to verbose streams.
-* **Success Criteria:** Throttle agent updates to a maximum of 1 update per 500ms while maintaining clear live telemetry on the mobile client.
+  - Update background worker dispatchers to emit structured JSON events matching namespaces (e.g. `AGENT.TICK`, `MISSION.SNAPSHOT_UPDATE`).
+  - Develop client-side event router in mobile Flutter codebase.
+* **Verification:** Automated WebSocket subscription test suites asserting correct sub-event grouping under parent event cards.
 
-### Phase 4: Approvals
-* **Goals:** Redesign Human-In-The-Loop actions into accessible, single-thumb execution cards.
+### Phase 4: Secure QR Handshake Protocol
+* **Goals:** Implement reliable, cryptographic QR Pairing between Desktop and Mobile clients.
 * **Deliverables:**
-  - Create high-contrast approval components.
-  - Link approvals to the unified conversation event timeline.
-  - Deploy `/api/v1/approvals` GET queues and action endpoints.
-* **Dependencies:** Phase 1 event stream database representation.
-* **Risks:** Blocking execution flows if the user closes the app during a critical action.
-* **Success Criteria:** Trigger a notification, tap, review diffs, and approve an action in less than 3 taps.
+  - Add Desktop interface rendering ephemeral nonces as QR codes.
+  - Implement Mobile scan handlers and backend confirmation routing workflows.
+* **Verification:** Handshake security verification validating correct token issuance and device authorization status in SQLite database.
 
-### Phase 5: Offline Sync
-* **Goals:** Build local client synchronization strategies to manage intermittent cellular signals.
+### Phase 5: The AI Inbox (Tab 3 Implementation)
+* **Goals:** Replace simple approvals with the comprehensive AI Inbox experience.
 * **Deliverables:**
-  - Build local caching mechanisms (local SQLite or key-value stores) in Flutter.
-  - Build outbound offline queues tracking pending actions and uploads.
-  - Implement background synchronizers with automatic re-try logic.
-* **Dependencies:** Phase 1 and 4 APIs.
-* **Risks:** Sync conflicts if files are modified on desktop while mobile is offline.
-* **Success Criteria:** Ensure the client remains fully responsive during simulated airplane mode and auto-sends messages upon network re-establishment.
+  - Implement categorized inbox list layouts natively in mobile client.
+  - Embed formatted inline unified Git Diff preview viewers.
+* **Verification:** Simulated human-in-the-loop approvals verifying correct event logging and system notification updates.
 
-### Phase 6: Desktop Handoff
-* **Goals:** Build seamless continuous coordination between active devices.
+### Phase 6: Today Dashboard & Command Palette
+* **Goals:** Build Tab 1 executive overview landing page and the global Command Palette.
 * **Deliverables:**
-  - Build handoff APIs accepting destination contexts.
-  - Implement the pairing protocols and URL schemes (`squados://`).
-  - Write coordinator handlers in desktop Streamlit / FastAPI layers to automatically focus on matching files, terminal outputs, and DAGs.
-* **Dependencies:** Phase 1 databases.
-* **Risks:** Security vulnerabilities if paired tokens or WebSocket handoffs are intercepted on local networks.
-* **Success Criteria:** Tap "Open Desktop" on mobile, and watch the matching workspace, logs, and files open on the workstation in <1.5s.
+  - Construct Today dashboard showing active crew states, pending approvals, and cost summaries.
+  - Build fuzzy-matched modal dialog triggered by swipe gestures.
+* **Verification:** Accessibility, touch-target, and layout validations.
 
-### Phase 7: Voice
-* **Goals:** Implement Hold-to-Record voice inputs for fast coordination.
+### Phase 7: Sync Engine & Conflict Resolutions
+* **Goals:** Ensure full operation under offline conditions with robust conflict management.
 * **Deliverables:**
-  - Build hold-to-record voice buttons in the companion input.
-  - Integrate backend Whisper translation pipelines to process transcription.
-  - Deliver transcribed text as a standard message inside `/api/v1/messages`.
-* **Dependencies:** Phase 1.
-* **Risks:** High audio latency or noisy transcription on low-quality microphones.
-* **Success Criteria:** Record a 10-second command, compile transcription, and dispatch a mission successfully with a clean user experience.
+  - Implement outbound synchronization queues and exponential retry controllers.
+  - Embed the formal conflict resolution matrix logic matching table behaviors.
+* **Verification:** Integration tests simulating signal dropouts during active agent missions to verify correct "Server Wins" and "Merge" state reconciliations.
 
-### Phase 8: Widgets, Wear OS, Dynamic Island
-* **Goals:** Create system-level widgets, lock screen updates, and Apple Watch / Wear OS micro-interfaces.
+### Phase 8: Ecosystem Plugins & Extensible UI
+* **Goals:** Rollout plugin contract allowing dynamic UI rendering under standard layouts.
 * **Deliverables:**
-  - Build Android and iOS homescreen widgets highlighting active mission progress.
-  - Implement Apple Dynamic Island & Live Activities structures.
-  - Develop Wear OS micro-apps displaying active agent lists and quick approval buttons.
-* **Dependencies:** Phase 3 WebSocket updates.
-* **Risks:** High OS-level background battery drain on mobile systems.
-* **Success Criteria:** View live mission percentage and the currently running agent directly from the mobile lock screen without opening the app.
+  - Establish `PLUGIN.UI` JSON interpreter in Mobile UI layers.
+  - Reserve namespaces across backend filters.
+* **Verification:** End-to-end integration tests deploying custom third-party extensions to verify real-time layout rendering inside the companion chat canvas.
