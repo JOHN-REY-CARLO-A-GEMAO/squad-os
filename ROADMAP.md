@@ -4,6 +4,19 @@ _Current as of 2026-04-03 | Axiom 🧠_
 
 ---
 
+## Documentation References
+
+**Architecture:**
+[ARCHITECTURE.md](ARCHITECTURE.md)
+
+**API:**
+[API.md](API.md)
+
+**Mobile Companion:**
+[docs/MOBILE_REMOTE_COMPANION_PLAN.md](docs/MOBILE_REMOTE_COMPANION_PLAN.md)
+
+---
+
 ## Overview
 
 Squad OS is an **agentic operating framework** designed to manage a squad of specialized AI workers, orchestrated by a lead intelligence (Axiom). This roadmap defines the three-phase development plan.
