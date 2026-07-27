@@ -8,7 +8,8 @@ import asyncio
 import tempfile
 import pathlib
 import urllib.request
-from datetime import datetime
+import socket
+from datetime import datetime, timedelta
 from streamlit_autorefresh import st_autorefresh
 import graphviz
 from squad_os.database.session import save_persona, get_all_personas, delete_persona, get_task_interrupt, update_interrupt_guidance
@@ -505,6 +506,83 @@ def get_project_status(project_id, is_active):
         return "Awaiting Commit"
     return "Exploring"
 
+# --- MOBILE PAIRING HELPERS ---
+import secrets
+import qrcode
+from io import BytesIO
+
+def get_local_ip_dashboard():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(('10.254.254.254', 1))
+        IP = s.getsockname()[0]
+    except Exception:
+        IP = '127.0.0.1'
+    finally:
+        s.close()
+    return IP
+
+def load_pairing_ticket(nonce):
+    conn = get_db_connection()
+    if conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT value FROM blackboard WHERE key = ?", (f"pairing_ticket_{nonce}",))
+            row = cursor.fetchone()
+            conn.close()
+            if row:
+                return json.loads(row[0])
+        except Exception:
+            pass
+    return None
+
+def save_pairing_ticket(nonce, ticket):
+    conn = get_db_connection()
+    if conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT OR REPLACE INTO blackboard (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
+                (f"pairing_ticket_{nonce}", json.dumps(ticket))
+            )
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+
+def list_paired_devices():
+    conn = get_db_connection()
+    if conn:
+        try:
+            df = pd.read_sql_query("SELECT id, user_id, push_token, platform, device_model, is_active, registered_at, last_seen_at FROM devices", conn)
+            conn.close()
+            return df
+        except Exception:
+            pass
+    return pd.DataFrame()
+
+def revoke_paired_device(device_db_id):
+    conn = get_db_connection()
+    if conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE devices SET is_active = 0 WHERE id = ?", (device_db_id,))
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+
+def approve_device_db(device_db_id):
+    conn = get_db_connection()
+    if conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE devices SET is_active = 1 WHERE id = ?", (device_db_id,))
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+
 # --- UI ---
 
 st.title("🛡️ SquadOS: Project Command Center")
@@ -606,7 +684,7 @@ is_selected_active = st.session_state.is_active
 if not selected_project:
     st.info("👋 Welcome to SquadOS. Dispatch a new mission below, or click a project on the left to view details.")
 
-    pipeline_tab, main_tab1, main_tab2, main_tab3 = st.tabs(["🔀 Pipeline", "💬 Mission Control", "🏗️ Agent Factory", "💾 Agent Store"])
+    pipeline_tab, main_tab1, main_tab2, main_tab3, main_tab4 = st.tabs(["🔀 Pipeline", "💬 Mission Control", "🏗️ Agent Factory", "💾 Agent Store", "📱 Mobile Pairing"])
 
     @st.fragment
     def _render_chat():
@@ -1148,6 +1226,111 @@ if not selected_project:
                             st.error("Installation failed.")
                 else:
                     st.error("Failed to parse .sqad package. Check that it contains a valid manifest.json.")
+
+    with main_tab4:
+        st.subheader("📱 Mobile Companion Pairing")
+        st.caption("Securely authorize your Squad OS mobile companion using QR codes.")
+
+        # Initialize or load active pairing nonce
+        if "active_pairing_nonce" not in st.session_state or st.button("🔄 Generate New Pairing Code"):
+            nonce = secrets.token_hex(16)
+            st.session_state.active_pairing_nonce = nonce
+            local_ip = get_local_ip_dashboard()
+            ticket = {
+                "nonce": nonce,
+                "status": "PENDING",
+                "created_at": datetime.now().isoformat(),
+                "expires_at": (datetime.now() + timedelta(minutes=5)).isoformat()
+            }
+            save_pairing_ticket(nonce, ticket)
+            st.toast("🆕 Generated new pairing ticket!")
+            st.rerun()
+
+        active_nonce = st.session_state.active_pairing_nonce
+        ticket = load_pairing_ticket(active_nonce)
+
+        if ticket:
+            status = ticket.get("status", "PENDING")
+
+            if status == "PENDING":
+                st.info("⏳ Awaiting scan from the mobile app...")
+                local_ip = get_local_ip_dashboard()
+                pairing_uri = f"squados://pair?host={local_ip}&port=8000&nonce={active_nonce}&ticket_version=1"
+
+                # Render QR Code
+                qr = qrcode.QRCode(version=1, box_size=10, border=3)
+                qr.add_data(pairing_uri)
+                qr.make(fit=True)
+                img = qr.make_image(fill_color="black", back_color="white")
+
+                buf = BytesIO()
+                img.save(buf, format="PNG")
+                buf.seek(0)
+
+                col_qr, col_info = st.columns([1, 2])
+                with col_qr:
+                    st.image(buf, width=250, caption="Scan this code with the companion camera")
+                with col_info:
+                    st.write("**Manual/Virtual Machine Fallback:**")
+                    st.write("If you are testing on an emulator, virtual machine, or if camera access is unavailable, copy and paste this Pairing URI directly into the manual field on the mobile app's Settings screen:")
+                    st.code(pairing_uri, language="text")
+                    st.caption(f"Nonce: `{active_nonce}` · Expires in 5 minutes")
+
+            elif status == "AWAITING_APPROVAL":
+                st.warning("🚨 **Pairing Request Received!**")
+                st.write(f"Device ID: `{ticket.get('device_id')}`")
+                st.write(f"Platform: `{ticket.get('platform', 'unknown').upper()}`")
+
+                col_app, col_rej = st.columns(2)
+                with col_app:
+                    if st.button("✅ Approve Pairing Request", use_container_width=True, type="primary"):
+                        ticket["status"] = "APPROVED"
+                        save_pairing_ticket(active_nonce, ticket)
+                        approve_device_db(ticket.get("device_db_id"))
+                        st.toast("🎉 Mobile Companion Approved successfully!")
+                        st.rerun()
+                with col_rej:
+                    if st.button("❌ Reject Request", use_container_width=True):
+                        ticket["status"] = "REJECTED"
+                        save_pairing_ticket(active_nonce, ticket)
+                        st.toast("Rejected request.")
+                        st.rerun()
+
+            elif status == "APPROVED":
+                st.success("🎉 **Device successfully paired and approved!**")
+                st.write(f"Your mobile companion (`{ticket.get('device_id')}`) has been issued credentials and is now authorized to send commands to this workspace.")
+                if st.button("Pair Another Device", use_container_width=True):
+                    st.session_state.pop("active_pairing_nonce")
+                    st.rerun()
+            else:
+                st.info(f"Ticket status: {status}")
+                if st.button("Start New Pairing", use_container_width=True):
+                    st.session_state.pop("active_pairing_nonce")
+                    st.rerun()
+
+        # List registered / authorized devices
+        st.markdown("---")
+        st.subheader("🛡️ Authorized Devices Registry")
+        devices_df = list_paired_devices()
+        if devices_df.empty:
+            st.info("No authorized companion devices registered yet.")
+        else:
+            for _, dev in devices_df.iterrows():
+                db_id = dev["id"]
+                dev_id = dev["push_token"].replace("token_", "")
+                platform = dev["platform"].upper()
+                is_active = dev["is_active"]
+                status_icon = "🟢 Approved" if is_active == 1 else "🔴 Revoked"
+
+                with st.expander(f"📱 {dev['device_model'] or 'Device'} ({platform}) — {status_icon}"):
+                    st.write(f"Device UUID: `{dev_id}`")
+                    st.write(f"Registered at: `{dev['registered_at']}`")
+                    st.write(f"Last seen: `{dev['last_seen_at']}`")
+                    if is_active == 1:
+                        if st.button("Revoke Credentials", key=f"revoke_{db_id}"):
+                            revoke_paired_device(db_id)
+                            st.toast("Device credentials revoked!")
+                            st.rerun()
 
 else:
     # --- INDIVIDUAL PROJECT VIEW ---

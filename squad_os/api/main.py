@@ -10,8 +10,26 @@ from squad_os.database.session import (
     add_to_queue, get_workspaces, get_conversations, get_conversation_by_id,
     get_conversation_events, update_conversation_memory_fields,
     get_conversation_memory, search_conversation_events, register_device,
-    get_active_devices, revoke_device, register_broadcast_callback
+    get_active_devices, revoke_device, register_broadcast_callback,
+    update_blackboard, read_blackboard
 )
+import socket
+from zeroconf import Zeroconf, ServiceInfo
+from datetime import datetime, timedelta
+
+zc_instance = None
+service_info_instance = None
+
+def get_local_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(('10.254.254.254', 1))
+        IP = s.getsockname()[0]
+    except Exception:
+        IP = '127.0.0.1'
+    finally:
+        s.close()
+    return IP
 # Note: You'll need to import your tool inventory here
 from squad_os.tools.registry import (
     WebSearchTool, FileWriterTool, ReadFileTool, TerminalTool,
@@ -105,6 +123,51 @@ async def db_broadcast_hook(conversation_id: int, payload: dict):
     await ws_manager.broadcast(conversation_id, payload)
 
 register_broadcast_callback(db_broadcast_hook)
+
+@app.on_event("startup")
+async def startup_mdns():
+    global zc_instance, service_info_instance
+    try:
+        hostname = socket.gethostname()
+        ip_address = get_local_ip()
+        api_port = 8000
+        websocket_port = 8000
+
+        type_ = "_squados._tcp.local."
+        name = f"SquadOS ({hostname}).{type_}"
+
+        properties = {
+            "hostname": hostname,
+            "ip": ip_address,
+            "api_port": str(api_port),
+            "websocket_port": str(websocket_port),
+            "server_version": "2.0.4"
+        }
+
+        service_info_instance = ServiceInfo(
+            type_=type_,
+            name=name,
+            addresses=[socket.inet_aton(ip_address)],
+            port=api_port,
+            properties=properties
+        )
+
+        zc_instance = Zeroconf()
+        zc_instance.register_service(service_info_instance)
+        print(f"[mDNS] Registered service: {name} on {ip_address}:{api_port}")
+    except Exception as e:
+        print(f"[mDNS] Failed to register service: {e}")
+
+@app.on_event("shutdown")
+async def shutdown_mdns():
+    global zc_instance, service_info_instance
+    try:
+        if zc_instance and service_info_instance:
+            zc_instance.unregister_service(service_info_instance)
+            zc_instance.close()
+            print("[mDNS] Unregistered service.")
+    except Exception as e:
+        print(f"[mDNS] Failed to unregister service: {e}")
 
 # --- API ENDPOINTS ---
 
@@ -262,6 +325,32 @@ async def pairing_request(req: PairRequest):
         device_model="SquadCompanionDevice",
         user_id="default_user"
     )
+
+    # Read and update ticket on blackboard
+    ticket_str = await read_blackboard(f"pairing_ticket_{req.nonce}")
+    if ticket_str:
+        try:
+            ticket = json.loads(ticket_str)
+            ticket["status"] = "AWAITING_APPROVAL"
+            ticket["device_id"] = req.device_id
+            ticket["device_db_id"] = device_id
+            ticket["platform"] = "ios" if "iphone" in req.device_id.lower() else "android"
+            await update_blackboard(f"pairing_ticket_{req.nonce}", json.dumps(ticket))
+        except Exception:
+            pass
+    else:
+        # Create a ticket on-the-fly for fallback / direct requests
+        ticket = {
+            "nonce": req.nonce,
+            "status": "AWAITING_APPROVAL",
+            "device_id": req.device_id,
+            "device_db_id": device_id,
+            "platform": "ios" if "iphone" in req.device_id.lower() else "android",
+            "created_at": datetime.now().isoformat(),
+            "expires_at": (datetime.now() + timedelta(minutes=5)).isoformat()
+        }
+        await update_blackboard(f"pairing_ticket_{req.nonce}", json.dumps(ticket))
+
     return PairResponse(
         status="SUCCESS",
         message=f"Device pairing request registered with system ID {device_id}."
@@ -269,12 +358,29 @@ async def pairing_request(req: PairRequest):
 
 @app.get("/api/v1/pair/token", response_model=TokenResponse)
 async def pairing_token(device_id: str = Query(...), nonce: str = Query(...)):
-    # Generates asymmetrical JWT mock token pair
-    return TokenResponse(
-        access_token=f"mock_access_jwt_token_for_{device_id}",
-        refresh_token=f"mock_refresh_jwt_token_for_{device_id}",
-        expires_in=900
-    )
+    ticket_str = await read_blackboard(f"pairing_ticket_{nonce}")
+    if not ticket_str:
+        raise HTTPException(status_code=400, detail="INVALID_TICKET")
+
+    try:
+        ticket = json.loads(ticket_str)
+    except Exception:
+        raise HTTPException(status_code=400, detail="INVALID_TICKET_FORMAT")
+
+    if ticket.get("status") == "APPROVED":
+        if ticket.get("device_id") != device_id:
+            raise HTTPException(status_code=400, detail="DEVICE_MISMATCH")
+
+        # Generates asymmetrical JWT mock token pair
+        return TokenResponse(
+            access_token=f"mock_access_jwt_token_for_{device_id}",
+            refresh_token=f"mock_refresh_jwt_token_for_{device_id}",
+            expires_in=900
+        )
+    elif ticket.get("status") == "AWAITING_APPROVAL":
+        raise HTTPException(status_code=202, detail="AWAITING_APPROVAL")
+    else:
+        raise HTTPException(status_code=400, detail=f"UNEXPECTED_STATUS_{ticket.get('status')}")
 
 # --- WEBSOCKET EVENT STREAM (v1.0 Architecture) ---
 

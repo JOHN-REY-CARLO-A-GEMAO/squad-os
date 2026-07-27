@@ -5,7 +5,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 class ApiClient {
   final Dio dio;
   final FlutterSecureStorage secureStorage;
-  final String baseUrl;
+  String baseUrl;
 
   ApiClient({
     String? baseUrl,
@@ -63,8 +63,14 @@ class ApiClient {
     return false;
   }
 
-  Future<Map<String, dynamic>> handshake() async {
-    final response = await dio.post('/api/v1/handshake', data: {
+  void setBaseUrl(String newUrl) {
+    baseUrl = newUrl;
+    dio.options.baseUrl = newUrl;
+  }
+
+  Future<Map<String, dynamic>> handshake({String? urlOverride}) async {
+    final dioInstance = urlOverride != null ? Dio(BaseOptions(baseUrl: urlOverride, connectTimeout: const Duration(seconds: 3))) : dio;
+    final response = await dioInstance.post('/api/v1/handshake', data: {
       'client_version': '2.0.0',
       'capabilities': [
         'voice_input',
