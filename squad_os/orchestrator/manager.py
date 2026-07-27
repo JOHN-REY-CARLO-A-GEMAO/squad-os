@@ -10,7 +10,11 @@ import os
 import shutil
 import aiosqlite
 from squad_os.agents.base import BaseAgent
-from squad_os.database.session import create_mission, create_task, update_task, update_mission, update_blackboard, DB_PATH, get_all_personas, append_conversation, get_conversation, get_mission, get_task, set_mission_status, create_interrupt, get_task_interrupt
+from squad_os.database.session import (
+    create_mission, create_task, update_task, update_mission, update_blackboard, DB_PATH, get_all_personas,
+    append_conversation, get_conversation, get_mission, get_task, set_mission_status, create_interrupt, get_task_interrupt,
+    append_conversation_event, update_mission_snapshot
+)
 from squad_os.core.projects import ProjectBranch
 from squad_os.tools.self_healing import health_monitor
 from squad_os.core.utils import is_safe_path
@@ -44,6 +48,8 @@ class Manager:
         self.plan_mission_obj = None
         self.verifier = VerifierAgent() if verification_enabled else None
         self.verification_disabled_tasks: set = set()  # task indices to skip verification for
+        self.parent_event_ids = {}
+        self.conversation_id = 1
 
     def _repair_json(self, content: str) -> str:
         """Deep clean JSON, handling severe LLM hallucinations."""
@@ -292,6 +298,32 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
     async def run_mission(self, goal: str, uploaded_files_json: Optional[str] = None, workflow_json: Optional[str] = None):
         mission_id = await create_mission(goal, uploaded_files_json, workflow_json)
 
+        # Initialize Event Sourcing: create MISSION.STARTED event
+        parent_id = await append_conversation_event(
+            conversation_id=self.conversation_id,
+            event_namespace="MISSION",
+            event_type="STARTED",
+            payload={
+                "goal": goal,
+                "message": f"Assistant spawned Mission #{mission_id} to {goal}."
+            },
+            mission_id=mission_id
+        )
+        self.parent_event_ids[mission_id] = parent_id
+
+        # Initialize Mission Snapshot
+        await update_mission_snapshot(
+            mission_id=mission_id,
+            status="IN_PROGRESS",
+            progress=0.0,
+            latest_thought="Planning the mission DAG and mobilizing agent specialists...",
+            next_action="Execute the planned task waves.",
+            eta=120,
+            confidence="HIGH",
+            token_usage=0,
+            estimated_cost=0.0
+        )
+
         # 1. Create a Shared Project Branch for the Mission
         slug = goal[:30]
         branch_id = ProjectBranch.create_id(slug)
@@ -414,6 +446,29 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
             print(f"❌ [Manager]: Setup failed: {e}")
             try:
                 await update_mission(mission_id, "FAILED")
+                await update_mission_snapshot(
+                    mission_id=mission_id,
+                    status="FAILED",
+                    progress=1.0,
+                    latest_thought=f"Mission setup failed: {str(e)}",
+                    next_action="Review workspace logs.",
+                    eta=0,
+                    confidence="LOW",
+                    token_usage=0,
+                    estimated_cost=0.0
+                )
+                await append_conversation_event(
+                    conversation_id=self.conversation_id,
+                    event_namespace="ERROR",
+                    event_type="COMPLETE",
+                    payload={
+                        "mission_id": mission_id,
+                        "error": str(e),
+                        "message": f"Mission #{mission_id} failed during setup."
+                    },
+                    parent_event_id=self.parent_event_ids.get(mission_id),
+                    mission_id=mission_id
+                )
             except Exception as db_err:
                 logging.error(f"Database error while updating mission status: {db_err}")
             return
@@ -423,9 +478,35 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
 
         # Final status
         try:
-            await update_mission(mission_id, "COMPLETED")
+            # Check if any tasks failed to determine overall status
+            any_failed = any(task_states.get(i) == "FAILED" for i in range(len(tasks))) if 'tasks' in locals() else False
+            final_status = "FAILED" if any_failed else "COMPLETED"
+
+            await update_mission(mission_id, final_status)
+            await update_mission_snapshot(
+                mission_id=mission_id,
+                status=final_status,
+                progress=1.0,
+                latest_thought="Mission finalized." if final_status == "COMPLETED" else "Mission failed during parallel execution.",
+                next_action="None." if final_status == "COMPLETED" else "Examine failure logs.",
+                eta=0,
+                confidence="HIGH" if final_status == "COMPLETED" else "LOW",
+                token_usage=0,
+                estimated_cost=0.0
+            )
+            await append_conversation_event(
+                conversation_id=self.conversation_id,
+                event_namespace="MISSION" if final_status == "COMPLETED" else "ERROR",
+                event_type="COMPLETE",
+                payload={
+                    "mission_id": mission_id,
+                    "message": f"Mission #{mission_id} finished with status: {final_status}"
+                },
+                parent_event_id=self.parent_event_ids.get(mission_id),
+                mission_id=mission_id
+            )
         except Exception as db_err:
-            logging.error(f"Database error while updating mission status to COMPLETED: {db_err}")
+            logging.error(f"Database error while updating mission status to final: {db_err}")
 
     async def handle_followup(self, mission_id: int, user_message: str):
         """Handle a follow-up message for an existing mission.
@@ -602,6 +683,36 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
         task_id = await create_task(mission_id, task_data.description, agent.role)
         task_ids[task_idx] = task_id
 
+        # Event Sourcing: Log TOOL.THINKING event
+        await append_conversation_event(
+            conversation_id=self.conversation_id,
+            event_namespace="TOOL",
+            event_type="THINKING",
+            payload={
+                "agent": agent.role,
+                "thought": f"Starting task: {task_data.description}",
+                "confidence": "HIGH"
+            },
+            parent_event_id=self.parent_event_ids.get(mission_id),
+            mission_id=mission_id
+        )
+
+        # Update Mission Snapshot progress
+        completed_count = sum(1 for s in task_states.values() if s == "COMPLETED")
+        total_count = len(tasks)
+        progress = completed_count / total_count if total_count > 0 else 0.0
+        await update_mission_snapshot(
+            mission_id=mission_id,
+            status="IN_PROGRESS",
+            progress=progress,
+            latest_thought=f"Agent '{agent.role}' is starting task: {task_data.description}",
+            next_action="Working on wave tasks.",
+            eta=90,
+            confidence="HIGH",
+            token_usage=0,
+            estimated_cost=0.0
+        )
+
         # Create per-task isolated workspace so parallel agents don't collide
         if agent.active_branch:
             task_workspace = os.path.join(agent.active_branch.project_path, f"task_{task_idx}")
@@ -621,6 +732,35 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
             )
             await update_task(task_id, status="PAUSED_FOR_REVIEW")
             task_states[task_idx] = "PAUSED_FOR_REVIEW"
+
+            # Event Sourcing: Log INBOX.APPROVAL_REQUESTED event
+            await append_conversation_event(
+                conversation_id=self.conversation_id,
+                event_namespace="INBOX",
+                event_type="APPROVAL_REQUESTED",
+                payload={
+                    "approval_id": interrupt_id,
+                    "status": "PENDING",
+                    "message": f"Task paused: destructive tools ({', '.join(destructive_names)}) require human approval.",
+                    "changes_summary": task_data.description
+                },
+                parent_event_id=self.parent_event_ids.get(mission_id),
+                mission_id=mission_id
+            )
+
+            # Update snapshot status to FOLLOWUP
+            await update_mission_snapshot(
+                mission_id=mission_id,
+                status="FOLLOWUP",
+                progress=progress,
+                latest_thought=f"Task {task_idx} paused for human-in-the-loop validation of destructive tools.",
+                next_action="Awaiting user approval in the AI Inbox.",
+                eta=0,
+                confidence="MEDIUM",
+                token_usage=0,
+                estimated_cost=0.0
+            )
+
             print(f"  [HITL]: Task {task_idx} paused (interrupt #{interrupt_id}). Destructive tools: {destructive_names}")
             return True  # Not a failure — DAG will check back once human resolves
 
@@ -702,6 +842,36 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
             # Write result to blackboard for other tasks
             await update_blackboard(f"task_{task_idx}_result", output_text)
 
+            # Event Sourcing: Log TOOL.JOURNAL event
+            await append_conversation_event(
+                conversation_id=self.conversation_id,
+                event_namespace="TOOL",
+                event_type="JOURNAL",
+                payload={
+                    "agent": agent.role,
+                    "status": "COMPLETED",
+                    "output": output_text
+                },
+                parent_event_id=self.parent_event_ids.get(mission_id),
+                mission_id=mission_id
+            )
+
+            # Update Mission Snapshot
+            completed_count = sum(1 for s in task_states.values() if s == "COMPLETED")
+            total_count = len(tasks)
+            progress = completed_count / total_count if total_count > 0 else 1.0
+            await update_mission_snapshot(
+                mission_id=mission_id,
+                status="IN_PROGRESS" if progress < 1.0 else "COMPLETED",
+                progress=progress,
+                latest_thought=f"Task {task_idx} completed successfully by '{agent.role}'.",
+                next_action="Resolving next tasks.",
+                eta=max(0, 90 - 30 * completed_count),
+                confidence="HIGH",
+                token_usage=0,
+                estimated_cost=0.0
+            )
+
             print(f"✅ [Manager]: Task {task_idx} completed in {elapsed:.1f}s.")
             return True
         else:
@@ -713,6 +883,36 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
             task_states[task_idx] = "FAILED"
             self.agent_metrics[task_data.assigned_agent_role]["tasks_failed"] += 1
             health_monitor.record_failure(task_data.assigned_agent_role, f"Verification failed: {json.dumps(verification_report)[:200]}")
+
+            # Event Sourcing: Log ERROR.JOURNAL event
+            await append_conversation_event(
+                conversation_id=self.conversation_id,
+                event_namespace="ERROR",
+                event_type="JOURNAL",
+                payload={
+                    "agent": agent.role,
+                    "status": "FAILED",
+                    "error": f"Verification failed or execution error: {output_text}"
+                },
+                parent_event_id=self.parent_event_ids.get(mission_id),
+                mission_id=mission_id
+            )
+
+            # Update Mission Snapshot status to FAILED
+            completed_count = sum(1 for s in task_states.values() if s == "COMPLETED")
+            total_count = len(tasks)
+            progress = completed_count / total_count if total_count > 0 else 1.0
+            await update_mission_snapshot(
+                mission_id=mission_id,
+                status="FAILED",
+                progress=progress,
+                latest_thought=f"Task {task_idx} failed during execution or verification.",
+                next_action="Examine error logs and resolve.",
+                eta=0,
+                confidence="LOW",
+                token_usage=0,
+                estimated_cost=0.0
+            )
 
             print(f"❌ [Manager]: Task {task_idx} FAILED verification in {elapsed:.1f}s.")
             return False

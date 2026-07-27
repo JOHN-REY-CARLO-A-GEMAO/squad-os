@@ -2,6 +2,7 @@ import os
 import sqlite3
 import aiosqlite
 import json
+import asyncio
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
@@ -296,6 +297,154 @@ async def init_db():
         # Optimizes persona lookups by role
         await db.execute("CREATE INDEX IF NOT EXISTS idx_personas_role ON agent_personas(role)")
 
+        # 10. Mobile Remote Companion Tables (v1.0 Architecture Blueprint)
+        # workspaces table
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS workspaces (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                description TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # conversations table
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS conversations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                workspace_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                summary TEXT,
+                goal TEXT,
+                system_prompt TEXT,
+                active_model TEXT DEFAULT 'claude-3-5-sonnet',
+                temperature REAL DEFAULT 0.2,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_conversations_workspace_id ON conversations(workspace_id)")
+
+        # conversation_memories table
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS conversation_memories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id INTEGER NOT NULL,
+                memory_key TEXT NOT NULL,
+                memory_value TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+            )
+        """)
+        await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_conv_memory_key ON conversation_memories(conversation_id, memory_key)")
+
+        # conversation_events table (Immutable Event-Sourcing Timeline with parent nesting)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS conversation_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                parent_event_id INTEGER,
+                conversation_id INTEGER NOT NULL,
+                sequence_id INTEGER NOT NULL,
+                event_namespace TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                mission_id INTEGER,
+                payload_schema_version INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (parent_event_id) REFERENCES conversation_events(id) ON DELETE CASCADE,
+                FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+                FOREIGN KEY (mission_id) REFERENCES missions(id) ON DELETE SET NULL
+            )
+        """)
+        await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_events_sequence_id ON conversation_events(sequence_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_events_conversation_id ON conversation_events(conversation_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_events_parent_id ON conversation_events(parent_event_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_events_mission_id ON conversation_events(mission_id)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_events_namespace_type ON conversation_events(event_namespace, event_type)")
+
+        # mission_snapshots table
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS mission_snapshots (
+                mission_id INTEGER PRIMARY KEY,
+                status TEXT NOT NULL,
+                progress REAL DEFAULT 0.0,
+                latest_thought TEXT,
+                next_action TEXT,
+                eta INTEGER DEFAULT 0,
+                confidence TEXT DEFAULT 'HIGH',
+                token_usage INTEGER DEFAULT 0,
+                estimated_cost REAL DEFAULT 0.0,
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (mission_id) REFERENCES missions(id) ON DELETE CASCADE
+            )
+        """)
+
+        # devices table
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS devices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT DEFAULT 'default_user',
+                push_token TEXT NOT NULL UNIQUE,
+                platform TEXT NOT NULL,
+                device_model TEXT,
+                is_active INTEGER DEFAULT 1,
+                registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # system_notifications table
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS system_notifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                body TEXT NOT NULL,
+                deep_link TEXT,
+                status TEXT DEFAULT 'PENDING',
+                sent_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE
+            )
+        """)
+
+        # Seeding logic: Default workspace & conversation
+        cursor = await db.execute("SELECT COUNT(*) FROM workspaces")
+        count = (await cursor.fetchone())[0]
+        if count == 0:
+            await db.execute(
+                "INSERT INTO workspaces (name, description) VALUES (?, ?)",
+                ("Squad OS Workspace", "Default workspace for the Squad OS Companion App")
+            )
+            # Fetch the workspace ID
+            cursor = await db.execute("SELECT id FROM workspaces WHERE name = ?", ("Squad OS Workspace",))
+            workspace_id = (await cursor.fetchone())[0]
+
+            await db.execute(
+                "INSERT INTO conversations (workspace_id, title, summary, goal, system_prompt, active_model, temperature) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (workspace_id, "JWT Auth Migration", "Refactoring outdated authentication handlers in secure modules", "Introduce robust refresh-token rotation", "You are a senior security engineer specializing in Flutter and Supabase.", "claude-3-5-sonnet", 0.2)
+            )
+            # Let's seed initial conversation memories
+            cursor = await db.execute("SELECT id FROM conversations LIMIT 1")
+            conv_id = (await cursor.fetchone())[0]
+            await db.execute(
+                "INSERT INTO conversation_memories (conversation_id, memory_key, memory_value) VALUES (?, ?, ?)",
+                (conv_id, "framework", "Flutter")
+            )
+            await db.execute(
+                "INSERT INTO conversation_memories (conversation_id, memory_key, memory_value) VALUES (?, ?, ?)",
+                (conv_id, "branch", "feature/jwt-refresh")
+            )
+            await db.execute(
+                "INSERT INTO conversation_memories (conversation_id, memory_key, memory_value) VALUES (?, ?, ?)",
+                (conv_id, "environment", "Supabase Production")
+            )
+            await db.execute(
+                "INSERT INTO conversation_memories (conversation_id, memory_key, memory_value) VALUES (?, ?, ?)",
+                (conv_id, "constraints", "Do not use legacy provider classes. Use modern Riverpod structures.")
+            )
+
         await db.commit()
 
 async def init_interrupts_table():
@@ -579,3 +728,286 @@ async def delete_persona(role: str):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("DELETE FROM agent_personas WHERE role = ?", (role,))
         await db.commit()
+
+
+# --- MOBILE REMOTE COMPANION HELPERS ---
+
+async def create_workspace(name: str, description: Optional[str] = None) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "INSERT INTO workspaces (name, description) VALUES (?, ?)",
+            (name, description)
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+async def get_workspaces() -> List[Dict[str, Any]]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM workspaces ORDER BY id ASC") as cursor:
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+async def create_conversation(
+    workspace_id: int,
+    title: str,
+    summary: Optional[str] = None,
+    goal: Optional[str] = None,
+    system_prompt: Optional[str] = None,
+    active_model: str = "claude-3-5-sonnet",
+    temperature: float = 0.2
+) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "INSERT INTO conversations (workspace_id, title, summary, goal, system_prompt, active_model, temperature) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (workspace_id, title, summary, goal, system_prompt, active_model, temperature)
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+async def get_conversations(workspace_id: int) -> List[Dict[str, Any]]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM conversations WHERE workspace_id = ? ORDER BY id ASC",
+            (workspace_id,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+async def get_conversation_by_id(conversation_id: int) -> Optional[Dict[str, Any]]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM conversations WHERE id = ?", (conversation_id,)) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+async def get_conversation_memory(conversation_id: int) -> Dict[str, str]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT memory_key, memory_value FROM conversation_memories WHERE conversation_id = ?",
+            (conversation_id,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return {row[0]: row[1] for row in rows}
+
+async def update_conversation_memory_fields(conversation_id: int, memories: Dict[str, str]):
+    async with aiosqlite.connect(DB_PATH) as db:
+        for k, v in memories.items():
+            await db.execute(
+                """
+                INSERT INTO conversation_memories (conversation_id, memory_key, memory_value, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(conversation_id, memory_key) DO UPDATE SET memory_value = excluded.memory_value, updated_at = CURRENT_TIMESTAMP
+                """,
+                (conversation_id, k, v)
+            )
+        await db.commit()
+
+_event_lock = asyncio.Lock()
+_broadcast_callbacks = []
+
+def register_broadcast_callback(callback):
+    _broadcast_callbacks.append(callback)
+
+async def append_conversation_event(
+    conversation_id: int,
+    event_namespace: str,
+    event_type: str,
+    payload: Dict[str, Any],
+    parent_event_id: Optional[int] = None,
+    mission_id: Optional[int] = None,
+    payload_schema_version: int = 1
+) -> int:
+    async with _event_lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            # Get next monotonic sequence_id
+            cursor = await db.execute("SELECT COALESCE(MAX(sequence_id), 0) + 1 FROM conversation_events")
+            sequence_id = (await cursor.fetchone())[0]
+
+            cursor = await db.execute(
+                """
+                INSERT INTO conversation_events
+                (parent_event_id, conversation_id, sequence_id, event_namespace, event_type, payload_json, mission_id, payload_schema_version)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    parent_event_id,
+                    conversation_id,
+                    sequence_id,
+                    event_namespace,
+                    event_type,
+                    json.dumps(payload),
+                    mission_id,
+                    payload_schema_version
+                )
+            )
+            await db.commit()
+            event_id = cursor.lastrowid
+
+            # Trigger callbacks
+            event_data = {
+                "id": event_id,
+                "parent_event_id": parent_event_id,
+                "sequence_id": sequence_id,
+                "event_namespace": event_namespace,
+                "event_type": event_type,
+                "payload_schema_version": payload_schema_version,
+                "mission_id": mission_id,
+                "payload": payload
+            }
+            for cb in _broadcast_callbacks:
+                try:
+                    if asyncio.iscoroutinefunction(cb):
+                        await cb(conversation_id, {"type": "EVENT", "data": event_data})
+                    else:
+                        cb(conversation_id, {"type": "EVENT", "data": event_data})
+                except Exception:
+                    pass
+
+            return event_id
+
+async def get_conversation_events(conversation_id: int, limit: int = 50, parent_only: bool = False, since_sequence_id: Optional[int] = None) -> List[Dict[str, Any]]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        query = "SELECT * FROM conversation_events WHERE conversation_id = ?"
+        params = [conversation_id]
+
+        if parent_only:
+            query += " AND parent_event_id IS NULL"
+
+        if since_sequence_id is not None:
+            query += " AND sequence_id > ?"
+            params.append(since_sequence_id)
+
+        query += " ORDER BY sequence_id ASC LIMIT ?"
+        params.append(limit)
+
+        async with db.execute(query, params) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+async def get_mission_snapshot(mission_id: int) -> Optional[Dict[str, Any]]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM mission_snapshots WHERE mission_id = ?", (mission_id,)) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+async def update_mission_snapshot(
+    mission_id: int,
+    status: str,
+    progress: float,
+    latest_thought: Optional[str] = None,
+    next_action: Optional[str] = None,
+    eta: int = 0,
+    confidence: str = "HIGH",
+    token_usage: int = 0,
+    estimated_cost: float = 0.0
+):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO mission_snapshots
+            (mission_id, status, progress, latest_thought, next_action, eta, confidence, token_usage, estimated_cost, last_updated)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(mission_id) DO UPDATE SET
+                status = excluded.status,
+                progress = excluded.progress,
+                latest_thought = excluded.latest_thought,
+                next_action = excluded.next_action,
+                eta = excluded.eta,
+                confidence = excluded.confidence,
+                token_usage = excluded.token_usage,
+                estimated_cost = excluded.estimated_cost,
+                last_updated = CURRENT_TIMESTAMP
+            """,
+            (
+                mission_id,
+                status,
+                progress,
+                latest_thought,
+                next_action,
+                eta,
+                confidence,
+                token_usage,
+                estimated_cost
+            )
+        )
+        await db.commit()
+
+        # Trigger callbacks
+        snapshot_data = {
+            "event_namespace": "MISSION",
+            "event_type": "SNAPSHOT_UPDATE",
+            "payload_schema_version": 1,
+            "payload": {
+                "mission_id": mission_id,
+                "status": status,
+                "progress": progress,
+                "eta": eta,
+                "latest_thought": latest_thought,
+                "next_action": next_action,
+                "confidence": confidence,
+                "token_usage": token_usage,
+                "estimated_cost": estimated_cost
+            }
+        }
+        for cb in _broadcast_callbacks:
+            try:
+                if asyncio.iscoroutinefunction(cb):
+                    await cb(1, snapshot_data) # Default conversation_id = 1
+                else:
+                    cb(1, snapshot_data)
+            except Exception:
+                pass
+
+async def register_device(
+    push_token: str,
+    platform: str,
+    device_model: Optional[str] = None,
+    user_id: str = "default_user"
+) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO devices (push_token, platform, device_model, user_id, is_active, last_seen_at)
+            VALUES (?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+            ON CONFLICT(push_token) DO UPDATE SET
+                is_active = 1,
+                last_seen_at = CURRENT_TIMESTAMP
+            """,
+            (push_token, platform, device_model, user_id)
+        )
+        await db.commit()
+        cursor = await db.execute("SELECT id FROM devices WHERE push_token = ?", (push_token,))
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+
+async def get_active_devices() -> List[Dict[str, Any]]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM devices WHERE is_active = 1") as cursor:
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+async def revoke_device(device_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE devices SET is_active = 0 WHERE id = ?", (device_id,))
+        await db.commit()
+
+async def search_conversation_events(conversation_id: int, query: str, limit: int = 20) -> List[Dict[str, Any]]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        search_query = f"%{query}%"
+        async with db.execute(
+            """
+            SELECT id, event_namespace, event_type, payload_json, created_at
+            FROM conversation_events
+            WHERE conversation_id = ? AND (payload_json LIKE ? OR event_type LIKE ?)
+            ORDER BY sequence_id DESC LIMIT ?
+            """,
+            (conversation_id, search_query, search_query, limit)
+         ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
