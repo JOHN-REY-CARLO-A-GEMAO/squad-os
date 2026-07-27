@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 class WebSocketClient {
-  final String url;
+  String url;
   final int conversationId;
 
   WebSocketChannel? _channel;
@@ -16,6 +16,16 @@ class WebSocketClient {
     String? baseUrl,
     this.conversationId = 1,
   }) : url = '${baseUrl ?? 'ws://127.0.0.1:8000'}/api/v1/streams?conversation_id=$conversationId';
+
+  void updateUrl(String newBaseUrl) {
+    String wsBase = newBaseUrl.replaceFirst('http://', 'ws://').replaceFirst('https://', 'wss://');
+    url = '$wsBase/api/v1/streams?conversation_id=$conversationId';
+    if (_channel != null) {
+      _channel!.sink.close();
+      _channel = null;
+    }
+    connect();
+  }
 
   Stream<Map<String, dynamic>> get stream => _messageController.stream;
 
