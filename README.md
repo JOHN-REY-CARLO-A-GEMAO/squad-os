@@ -1,5 +1,11 @@
 # 🛡️ SquadOS Framework
 
+<div align="center">
+  <video src="assets/promo.mp4" width="800" autoplay loop muted playsinline>
+    Your browser does not support the video tag.
+  </video>
+</div>
+
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 [![Ollama](https://img.shields.io/badge/Ollama-ready-green)](https://ollama.com/)
