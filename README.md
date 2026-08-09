@@ -1,8 +1,9 @@
 # 🛡️ SquadOS Framework
 
 <div align="center">
-  <video src="https://github.com/JOHN-REY-CARLO-A-GEMAO/squad-os/raw/main/assets/promo.mp4" width="800" autoplay loop muted playsinline>
-    Your browser does not support the video tag.
+  <video src="https://raw.githubusercontent.com/JOHN-REY-CARLO-A-GEMAO/squad-os/main/assets/promo.mp4" width="800" autoplay loop muted playsinline controls>
+    Your browser does not support the video tag. 
+    <a href="https://github.com/JOHN-REY-CARLO-A-GEMAO/squad-os/raw/main/assets/promo.mp4">Click here to watch the promo video.</a>
   </video>
 </div>
 
