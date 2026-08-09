@@ -3,6 +3,7 @@ import sqlite3
 import pandas as pd
 import os
 import json
+import html
 import mimetypes
 import asyncio
 import tempfile
@@ -737,7 +738,7 @@ if not selected_project:
 
                     with st.chat_message("user"):
                         st.write(prompt_text)
-                        uploaded_files_json = row.get("uploaded_files")
+                        uploaded_files_json = row["uploaded_files"] if "uploaded_files" in row.keys() else None
                         if uploaded_files_json:
                             try:
                                 files = json.loads(uploaded_files_json)
@@ -784,7 +785,7 @@ if not selected_project:
 
                         with st.chat_message("user"):
                             st.write(prompt_text)
-                            uploaded_files_json = row.get("uploaded_files")
+                            uploaded_files_json = row["uploaded_files"] if "uploaded_files" in row.keys() else None
                             if uploaded_files_json:
                                 try:
                                     files = json.loads(uploaded_files_json)
@@ -929,8 +930,10 @@ if not selected_project:
                         for t in layer:
                             icon = status_icons.get(t["status"], "❓")
                             color = status_colors.get(t["status"], "#9E9E9E")
-                            agent_short = t["assigned_agent"].split()[-1] if t["assigned_agent"] else "?"
-                            desc_short = t["description"][:40]
+                            # LLM-controlled fields must be HTML-escaped before
+                            # rendering with unsafe_allow_html (XSS guard).
+                            agent_short = html.escape(t["assigned_agent"].split()[-1]) if t["assigned_agent"] else "?"
+                            desc_short = html.escape(t["description"][:40])
                             html_parts.append(
                                 f'<div class="dag-node" style="background:{color}20;border-left:4px solid {color};">'
                                 f'<div style="font-weight:600;color:{color};">{icon} #{t["id"]} {agent_short}</div>'
@@ -1056,7 +1059,7 @@ if not selected_project:
                     "web_search", "write_file", "read_file", "terminal", "python_runner",
                     "dashboard_approval", "memory_search", "set_shared_value", "get_shared_value",
                     "delegate_task", "desktop_control", "ui_inspector", "commit_project",
-                    "browser_control", "vision_analysis", "video_processing", "telegram_send",
+                    "screen_recorder", "browser_control", "vision_analysis", "video_processing", "telegram_send",
                     "telegram_receive", "discord_send", "discord_receive", "email_send",
                     "email_receive", "marketplace_search", "install_skill", "get_tool_info",
                     "schedule_mission", "list_schedules", "cancel_schedule", "self_heal",

@@ -29,6 +29,9 @@ from squad_os.tools.visual import (
     VisionAnalysisTool    # <--- The Agent's Visual Analyzer
 )
 
+# FULL-SCREEN RECORDING
+from squad_os.tools.recorder import ScreenRecorderTool
+
 # VIDEO PROCESSING
 from squad_os.tools.video import (
     VideoProcessingTool   # <--- Watermark removal, video editing
@@ -119,6 +122,7 @@ async def run_worker():
         GetSharedValueTool(),
         DelegateTaskTool(),
         DesktopControlTool(),
+        ScreenRecorderTool(),
         UIInspectorTool(),
         CommitProjectTool(),
         
@@ -231,7 +235,7 @@ async def run_worker():
                 print(f"\n📅 SCHEDULE TRIGGER: Running scheduled mission (ID: {schedule['id']})")
                 await update_mission(schedule['id'], "IN_PROGRESS")
                 try:
-                    await manager.run_mission(schedule['mission_goal'], None)
+                    await manager.run_mission(schedule['mission_goal'], None, mission_id=schedule['id'])
                     await ScheduleManager.update_schedule_after_run(schedule['id'], schedule['id'], "COMPLETED")
                     print(f"✅ SCHEDULED MISSION #{schedule['id']} COMPLETE.")
                 except Exception as e:
@@ -250,11 +254,12 @@ async def run_worker():
             await update_mission(mission['id'], "IN_PROGRESS")
             
             try:
-                # EXECUTE MISSION — pass workflow_json if present for pre-built DAG execution
+                # EXECUTE MISSION — pass the queue row's id so tasks/interrupts
+                # attach to the SAME mission the human queued (no duplicate rows).
+                # run_mission returns the real outcome and sets the mission status.
                 workflow_json = mission.get('workflow_json')
-                await manager.run_mission(mission['goal'], mission.get('uploaded_files'), workflow_json)
-                print(f"✅ MISSION #{mission['id']} COMPLETE.")
-                await update_mission(mission['id'], "COMPLETED")
+                outcome = await manager.run_mission(mission['goal'], mission.get('uploaded_files'), workflow_json, mission_id=mission['id'])
+                print(f"{'✅' if outcome == 'COMPLETED' else '❌' if outcome == 'FAILED' else '⏸️'} MISSION #{mission['id']} {outcome}.")
             except Exception as e:
                 print(f"❌ MISSION #{mission['id']} FAILED: {e}")
                 await update_mission(mission['id'], "FAILED")

@@ -317,12 +317,11 @@ class AgentPackageLoader:
                 return False
 
         # Extract to workspace
-        install_dir = os.path.join(PACKAGES_DIR, f"{pkg.package_id}__{pkg.version}")
+        install_dir = AgentPackageLoader._safe_install_dir(pkg.package_id, pkg.version)
         os.makedirs(install_dir, exist_ok=True)
 
         try:
-            with zipfile.ZipFile(pkg.source_path, "r") as zf:
-                zf.extractall(install_dir)
+            AgentPackageLoader._extract_safe(pkg.source_path, install_dir)
             print(f"  [PackageLoader] Extracted '{pkg.package_id}' to {install_dir}")
         except Exception as e:
             print(f"  [PackageLoader] Extraction failed: {e}")
@@ -337,6 +336,45 @@ class AgentPackageLoader:
         SkillRegistry._instance = None  # Force re-discovery on next access
         print(f"  [PackageLoader] SkillRegistry invalidated — tools will be re-discovered.")
         return True
+
+    @staticmethod
+    def _safe_install_dir(package_id: str, version: str) -> str:
+        """Build a sanitized install dir for a package.
+
+        package_id / version come from the package manifest (untrusted) and
+        could contain path separators (``../../``) that would escape the
+        packages directory. Strip everything except safe filename characters.
+        """
+        safe_id = re.sub(r"[^A-Za-z0-9._-]", "_", package_id)
+        safe_ver = re.sub(r"[^A-Za-z0-9._-]", "_", version)
+        return os.path.join(PACKAGES_DIR, f"{safe_id}__{safe_ver}")
+
+    @staticmethod
+    def _extract_safe(source_path: str, install_dir: str) -> None:
+        """Extract a .sqad zip with per-entry validation (ZIP Slip guard).
+
+        Rejects:
+          - entries resolving outside ``install_dir`` (``../`` traversal,
+            absolute paths, Windows drive paths)
+          - symlink entries (can redirect writes outside the sandbox)
+        """
+        install_dir = os.path.realpath(install_dir)
+        with zipfile.ZipFile(source_path, "r") as zf:
+            for member in zf.infolist():
+                if os.path.isabs(member.filename):
+                    raise ValueError(f"Unsafe absolute path in package archive: '{member.filename}'")
+                dest_path = os.path.realpath(os.path.join(install_dir, member.filename))
+                if dest_path != install_dir and not dest_path.startswith(install_dir + os.sep):
+                    raise ValueError(f"Unsafe path in package archive: '{member.filename}'")
+                # Reject symlinks (their targets can point anywhere).
+                if (member.external_attr >> 16) & 0o170000 == 0o120000:
+                    raise ValueError(f"Unsafe symlink entry in package archive: '{member.filename}'")
+                if member.is_dir():
+                    os.makedirs(dest_path, exist_ok=True)
+                    continue
+                os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                with zf.open(member) as src, open(dest_path, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
 
     @staticmethod
     async def _save_to_db(pkg: AgentPackage, install_dir: str):

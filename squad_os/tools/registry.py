@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 import shlex
+import ast
 from typing import Dict, Any, Optional, List, Set
 
 try:
@@ -64,6 +65,30 @@ def _is_dangerous_command(command: str) -> bool:
     return False
 
 
+# ── Interpreter escape-hatch blocking ─────────────────────────────────
+# Interpreters with inline code-execution flags (`python -c`, `node -e`,
+# `perl -m`, ...) allow arbitrary code to run OUTSIDE the workspace and
+# bypass the PythonRunnerTool AST validation. The flags are blocked for
+# interpreter commands; running a *validated* script file remains allowed.
+INTERPRETER_COMMANDS = frozenset({
+    "python", "python2", "python3", "pypy", "node", "deno", "bun",
+    "perl", "ruby", "php", "lua", "luajit", "julia", "R", "Rscript",
+    "tclsh", "wish", "powershell", "pwsh", "cmd", "bash", "sh", "zsh",
+    "ksh", "csh", "awk", "gawk", "mawk", "groovy", "scala",
+})
+
+INTERPRETER_CODE_FLAGS = frozenset({
+    "-c", "--command", "-m", "--module", "-e", "--eval",
+    "-p", "-n", "-i", "--interactive", "--exec", "-ex",
+    "-command", "--execute",
+})
+
+# Package-manager installs execute arbitrary code from the package index
+# (setup.py / lifecycle scripts) and are a supply-chain RCE vector.
+PIP_COMMANDS = frozenset({"pip", "pip2", "pip3", "pipx", "easy_install"})
+GLOBAL_PACKAGE_FLAGS = frozenset({"-g", "--global", "add", "global"})
+
+
 def _looks_like_path(token: str) -> bool:
     """Check if a token looks like a file/directory path rather than a command flag."""
     # Command flags start with -
@@ -117,10 +142,12 @@ def _validate_terminal_command(command: str, workspace: str) -> tuple[bool, str]
         return False, f"Command parsing error: {str(e)}"
 
     expect_command = True
-    for token in tokens:
+    current_cmd: Optional[str] = None
+    for i, token in enumerate(tokens):
         # Check for command operators that start a new command context
         if token in COMMAND_OPERATORS:
             expect_command = True
+            current_cmd = None
             continue
 
         # Redirection operators themselves are safe, but they switch off expect_command
@@ -159,7 +186,42 @@ def _validate_terminal_command(command: str, workspace: str) -> tuple[bool, str]
             else:
                 return False, f"Command '{cmd_name}' not in allowed list"
             expect_command = False
+            current_cmd = cmd_name
+
+            # pip / pipx / easy_install: "install" executes arbitrary package
+            # code — a supply-chain RCE vector. Reject it outright.
+            if current_cmd in PIP_COMMANDS:
+                nxt = tokens[i + 1].lower() if i + 1 < len(tokens) else ""
+                if nxt == "install":
+                    return False, "Blocked: package installs via pip are not allowed in the terminal tool"
             continue
+
+        # Argument/flag token for the current command.
+        # Interpreter inline-code flags (`python -c`, `node -e`, ...) are the
+        # #1 sandbox bypass — reject them; use the validated python_runner tool.
+        if current_cmd in INTERPRETER_COMMANDS and token.lower() in INTERPRETER_CODE_FLAGS:
+            return False, (
+                f"Blocked: inline code-execution flag '{token}' for '{current_cmd}' "
+                "is not allowed. Use the python_runner tool (AST-validated) or a script file."
+            )
+
+        # `python script.py` — validate the script content with the same
+        # AST checks as python_runner. Script must already exist in the
+        # workspace (prevents "download then execute" chains).
+        if current_cmd in ("python", "python2", "python3", "pypy") and not token.startswith("-"):
+            if is_safe_path(workspace, token):
+                script_path = os.path.join(workspace, token)
+                if os.path.isfile(script_path):
+                    try:
+                        with open(script_path, "r", encoding="utf-8", errors="replace") as fh:
+                            script_src = fh.read()
+                    except OSError as exc:
+                        return False, f"Could not read script '{token}': {exc}"
+                    valid, msg = _validate_python_code(script_src)
+                    if not valid:
+                        return False, f"Blocked: script '{token}' failed security validation: {msg}"
+                else:
+                    return False, f"Access denied: script '{token}' does not exist in the workspace"
 
         # Path Traversal Check: Only check tokens that look like actual paths
         # Skip command flags (e.g., -la, --verbose) and simple arguments
@@ -169,38 +231,106 @@ def _validate_terminal_command(command: str, workspace: str) -> tuple[bool, str]
     return True, ""
 
 
-# Dangerous Python code patterns
-DANGEROUS_PYTHON_PATTERNS: List[tuple[str, str]] = [
-    (r'\b__import__\s*\(\s*["\']os["\']', "Blocked: dynamic import of os module"),
-    (r'\b__import__\s*\(\s*["\']subprocess["\']', "Blocked: dynamic import of subprocess"),
-    (r'\b__import__\s*\(\s*["\']sys["\']', "Blocked: dynamic import of sys module"),
-    (r'\b__import__\s*\(\s*["\']shutil["\']', "Blocked: dynamic import of shutil module"),
-    (r'\beval\s*\(', "Blocked: eval() is dangerous"),
-    (r'\bexec\s*\(', "Blocked: exec() is dangerous"),
-    (r'\bcompile\s*\(', "Blocked: compile() can be used for code injection"),
-    (r'os\.system\s*\(', "Blocked: os.system() is dangerous"),
-    (r'os\.popen\s*\(', "Blocked: os.popen() is dangerous"),
-    (r'os\.spawn', "Blocked: os.spawn* is dangerous"),
-    (r'os\.fork', "Blocked: os.fork() is dangerous"),
-    (r'subprocess\.call', "Blocked: subprocess.call() is dangerous"),
-    (r'subprocess\.run', "Blocked: subprocess.run() is dangerous"),
-    (r'subprocess\.Popen', "Blocked: subprocess.Popen() is dangerous"),
-    (r'subprocess\.check_output', "Blocked: subprocess.check_output() is dangerous"),
-    (r'shutil\.rmtree\s*\([^)]*["\']?/["\']?', "Blocked: shutil.rmtree() on root paths"),
-    (r'shutil\.rmtree\s*\([^)]*["\']?~', "Blocked: shutil.rmtree() on home directory"),
-]
+# ── AST-based Python code validation ──────────────────────────────────
+# The old regex blocklist was trivially bypassable:
+#   getattr(os, 'system')(...), __import__('sub'+'process'), os.remove(...)
+# Validation is now structural (AST), not textual: modules, calls, and
+# attribute access are inspected as syntax nodes, so indirection, string
+# concatenation, and aliasing cannot hide dangerous operations.
+
+# Modules that agent-executed Python may never import. They grant OS
+# access, process spawning, networking, file I/O, reflection, or
+# deserialization — all provided by dedicated, validated tools instead.
+BLOCKED_PY_MODULES: frozenset[str] = frozenset({
+    "os", "sys", "subprocess", "socket", "shutil", "ctypes", "pickle",
+    "shelve", "marshal", "importlib", "runpy", "pty", "fcntl", "mmap",
+    "multiprocessing", "threading", "concurrent", "requests", "urllib",
+    "http", "ftplib", "smtplib", "imaplib", "telnetlib", "paramiko",
+    "boto3", "winreg", "builtins", "code", "codeop", "platform",
+    "distutils", "setuptools", "venv", "pathlib", "sqlite3", "xml",
+    "ast", "inspect", "traceback", "pdb", "readline", "rlcompleter",
+    "site", "tkinter", "turtle", "webbrowser", "pip", "setuptools",
+})
+
+# Builtins whose CALL is blocked (reflection, dynamic exec, I/O, interactive).
+BLOCKED_PY_CALLS: frozenset[str] = frozenset({
+    "eval", "exec", "compile", "__import__", "getattr", "setattr",
+    "delattr", "globals", "locals", "vars", "input", "breakpoint",
+    "open", "file", "exit", "quit", "help",
+})
+
+# Attribute access on any of these names is blocked even if the module was
+# reachable (defense in depth for aliasing tricks like `import json as os`).
+BLOCKED_PY_ATTRIBUTE_ROOTS: frozenset[str] = frozenset({
+    "os", "sys", "subprocess", "socket", "shutil", "ctypes", "pathlib",
+    "builtins", "importlib",
+})
 
 
 def _validate_python_code(code: str) -> tuple[bool, str]:
-    """Validate Python code against dangerous patterns."""
+    """AST-based validation of agent-executed Python code.
+
+    Rejects:
+      - imports of OS/process/network/file/reflection modules
+      - calls to eval/exec/compile/__import__/getattr/open/...
+      - any dunder attribute access (``obj.__class__`` escape chains)
+
+    Allows: pure computation (math, json, re, datetime, statistics,
+    numpy, pandas, ...) and in-memory data processing.
+    """
     if not code or not code.strip():
         return False, "Empty code not allowed"
 
-    for pattern, message in DANGEROUS_PYTHON_PATTERNS:
-        if re.search(pattern, code, re.IGNORECASE):
-            return False, message
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as exc:
+        return False, f"Python syntax error: {exc.msg}"
+
+    for node in ast.walk(tree):
+        # Block imports of dangerous modules (aliases do not help:
+        # `import os as x` is caught because we check the module name).
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            module = node.module if isinstance(node, ast.ImportFrom) else None
+            for alias in node.names:
+                name = alias.name if not module else module
+                if name.split(".")[0] in BLOCKED_PY_MODULES:
+                    return False, f"Blocked: importing module '{name}' is not allowed"
+                if isinstance(node, ast.ImportFrom) and alias.name in BLOCKED_PY_MODULES:
+                    return False, f"Blocked: importing name '{alias.name}' is not allowed"
+
+        # Block calls to dangerous builtins / reflection helpers.
+        elif isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Name) and func.id in BLOCKED_PY_CALLS:
+                return False, f"Blocked: '{func.id}()' is not allowed in agent-executed code"
+            if isinstance(func, ast.Attribute):
+                root = _attribute_root(func)
+                if root in BLOCKED_PY_ATTRIBUTE_ROOTS and func.attr in (
+                    "system", "popen", "spawn", "spawnl", "spawnlp", "spawnv",
+                    "spawnvp", "fork", "exec", "execl", "execv", "call", "run",
+                    "Popen", "check_output", "check_call", "remove", "rmdir",
+                    "unlink", "chmod", "chown", "rename", "rmtree", "makedirs",
+                    "mkdir", "connect", "bind", "listen", "sendto", "send",
+                    "read", "write", "open", "startfile",
+                ):
+                    return False, f"Blocked: '{func.attr}' is not allowed on module '{root}'"
+
+        # Block dunder attribute access (`x.__class__`, `x.__subclasses__`).
+        elif isinstance(node, ast.Attribute):
+            if node.attr.startswith("__") and node.attr.endswith("__") and len(node.attr) > 4:
+                return False, f"Blocked: dunder attribute access '{node.attr}' is not allowed"
 
     return True, ""
+
+
+def _attribute_root(node: ast.Attribute) -> str:
+    """Return the leftmost name of an attribute chain, e.g. os.system -> 'os'."""
+    cur = node
+    while isinstance(cur.value, ast.Attribute):
+        cur = cur.value
+    if isinstance(cur.value, ast.Name):
+        return cur.value.id
+    return ""
 
 
 class WebSearchTool(BaseTool):

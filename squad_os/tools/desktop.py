@@ -228,7 +228,22 @@ class DesktopControlTool(BaseTool):
             p = self._platform
             try:
                 if p == "windows":
-                    subprocess.Popen(app, shell=True)
+                    # shell=False: never route through cmd.exe. Prefer the
+                    # whole string as ONE argv entry (handles paths with
+                    # spaces like 'C:\Program Files\App\app.exe' via
+                    # CreateProcess PATH search). If that is not an
+                    # executable, split on spaces so 'app arg1 arg2' becomes
+                    # plain argv entries — metacharacters (& | ; > <) stay
+                    # literal and cannot inject commands.
+                    import shlex
+                    parts = shlex.split(app, posix=False)
+                    try:
+                        subprocess.Popen([app])
+                    except (FileNotFoundError, OSError):
+                        if len(parts) > 1:
+                            subprocess.Popen(parts)
+                        else:
+                            raise
                 elif p == "darwin":
                     subprocess.Popen(["open", app])
                 elif p == "linux":

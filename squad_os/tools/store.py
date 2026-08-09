@@ -85,7 +85,8 @@ class InstallPackageTool(BaseTool):
     name = "install_package"
     description = (
         "Install a .sqad Agent Store package from a local file path or from the store catalog by package ID. "
-        "Validates the package, checks for dangerous patterns, and registers it in the system."
+        "Validates the package, checks for dangerous patterns, and registers it in the system. "
+        "Installation ALWAYS requires human approval (HITL) — it cannot be skipped by an agent."
     )
     parameters = {
         "type": "object",
@@ -93,17 +94,13 @@ class InstallPackageTool(BaseTool):
             "source": {
                 "type": "string",
                 "description": "Path to a .sqad file, or a package ID already in the store catalog"
-            },
-            "auto_approve": {
-                "type": "boolean",
-                "description": "Skip HITL approval for trusted packages (default false)"
             }
         },
         "required": ["source"]
     }
     category = "marketplace"
 
-    async def execute(self, source: str, auto_approve: bool = False) -> str:
+    async def execute(self, source: str) -> str:
         from squad_os.database.session import DB_PATH
         import aiosqlite
 
@@ -137,8 +134,7 @@ class InstallPackageTool(BaseTool):
             return f"Package '{pkg.package_id}' validation FAILED:{errors_str}{warnings_str}"
 
         async def approval_fn(p):
-            from squad_os.database.session import DB_PATH as _DB
-            import aiosqlite as _aiosqlite
+            from squad_os.database.session import create_approval_request, get_approval_status
             details = (
                 f"Install package '{p.name}' v{p.version} by {p.manifest.get('author', 'unknown')}?\n"
                 f"  Description: {p.manifest.get('description', 'N/A')}\n"
@@ -147,10 +143,13 @@ class InstallPackageTool(BaseTool):
                 f"  Dependencies: {len(p.dependencies)}\n"
                 f"  Warnings: {warnings_str[:200] if warnings_str else 'None'}"
             )
-            from squad_os.database.session import create_approval_request, get_approval_status
             approval_id = await create_approval_request(mission_id=0, task_id=0, message=details)
             print(f"  [InstallPackage]: HITL approval #{approval_id} created — waiting for response...")
-            while True:
+            import asyncio
+            import time
+            timeout = float(os.getenv("SQUAD_OS_INSTALL_APPROVAL_TIMEOUT", "600"))
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
                 response = await get_approval_status(approval_id)
                 if response and response["status"] != "PENDING":
                     if response["status"] == "APPROVED":
@@ -158,14 +157,14 @@ class InstallPackageTool(BaseTool):
                         return True
                     print(f"  [InstallPackage]: HITL rejected: {response.get('feedback', 'No reason given')}")
                     return False
-                from squad_os.database.session import DB_PATH as _DB2
-                import asyncio
                 await asyncio.sleep(2)
+            print(f"  [InstallPackage]: HITL approval #{approval_id} timed out after {int(timeout)}s — aborting install.")
+            return False
 
-        if auto_approve:
-            success = await AgentPackageLoader.install_package(pkg)
-        else:
-            success = await AgentPackageLoader.install_package(pkg, approval_func=approval_fn)
+        # Package installation executes arbitrary code (custom tools are
+        # imported at discovery) — human approval is ALWAYS required and can
+        # never be skipped by an agent.
+        success = await AgentPackageLoader.install_package(pkg, approval_func=approval_fn)
 
         if success:
             msg = f"✅ Package '{pkg.name}' v{pkg.version} installed successfully."

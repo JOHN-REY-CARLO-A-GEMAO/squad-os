@@ -31,7 +31,8 @@ class BaseAgent:
         if branch_id:
             self.active_branch = ProjectBranch(branch_id)
 
-    async def execute_task(self, task_description: str, context: str) -> Dict[str, Any]:
+    async def execute_task(self, task_description: str, context: str, model_override: Optional[str] = None) -> Dict[str, Any]:
+        model = model_override or self.model_name
         if not self.active_branch:
             branch_id = ProjectBranch.create_id(task_description[:30])
             self.active_branch = ProjectBranch(branch_id)
@@ -122,7 +123,7 @@ class BaseAgent:
                 # Use semaphore to prevent API rate-limit exhaustion
                 async with _LLM_SEMAPHORE:
                     response = await litellm.acompletion(
-                        model=self.model_name,
+                        model=model,
                         messages=messages,
                         tools=tool_schemas if tool_schemas else None
                     )
