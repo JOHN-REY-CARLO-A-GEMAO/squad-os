@@ -1,11 +1,10 @@
 # 🛡️ SquadOS Framework
 
-<div align="center">
-  <video src="https://raw.githubusercontent.com/JOHN-REY-CARLO-A-GEMAO/squad-os/main/assets/promo.mp4" width="800" autoplay loop muted playsinline controls>
-    Your browser does not support the video tag. 
-    <a href="https://github.com/JOHN-REY-CARLO-A-GEMAO/squad-os/raw/main/assets/promo.mp4">Click here to watch the promo video.</a>
-  </video>
-</div>
+
+
+https://github.com/user-attachments/assets/a8f7ecf7-e12b-4612-ad24-184bb3750511
+
+
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
