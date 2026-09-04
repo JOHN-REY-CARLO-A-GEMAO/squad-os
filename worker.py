@@ -29,9 +29,6 @@ from squad_os.tools.visual import (
     VisionAnalysisTool    # <--- The Agent's Visual Analyzer
 )
 
-# FULL-SCREEN RECORDING
-from squad_os.tools.recorder import ScreenRecorderTool
-
 # VIDEO PROCESSING
 from squad_os.tools.video import (
     VideoProcessingTool   # <--- Watermark removal, video editing
@@ -89,7 +86,7 @@ from squad_os.tools.compute import ComputeDelegateTool, ComputeStatusTool, GPUIn
 # SELF‑IMPROVEMENT / EVOLUTION (Phase 3)
 from squad_os.tools.evolution import EvolutionTool
 
-from squad_os.database.session import init_db, get_next_queued_mission, update_mission, get_next_followup_mission
+from squad_os.database.session import init_db, create_mission, get_next_queued_mission, update_mission, get_next_followup_mission
 
 
 # Code version — bump this when making breaking changes so old workers detect stale code
@@ -122,7 +119,6 @@ async def run_worker():
         GetSharedValueTool(),
         DelegateTaskTool(),
         DesktopControlTool(),
-        ScreenRecorderTool(),
         UIInspectorTool(),
         CommitProjectTool(),
         
@@ -230,17 +226,23 @@ async def run_worker():
     while True:
         # Check for scheduled missions first
         try:
-            due_schedules = await ScheduleManager.get_due_schedules()
+            # Atomic claim: only one worker process can claim a given due
+            # schedule, so a schedule can never be double-fired.
+            due_schedules = await ScheduleManager.claim_due_schedules()
             for schedule in due_schedules:
-                print(f"\n📅 SCHEDULE TRIGGER: Running scheduled mission (ID: {schedule['id']})")
-                await update_mission(schedule['id'], "IN_PROGRESS")
+                print(f"\n📅 SCHEDULE TRIGGER: Running scheduled mission (Schedule ID: {schedule['id']})")
+                # A schedule row is not a mission row — create one per run so tasks,
+                # interrupts and history attach to a real mission. run_mission reuses
+                # it (no duplicate rows), sets its status and returns the outcome.
+                mission_id = await create_mission(schedule['mission_goal'])
                 try:
-                    await manager.run_mission(schedule['mission_goal'], None, mission_id=schedule['id'])
-                    await ScheduleManager.update_schedule_after_run(schedule['id'], schedule['id'], "COMPLETED")
-                    print(f"✅ SCHEDULED MISSION #{schedule['id']} COMPLETE.")
+                    outcome = await manager.run_mission(schedule['mission_goal'], None, mission_id=mission_id)
+                    await ScheduleManager.update_schedule_after_run(schedule['id'], mission_id, outcome or "FAILED")
+                    print(f"✅ SCHEDULE #{schedule['id']} → MISSION #{mission_id} {outcome}.")
                 except Exception as e:
-                    print(f"❌ SCHEDULED MISSION #{schedule['id']} FAILED: {e}")
-                    await ScheduleManager.update_schedule_after_run(schedule['id'], schedule['id'], "FAILED")
+                    print(f"❌ SCHEDULE #{schedule['id']} (mission #{mission_id}) FAILED: {e}")
+                    await update_mission(mission_id, "FAILED")
+                    await ScheduleManager.update_schedule_after_run(schedule['id'], mission_id, "FAILED")
         except Exception as e:
             print(f"⚠️ [Worker]: Schedule check error: {e}")
         

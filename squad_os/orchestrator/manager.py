@@ -295,8 +295,13 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
 
         print(f"📝 [Manager]: Auto-generated project_memory.md ({len(all_files)} files, {total_size:,} bytes)")
 
-    async def run_mission(self, goal: str, uploaded_files_json: Optional[str] = None, workflow_json: Optional[str] = None):
-        mission_id = await create_mission(goal, uploaded_files_json, workflow_json)
+    async def run_mission(self, goal: str, uploaded_files_json: Optional[str] = None, workflow_json: Optional[str] = None, mission_id: Optional[int] = None) -> str:
+        if mission_id is None:
+            mission_id = await create_mission(goal, uploaded_files_json, workflow_json)
+        else:
+            # Reuse the caller-provided mission row (worker queue/schedule dispatch)
+            # so tasks, interrupts and events attach to the SAME mission — no duplicate rows.
+            await update_mission(mission_id, "IN_PROGRESS")
 
         # Initialize Event Sourcing: create MISSION.STARTED event
         parent_id = await append_conversation_event(
@@ -471,16 +476,19 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
                 )
             except Exception as db_err:
                 logging.error(f"Database error while updating mission status: {db_err}")
-            return
+            return "FAILED"
 
         # --- EXECUTE DAG ---
-        await self.execute_dag(tasks, mission_id, enriched_goal, shared_branch)
+        task_states = await self.execute_dag(tasks, mission_id, enriched_goal, shared_branch)
 
         # Final status
         try:
-            # Check if any tasks failed to determine overall status
-            any_failed = any(task_states.get(i) == "FAILED" for i in range(len(tasks))) if 'tasks' in locals() else False
-            final_status = "FAILED" if any_failed else "COMPLETED"
+            # A mission is COMPLETED only when every task reached a terminal
+            # state. FAILED tasks fail it; tasks still PENDING or waiting on
+            # human HITL approval (PAUSED_FOR_REVIEW) mean the mission did not
+            # finish — mark it FAILED rather than falsely COMPLETED.
+            unfinished = [s for s in task_states.values() if s not in ("COMPLETED", "SKIPPED")]
+            final_status = "FAILED" if unfinished else "COMPLETED"
 
             await update_mission(mission_id, final_status)
             await update_mission_snapshot(
@@ -507,6 +515,7 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
             )
         except Exception as db_err:
             logging.error(f"Database error while updating mission status to final: {db_err}")
+        return final_status
 
     async def handle_followup(self, mission_id: int, user_message: str):
         """Handle a follow-up message for an existing mission.
@@ -1199,3 +1208,4 @@ FINAL CONSENSUS:"""
                 success_rate = (metrics["tasks_completed"] / total) * 100
                 print(f"   {role}: {metrics['tasks_completed']}/{total} succeeded ({success_rate:.0f}%), avg {avg_time:.1f}s/task")
 
+        return task_states

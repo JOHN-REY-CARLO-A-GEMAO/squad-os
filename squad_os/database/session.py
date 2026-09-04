@@ -127,9 +127,6 @@ async def init_db():
             )
         """)
 
-        # MIGRATION: Auto-detect missing columns and add them
-        await _run_migrations(db)
-
         # 2. Tasks Table
         await db.execute("""
             CREATE TABLE IF NOT EXISTS tasks (
@@ -408,6 +405,12 @@ async def init_db():
                 FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE
             )
         """)
+
+        # MIGRATION: Auto-detect missing columns and add them. Runs after every
+        # CREATE TABLE above — on a fresh database the ALTERs fail silently
+        # ("no such table") if executed before tasks/missions exist, leaving
+        # tasks without verification_status/verification_details forever.
+        await _run_migrations(db)
 
         # Seeding logic: Default workspace & conversation
         cursor = await db.execute("SELECT COUNT(*) FROM workspaces")
