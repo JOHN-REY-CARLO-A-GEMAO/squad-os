@@ -9,9 +9,27 @@
 
 ---
 
-## 🎬 Watch it work
+## 🎬 Watch SquadOS in motion
 
-<video src="assets/promo.mp4" controls muted></video>
+[![Watch the 20-second SquadOS product tour](assets/squados-showcase-cover.png)](assets/squados-showcase.mp4)
+
+<p align="center">
+  <strong><a href="assets/squados-showcase.mp4">▶ Watch the 20-second product tour</a></strong><br />
+  See a mission become a parallel DAG, pause safely for human review, and ship as a reusable <code>.sqad</code> workflow.
+</p>
+
+<details>
+<summary>Regenerate the showcase with Remotion</summary>
+
+```bash
+cd showcase
+npm install
+npm run render  # refreshes assets/squados-showcase.mp4
+npm run still   # refreshes assets/squados-showcase-cover.png
+```
+
+The source, timing, and storyboard live in [`showcase/`](showcase/README.md).
+</details>
 
 ---
 
