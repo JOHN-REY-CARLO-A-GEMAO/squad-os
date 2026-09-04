@@ -226,7 +226,9 @@ async def run_worker():
     while True:
         # Check for scheduled missions first
         try:
-            due_schedules = await ScheduleManager.get_due_schedules()
+            # Atomic claim: only one worker process can claim a given due
+            # schedule, so a schedule can never be double-fired.
+            due_schedules = await ScheduleManager.claim_due_schedules()
             for schedule in due_schedules:
                 print(f"\n📅 SCHEDULE TRIGGER: Running scheduled mission (Schedule ID: {schedule['id']})")
                 # A schedule row is not a mission row — create one per run so tasks,

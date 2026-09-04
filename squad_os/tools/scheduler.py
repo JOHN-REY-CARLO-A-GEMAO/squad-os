@@ -120,6 +120,41 @@ class ScheduleManager:
             return [dict(r) for r in rows]
     
     @staticmethod
+    async def claim_due_schedules() -> List[Dict]:
+        """Atomically claim every due ACTIVE schedule for execution.
+
+        The due-select and ACTIVE->RUNNING flip happen in a single write
+        transaction (BEGIN IMMEDIATE), which SQLite serializes across worker
+        processes — two workers polling concurrently can never both claim (and
+        therefore double-fire) the same schedule. update_schedule_after_run()
+        later settles claimed rows: recurring -> ACTIVE with a fresh next_run,
+        once -> COMPLETED.
+
+        NOTE: a hard crash between claiming and settling leaves the row RUNNING;
+        it will not refire. Resume it with ScheduleManager.resume_schedule()
+        after the process restarts.
+        """
+        try:
+            async with aiosqlite.connect(DB_PATH, timeout=10) as db:
+                await db.execute("BEGIN IMMEDIATE")
+                db.row_factory = aiosqlite.Row
+                cursor = await db.execute(
+                    "SELECT * FROM schedules WHERE status = 'ACTIVE' AND next_run <= ?",
+                    (datetime.now().isoformat(),)
+                )
+                rows = [dict(r) for r in await cursor.fetchall()]
+                for row in rows:
+                    await db.execute(
+                        "UPDATE schedules SET status = 'RUNNING' WHERE id = ? AND status = 'ACTIVE'",
+                        (row["id"],)
+                    )
+                await db.commit()
+                return rows
+        except aiosqlite.OperationalError:
+            # Another worker holds the write lock — nothing claimable this poll.
+            return []
+
+    @staticmethod
     async def update_schedule_after_run(schedule_id: int, mission_id: int, status: str):
         """Update schedule after a mission run."""
         async with aiosqlite.connect(DB_PATH) as db:
@@ -149,7 +184,7 @@ class ScheduleManager:
                 await db.execute(
                     """
                     UPDATE schedules
-                    SET last_run = CURRENT_TIMESTAMP, next_run = ?, mission_id = ?
+                    SET last_run = CURRENT_TIMESTAMP, next_run = ?, status = 'ACTIVE', mission_id = ?
                     WHERE id = ?
                     """,
                     (next_run, mission_id, schedule_id)
@@ -183,16 +218,29 @@ class ScheduleManager:
                 return None
         
         elif schedule_type == "cron":
-            # Simplified cron: "minute hour day month weekday"
-            # For now, support basic intervals like "every hour", "every day"
+            # Simplified cron: "minute hour [day month weekday]".
+            # Only the minute/hour fields drive cadence (day/month/weekday are
+            # accepted but not interpreted):
+            #   "* * * * *" -> every minute     (next minute boundary)
+            #   "0 * * * *" -> every hour       (next hour boundary, minute 0)
+            #   "30 9 * * *" -> daily at 09:30
             parts = schedule_value.lower().split()
             if len(parts) >= 2:
-                minute, hour = parts[0], parts[1]
-                next_time = now.replace(minute=int(minute) if minute != "*" else 0, 
-                                       hour=int(hour) if hour != "*" else 0,
-                                       second=0, microsecond=0)
-                if next_time <= now:
-                    next_time += timedelta(days=1)
+                minute = int(parts[0]) if parts[0] != "*" else None
+                hour = int(parts[1]) if parts[1] != "*" else None
+                if minute is None and hour is None:
+                    next_time = (now + timedelta(minutes=1)).replace(second=0, microsecond=0)
+                elif hour is None:
+                    # Every hour, at the given minute.
+                    next_time = now.replace(minute=minute, second=0, microsecond=0)
+                    if next_time <= now:
+                        next_time += timedelta(hours=1)
+                else:
+                    # Daily at hour:minute (minute defaults to 0 when "*").
+                    next_time = now.replace(hour=hour, minute=minute if minute is not None else 0,
+                                            second=0, microsecond=0)
+                    if next_time <= now:
+                        next_time += timedelta(days=1)
                 return next_time.isoformat()
         
         return None

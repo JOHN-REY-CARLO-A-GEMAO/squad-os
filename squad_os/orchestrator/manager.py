@@ -483,9 +483,12 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
 
         # Final status
         try:
-            # Check if any tasks failed to determine overall status
-            any_failed = any(state == "FAILED" for state in task_states.values())
-            final_status = "FAILED" if any_failed else "COMPLETED"
+            # A mission is COMPLETED only when every task reached a terminal
+            # state. FAILED tasks fail it; tasks still PENDING or waiting on
+            # human HITL approval (PAUSED_FOR_REVIEW) mean the mission did not
+            # finish — mark it FAILED rather than falsely COMPLETED.
+            unfinished = [s for s in task_states.values() if s not in ("COMPLETED", "SKIPPED")]
+            final_status = "FAILED" if unfinished else "COMPLETED"
 
             await update_mission(mission_id, final_status)
             await update_mission_snapshot(
