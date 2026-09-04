@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 📦 Submit an Agent Store package
+    url: https://github.com/JOHN-REY-CARLO-A-GEMAO/squad-os/blob/main/CONTRIBUTING.md
+    about: Register a new .sqad workflow package in the Agent Store registry.
+  - name: 💬 Discussions
+    url: https://github.com/JOHN-REY-CARLO-A-GEMAO/squad-os/discussions
+    about: Ask questions and share ideas with the community.

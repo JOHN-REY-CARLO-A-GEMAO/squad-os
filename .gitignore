@@ -4,6 +4,7 @@ _archive-ts/node_modules/
 
 # Python venv
 venv/
+.venv/
 __pycache__/
 *.pyc
 *.pyo
@@ -12,9 +13,16 @@ __pycache__/
 
 # Build output
 dist/
+build/
+*.egg-info/
 
-# Logs
+# Logs + local diagnostics (should never be committed)
 data/logs/*.log
+streamlit.log
+worker.log
+worker_err.log
+windsurf-diagnostics.txt
+pr-178-changes.txt
 
 # I/O — task files are runtime artifacts
 data/inbox/*.json
@@ -44,12 +52,14 @@ Thumbs.db
 # Runtime data
 workspace/
 data/
+test_workspace/
 
-# IDE configs
+# IDE configs / AI assistant scratch
 .windsurf/
 .claude/
 .openclaw/
-.Jules/
+.opencode/
+.jules/
 
 # Analysis docs
 SQUAD_OS_ANALYSIS.md

@@ -1,38 +1,45 @@
 # 🛡️ SquadOS Framework
 
-
-
-https://github.com/user-attachments/assets/a8f7ecf7-e12b-4612-ad24-184bb3750511
-
-
+**An operating system for AI agent squads.** SquadOS orchestrates specialized AI agents — Architects, Developers, Researchers, QA reviewers — into DAG-based workflows that break down goals, execute tasks in parallel, and ship tangible outputs. Package any squad as a reusable `.sqad` bundle and share it through the Agent Store.
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 [![Ollama](https://img.shields.io/badge/Ollama-ready-green)](https://ollama.com/)
-
-**SquadOS** is a production-ready, asynchronous Multi-Agent System (MAS) framework. It orchestrates specialized AI agents—Architects, Developers, Researchers, QA reviewers—to autonomously break down goals, execute tasks in parallel via DAG-based workflows, and produce tangible outputs.
-
-Includes an **Agent Store** ecosystem for packaging, sharing, and deploying reusable multi-agent workflows as `.sqad` bundles.
+[![CI](https://github.com/JOHN-REY-CARLO-A-GEMAO/squad-os/actions/workflows/ci.yml/badge.svg)](https://github.com/JOHN-REY-CARLO-A-GEMAO/squad-os/actions/workflows/ci.yml)
 
 ---
 
-## 🚀 Key Features
+## 🎬 Watch it work
 
-- **Asynchronous Orchestration:** DAG-based task execution with parallel waves, swarm consensus, and dynamic reassignment.
-- **Agent Store Ecosystem:** Package, install, and run reusable multi-agent workflows as `.sqad` bundles. Built-in CLI to compile from `squad.yaml`.
+<video src="assets/promo.mp4" controls muted></video>
+
+---
+
+## ⚡ Why SquadOS?
+
+Most multi-agent frameworks give you a graph and a prompt. SquadOS gives your agents a *team operating system*:
+
+| Capability | SquadOS | CrewAI | LangGraph | OpenClaw |
+|---|---|---|---|---|
+| **DAG orchestration** with parallel waves | ✅ built-in | role-based only | ✅ low-level | partial |
+| **Agent Store** — install/share squads as `.sqad` bundles | ✅ **unique** | ❌ | ❌ | ❌ |
+| **Pre-built workflows** (zero LLM re-planning) | ✅ | ❌ | ❌ | ❌ |
+| **Self-healing** (retry, fallback chains, health monitor) | ✅ | partial | partial | partial |
+| **Sandboxed terminal** with allowlist + path-traversal guards | ✅ | partial | ❌ | partial |
+| **Human-in-the-loop approvals** | ✅ | ❌ | ❌ | ❌ |
+| **Local-first** — runs on Ollama with **no API key** | ✅ | ❌ | ✅ | ✅ |
+
+- **`.sqad` Agent Store Ecosystem:** Package, install, and run reusable multi-agent workflows. Built-in CLI compiles them from `squad.yaml`.
 - **Pre-built Workflows:** Store workflows execute with exact role/tool definitions — zero LLM re-planning overhead.
-- **SQLite Persistence:** Full mission auditing and state management in `shared_memory.db` with WAL mode.
-- **Human-in-the-Loop (HITL):** Built-in safety protocols with polling and WebSocket-based approval.
-- **Provider Agnostic:** Powered by LiteLLM. Seamlessly switch between OpenAI, Anthropic, or local **Ollama** models.
-- **Agentic Dashboard:** Real-time Streamlit UI for mission control, agent personas, project browsing, and the Agent Store.
-- **Scheduling Engine:** Cron-like mission scheduling with persistent schedule history.
 - **Self-Healing:** Error classification, retry with exponential backoff, health monitoring, and fallback chains.
-- **30+ Tools:** Web search, browser automation, desktop control, file I/O, terminal (sandboxed), email, Discord, Telegram, video processing, UI inspection, and more.
 - **Security-First:** All commands validated against an allowlist, path traversal blocked, dangerous patterns rejected.
+- **Human-in-the-Loop:** Built-in safety protocols with polling and WebSocket-based approval.
+- **30+ Tools:** Web search, browser automation, desktop control, file I/O, terminal (sandboxed), email, Discord, Telegram, video processing, UI inspection, and more.
+- **Provider Agnostic:** Powered by LiteLLM. Switch between OpenAI, Anthropic, or local **Ollama** models.
 
 ---
 
-## 🛠️ Quick Start
+## 🚀 Quick Start
 
 ### 1. Installation
 
@@ -164,7 +171,7 @@ Explore the `examples/` directory:
 - **Java GUI Builder:** A squad of agents (Architect, Developer, QA) collaborating to build a Java Swing Login system with validation and error handling.
 - **Framework Researcher:** Agents performing live web searches to summarize the competitive landscape of AI tools.
 
-Build your own workflow package and share it with the community.
+Build your own workflow package and share it with the community — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
