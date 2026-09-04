@@ -29,9 +29,6 @@ from squad_os.tools.visual import (
     VisionAnalysisTool    # <--- The Agent's Visual Analyzer
 )
 
-# FULL-SCREEN RECORDING
-from squad_os.tools.recorder import ScreenRecorderTool
-
 # VIDEO PROCESSING
 from squad_os.tools.video import (
     VideoProcessingTool   # <--- Watermark removal, video editing
@@ -122,7 +119,6 @@ async def run_worker():
         GetSharedValueTool(),
         DelegateTaskTool(),
         DesktopControlTool(),
-        ScreenRecorderTool(),
         UIInspectorTool(),
         CommitProjectTool(),
         

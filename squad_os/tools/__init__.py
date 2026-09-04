@@ -6,7 +6,6 @@ from squad_os.tools.registry import (
 from squad_os.tools.visual import BrowserControlTool, VisionAnalysisTool
 
 from squad_os.tools.desktop import DesktopControlTool
-from squad_os.tools.recorder import ScreenRecorderTool
 from squad_os.tools.store import BrowseStoreTool, InstallPackageTool, RunWorkflowTool, UninstallPackageTool
 
 from squad_os.tools.mcp_hub import MCPWrapperTool, MCPListTool, MCPRegisterTool, MCPDiscoverTool
