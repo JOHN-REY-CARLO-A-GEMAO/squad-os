@@ -124,22 +124,37 @@ class ScheduleManager:
         """Update schedule after a mission run."""
         async with aiosqlite.connect(DB_PATH) as db:
             # Get schedule info
+            db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM schedules WHERE id = ?", (schedule_id,))
             schedule = await cursor.fetchone()
             if not schedule:
                 return
-            
-            # Update last_run and next_run
-            next_run = ScheduleManager._calculate_next_run(schedule[3], schedule[4])
-            await db.execute(
-                """
-                UPDATE schedules 
-                SET last_run = CURRENT_TIMESTAMP, next_run = ?, mission_id = ?
-                WHERE id = ?
-                """,
-                (next_run, mission_id, schedule_id)
-            )
-            
+
+            # Advance next_run. Once-type schedules fire exactly one time and are
+            # marked COMPLETED so they never stay "due" and refire every poll.
+            # Recurring schedules stay ACTIVE with a freshly computed next_run.
+            if schedule["schedule_type"] == "once":
+                await db.execute(
+                    """
+                    UPDATE schedules
+                    SET last_run = CURRENT_TIMESTAMP, status = 'COMPLETED', mission_id = ?
+                    WHERE id = ?
+                    """,
+                    (mission_id, schedule_id)
+                )
+            else:
+                next_run = ScheduleManager._calculate_next_run(
+                    schedule["schedule_type"], schedule["schedule_value"]
+                )
+                await db.execute(
+                    """
+                    UPDATE schedules
+                    SET last_run = CURRENT_TIMESTAMP, next_run = ?, mission_id = ?
+                    WHERE id = ?
+                    """,
+                    (next_run, mission_id, schedule_id)
+                )
+
             # Log to history
             await db.execute(
                 """
@@ -148,7 +163,7 @@ class ScheduleManager:
                 """,
                 (schedule_id, mission_id, status)
             )
-            
+
             await db.commit()
     
     @staticmethod

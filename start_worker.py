@@ -44,9 +44,19 @@ async def main():
             print(f"\n=== PICKING UP MISSION #{mid} ===", flush=True)
             await update_mission(mid, "IN_PROGRESS")
             try:
-                await manager.run_mission(mission["goal"])
-                await update_mission(mid, "COMPLETED")
-                print(f"=== MISSION #{mid} COMPLETE ===\n", flush=True)
+                # Reuse the queued row's id so tasks/interrupts attach to the SAME
+                # mission the human queued (no duplicate rows). run_mission sets the
+                # mission status and returns the real outcome.
+                outcome = await manager.run_mission(
+                    mission["goal"],
+                    mission.get("uploaded_files"),
+                    mission.get("workflow_json"),
+                    mission_id=mid,
+                )
+                if outcome == "COMPLETED":
+                    print(f"=== MISSION #{mid} COMPLETE ===\n", flush=True)
+                else:
+                    print(f"=== MISSION #{mid} ENDED: {outcome} ===\n", flush=True)
             except Exception as e:
                 print(f"=== MISSION #{mid} FAILED: {e} ===\n", flush=True)
                 await update_mission(mid, "FAILED")
