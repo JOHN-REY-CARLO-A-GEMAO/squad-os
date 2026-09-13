@@ -7,6 +7,7 @@ no cycles).
 
 import aiosqlite
 import asyncio
+import inspect
 import json
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel
@@ -195,7 +196,7 @@ async def append_conversation_event(
             }
             for cb in _broadcast_callbacks:
                 try:
-                    if asyncio.iscoroutinefunction(cb):
+                    if inspect.iscoroutinefunction(cb):
                         await cb(conversation_id, {"type": "EVENT", "data": event_data})
                     else:
                         cb(conversation_id, {"type": "EVENT", "data": event_data})

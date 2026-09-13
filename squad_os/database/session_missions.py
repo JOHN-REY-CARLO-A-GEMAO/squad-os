@@ -9,6 +9,7 @@ session_memory imports the bus from here.
 
 import aiosqlite
 import asyncio
+import inspect
 import json
 from datetime import datetime
 from enum import Enum
@@ -751,7 +752,7 @@ async def update_mission_snapshot(
         }
         for cb in _broadcast_callbacks:
             try:
-                if asyncio.iscoroutinefunction(cb):
+                if inspect.iscoroutinefunction(cb):
                     await cb(1, snapshot_data) # Default conversation_id = 1
                 else:
                     cb(1, snapshot_data)
