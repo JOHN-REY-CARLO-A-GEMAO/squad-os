@@ -1,6 +1,5 @@
 # Dependencies
 node_modules/
-_archive-ts/node_modules/
 
 # Python venv
 venv/
@@ -45,6 +44,15 @@ Thumbs.db
 *.db
 *.db-wal
 *.db-shm
+
+# Backup / editor droppings
+*.bak
+*.orig
+*~
+
+# Daily continuity logs — MEMORY.md stays tracked, dailies do not
+memory/*.md
+!memory/.gitkeep
 
 # Package build artifacts
 *.sqad

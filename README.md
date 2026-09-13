@@ -82,8 +82,11 @@ OPENAI_API_KEY=your_key_here
 ### 3. Run the Worker
 
 ```bash
-python worker.py
+python start_worker.py
 ```
+
+> Canonical mission entrypoint: `start_worker.py` (hardened 5-tool loop, 3s poll).
+> Legacy full-inventory dev runner: `python worker.py`.
 
 ### 4. Run the Dashboard
 

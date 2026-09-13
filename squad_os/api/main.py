@@ -14,7 +14,11 @@ from squad_os.database.session import (
     update_blackboard, read_blackboard
 )
 import socket
-from zeroconf import Zeroconf, ServiceInfo
+try:
+    from zeroconf import Zeroconf, ServiceInfo
+except ImportError:  # mobile extra not installed — mDNS stays disabled
+    Zeroconf = None
+    ServiceInfo = None
 from datetime import datetime, timedelta
 
 zc_instance = None
@@ -127,6 +131,9 @@ register_broadcast_callback(db_broadcast_hook)
 @app.on_event("startup")
 async def startup_mdns():
     global zc_instance, service_info_instance
+    if Zeroconf is None or ServiceInfo is None:
+        print("[mDNS] zeroconf not installed — discovery disabled.")
+        return
     try:
         hostname = socket.gethostname()
         ip_address = get_local_ip()

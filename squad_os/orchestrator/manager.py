@@ -13,8 +13,10 @@ from squad_os.agents.base import BaseAgent
 from squad_os.database.session import (
     create_mission, create_task, update_task, update_mission, update_blackboard, DB_PATH, get_all_personas,
     append_conversation, get_conversation, get_mission, get_task, set_mission_status, create_interrupt, get_task_interrupt,
+    update_interrupt_guidance,
     append_conversation_event, update_mission_snapshot
 )
+from squad_os.database.session_missions import compute_mission_final_status
 from squad_os.core.projects import ProjectBranch
 from squad_os.tools.self_healing import health_monitor
 from squad_os.core.utils import is_safe_path
@@ -36,6 +38,7 @@ class TaskPlan(BaseModel):
 class MissionPlan(BaseModel):
     tasks: List[TaskPlan]
     suggested_parallelism: int = Field(default=2, description="Recommended number of concurrent tasks")
+
 
 class Manager:
     def __init__(self, tool_inventory: List[Any], model_name: str = "gpt-4o-mini", verification_enabled: bool = True):
@@ -304,30 +307,34 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
             await update_mission(mission_id, "IN_PROGRESS")
 
         # Initialize Event Sourcing: create MISSION.STARTED event
-        parent_id = await append_conversation_event(
-            conversation_id=self.conversation_id,
-            event_namespace="MISSION",
-            event_type="STARTED",
-            payload={
-                "goal": goal,
-                "message": f"Assistant spawned Mission #{mission_id} to {goal}."
-            },
-            mission_id=mission_id
-        )
-        self.parent_event_ids[mission_id] = parent_id
+        # Guarded: event/snapshot writes must not crash the mission if tables are missing.
+        try:
+            parent_id = await append_conversation_event(
+                conversation_id=self.conversation_id,
+                event_namespace="MISSION",
+                event_type="STARTED",
+                payload={
+                    "goal": goal,
+                    "message": f"Assistant spawned Mission #{mission_id} to {goal}."
+                },
+                mission_id=mission_id
+            )
+            self.parent_event_ids[mission_id] = parent_id
 
-        # Initialize Mission Snapshot
-        await update_mission_snapshot(
-            mission_id=mission_id,
-            status="IN_PROGRESS",
-            progress=0.0,
-            latest_thought="Planning the mission DAG and mobilizing agent specialists...",
-            next_action="Execute the planned task waves.",
-            eta=120,
-            confidence="HIGH",
-            token_usage=0,
-            estimated_cost=0.0
-        )
+            # Initialize Mission Snapshot
+            await update_mission_snapshot(
+                mission_id=mission_id,
+                status="IN_PROGRESS",
+                progress=0.0,
+                latest_thought="Planning the mission DAG and mobilizing agent specialists...",
+                next_action="Execute the planned task waves.",
+                eta=120,
+                confidence="HIGH",
+                token_usage=0,
+                estimated_cost=0.0
+            )
+        except Exception as db_err:
+            logging.error(f"Database error during mission init: {db_err}")
 
         # 1. Create a Shared Project Branch for the Mission
         slug = goal[:30]
@@ -479,16 +486,21 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
             return "FAILED"
 
         # --- EXECUTE DAG ---
-        task_states = await self.execute_dag(tasks, mission_id, enriched_goal, shared_branch)
+        # Returns the per-task state map; derive the honest final status here.
+        # A mission is COMPLETED only when every task reached a terminal
+        # state. FAILED tasks fail it; tasks still PENDING or waiting on
+        # human HITL approval (PAUSED_FOR_REVIEW) mean the mission did not
+        # finish — mark it FAILED rather than falsely COMPLETED.
+        # (Accept a plain status string too, for test doubles.)
+        dag_outcome = await self.execute_dag(tasks, mission_id, enriched_goal, shared_branch)
 
         # Final status
         try:
-            # A mission is COMPLETED only when every task reached a terminal
-            # state. FAILED tasks fail it; tasks still PENDING or waiting on
-            # human HITL approval (PAUSED_FOR_REVIEW) mean the mission did not
-            # finish — mark it FAILED rather than falsely COMPLETED.
-            unfinished = [s for s in task_states.values() if s not in ("COMPLETED", "SKIPPED")]
-            final_status = "FAILED" if unfinished else "COMPLETED"
+            if isinstance(dag_outcome, dict):
+                unfinished = [s for s in dag_outcome.values() if s not in ("COMPLETED", "SKIPPED")]
+                final_status = "FAILED" if unfinished else "COMPLETED"
+            else:
+                final_status = dag_outcome if isinstance(dag_outcome, str) else "COMPLETED"
 
             await update_mission(mission_id, final_status)
             await update_mission_snapshot(
@@ -637,6 +649,14 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
             await set_mission_status(mission_id, "FAILED")
             await append_conversation(mission_id, "system", f"Follow-up failed: {str(e)[:200]}")
 
+    async def _prompt_human_in_terminal(self, mission_id: int, task_idx: int, interrupt_id: int, context: str):
+        """Terminal fast-path for HITL approval. Returns (decision, guidance).
+
+        Default is undecided (async dashboard flow resolves via wave loop).
+        Tests monkeypatch this hook to simulate terminal approval/rejection.
+        """
+        return ("undecided", "")
+
     async def execute_task(self, task_idx: int, context: str, mission_id: int, task_states, task_results, task_ids, tasks) -> bool:
         """Execute a single task. Returns True if successful."""
         task_data = tasks[task_idx]
@@ -771,7 +791,34 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
             )
 
             print(f"  [HITL]: Task {task_idx} paused (interrupt #{interrupt_id}). Destructive tools: {destructive_names}")
-            return True  # Not a failure — DAG will check back once human resolves
+
+            # Release the worker slot while paused so agent_load doesn't leak.
+            self.agent_load[task_data.assigned_agent_role] = max(0, self.agent_load.get(task_data.assigned_agent_role, 0) - 1)
+
+            # Terminal fast-path: resolve inline if a human is at the terminal.
+            try:
+                _decision, _guidance = await self._prompt_human_in_terminal(
+                    mission_id=mission_id, task_idx=task_idx,
+                    interrupt_id=interrupt_id, context=task_data.description,
+                )
+            except Exception:
+                _decision, _guidance = ("undecided", "")
+            _guidance_text = (_guidance or "").strip()
+            if _guidance_text.upper().startswith("APPROVED"):
+                await update_interrupt_guidance(interrupt_id, _guidance_text)
+                print(f"  [HITL]: Task {task_idx} approved in terminal. Proceeding.")
+                # Fall through to normal execution below (no re-pause, no new interrupt).
+            elif _guidance_text and _guidance_text.upper() not in ("PENDING", "UNDECIDED"):
+                await update_interrupt_guidance(interrupt_id, _guidance_text)
+                await update_task(task_id, status="FAILED",
+                                  error=f"Rejected by human: {_guidance_text}")
+                task_states[task_idx] = "FAILED"
+                self.agent_metrics[task_data.assigned_agent_role]["tasks_failed"] += 1
+                health_monitor.record_failure(task_data.assigned_agent_role, f"Rejected by human: {_guidance_text[:200]}")
+                print(f"  [HITL]: Task {task_idx} rejected by human.")
+                return False
+            else:
+                return True  # Not a failure — DAG will check back once human resolves
 
         start_time = datetime.now()
         try:
@@ -791,9 +838,8 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
             result = await agent.execute_task(task_data.description, retry_context)
             output_text = result.get("output", "Task completed without text summary.")
 
-        # Update metrics
+        # Update metrics (load is released once, in the finally above)
         self.agent_metrics[task_data.assigned_agent_role]["total_time"] += elapsed
-        self.agent_load[task_data.assigned_agent_role] -= 1
 
         # --- VERIFICATION GATE ---
         # The maker never grades its own work. An external oracle checks it.

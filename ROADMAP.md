@@ -97,10 +97,12 @@ Squad OS is an **agentic operating framework** designed to manage a squad of spe
 
 ## Notes
 
-- All code lives in `src/`. Logs live in `data/logs/`.
+> Superseded April 2026: Phase 1-3 TS history below (`src/core/pulse.ts`, `npm start` Listening Mode) is preserved for context only. Current runtime: `squad_os/` + `start_worker.py` + Streamlit. See README.md.
+
+- All code lives in `src/`. Logs live in `data/logs/`. [Superseded — see note above]
 - Phase 3 external integrations (GitHub, Discord) are next priorities.
 - Memory files (`memory/YYYY-MM-DD.md`) track daily decisions and context.
-- System is currently in **Listening Mode** — run `npm start` to activate.
+- System is currently in **Listening Mode** — run `npm start` to activate. [Superseded — use `python start_worker.py`]
 
 ---
 
