@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Query, WebSocket, WebSocketDisconnect, Depends
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import asyncio
@@ -43,6 +43,13 @@ from squad_os.tools.registry import (
 )
 
 app = FastAPI(title="SquadOS Production API with Mobile Remote Companion Support", version="2.0.0")
+
+from squad_os.api.auth import require_auth
+from squad_os.api.v1 import public_router, v1_router
+
+# Wave-2 API surface: versioned routers (auth-gated v1 + public login/liveness).
+app.include_router(v1_router)
+app.include_router(public_router)
 
 # --- CORE SCHEMAS ---
 
@@ -183,21 +190,21 @@ async def health_check():
     return {"status": "online", "framework": "SquadOS"}
 
 @app.get("/personas")
-async def list_personas():
+async def list_personas(_auth: Any = Depends(require_auth)):
     return await get_all_personas()
 
 @app.post("/personas")
-async def create_new_persona(req: PersonaRequest):
+async def create_new_persona(req: PersonaRequest, _auth: Any = Depends(require_auth)):
     await save_persona(req.role, req.goal, req.backstory, req.tools)
     return {"message": f"Persona '{req.role}' saved."}
 
 @app.delete("/personas/{role}")
-async def remove_persona(role: str):
+async def remove_persona(role: str, _auth: Any = Depends(require_auth)):
     await delete_persona(role)
     return {"message": f"Persona '{role}' deleted."}
 
 @app.post("/missions/dispatch")
-async def dispatch_mission(req: MissionRequest, background_tasks: BackgroundTasks):
+async def dispatch_mission(req: MissionRequest, background_tasks: BackgroundTasks, _auth: Any = Depends(require_auth)):
     await add_to_queue(req.goal, req.uploaded_files_json)
     return {"message": "Mission queued for execution."}
 
@@ -205,6 +212,9 @@ async def dispatch_mission(req: MissionRequest, background_tasks: BackgroundTask
 
 @app.post("/api/v1/handshake", response_model=HandshakeResponse)
 async def handshake(req: HandshakeRequest):
+    # Public by design: pre-auth capability negotiation (server version,
+    # negotiated caps — non-sensitive). Same bootstrap class as pair/*:
+    # a device with no token starts here, earns tokens via pairing.
     negotiated = {cap: True for cap in req.capabilities}
     # Ensure standard required capabilities are flagged
     negotiated["nested_events"] = True
@@ -219,12 +229,12 @@ async def handshake(req: HandshakeRequest):
     )
 
 @app.get("/api/v1/workspaces")
-async def list_workspaces():
+async def list_workspaces(_auth: Any = Depends(require_auth)):
     workspaces = await get_workspaces()
     return {"workspaces": workspaces}
 
 @app.get("/api/v1/workspaces/{workspace_id}/conversations")
-async def list_workspace_conversations(workspace_id: int):
+async def list_workspace_conversations(workspace_id: int, _auth: Any = Depends(require_auth)):
     conversations = await get_conversations(workspace_id)
     return {"conversations": conversations}
 
@@ -233,7 +243,8 @@ async def fetch_unified_timeline(
     id: int,
     limit: int = Query(50, ge=1, le=100),
     parent_only: bool = False,
-    since_sequence_id: Optional[int] = None
+    since_sequence_id: Optional[int] = None,
+    _auth: Any = Depends(require_auth)
 ):
     conv = await get_conversation_by_id(id)
     if not conv:
@@ -279,7 +290,7 @@ async def fetch_unified_timeline(
     }
 
 @app.put("/api/v1/conversations/{id}/context", response_model=UpdateContextResponse)
-async def update_conversation_context(id: int, req: UpdateContextRequest):
+async def update_conversation_context(id: int, req: UpdateContextRequest, _auth: Any = Depends(require_auth)):
     conv = await get_conversation_by_id(id)
     if not conv:
         raise HTTPException(status_code=404, detail=f"Conversation {id} not found.")
@@ -292,7 +303,7 @@ async def update_conversation_context(id: int, req: UpdateContextRequest):
     )
 
 @app.get("/api/v1/conversations/{id}/search")
-async def search_conversation(id: int, q: str = Query(..., min_length=1), limit: int = Query(20, ge=1, le=100)):
+async def search_conversation(id: int, q: str = Query(..., min_length=1), limit: int = Query(20, ge=1, le=100), _auth: Any = Depends(require_auth)):
     conv = await get_conversation_by_id(id)
     if not conv:
         raise HTTPException(status_code=404, detail=f"Conversation {id} not found.")
