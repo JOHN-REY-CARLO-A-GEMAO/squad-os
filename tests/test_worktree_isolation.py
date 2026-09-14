@@ -121,7 +121,8 @@ class TestParallelTaskIsolation:
             manager.plan_mission_obj = plan
             tasks = plan.tasks
 
-            await manager.execute_dag(tasks, mission_id, "test parallel", branch)
+            run = manager.make_run(mission_id, tasks, branch)
+            await run.execute("test parallel")
 
             task_0_dir = os.path.join(branch_root, "task_0")
             task_1_dir = os.path.join(branch_root, "task_1")
@@ -235,7 +236,8 @@ class TestVerifyWorkspaceIsolation:
             manager.plan_mission_obj = plan
             tasks = plan.tasks
 
-            await manager.execute_dag(tasks, mission_id, "test verifier", branch)
+            run = manager.make_run(mission_id, tasks, branch)
+            await run.execute("test verifier")
 
             expected_workspace = os.path.join(branch_root, "task_0")
             assert mock_verifier.verify.call_count >= 1, "Verifier should have been called"

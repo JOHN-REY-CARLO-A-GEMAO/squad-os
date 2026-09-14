@@ -20,6 +20,7 @@ import pytest
 
 from squad_os.database.session import DB_PATH, init_db, create_mission, get_mission
 from squad_os.orchestrator.manager import Manager
+from squad_os.orchestrator.mission_run import MissionRun
 from squad_os.tools.scheduler import ScheduleManager
 
 
@@ -176,7 +177,7 @@ async def test_failed_task_execution_marks_mission_failed(monkeypatch):
     mid = await create_mission("exec crash goal")
     manager = Manager(tool_inventory=[], model_name="gpt-4o-mini", verification_enabled=False)
 
-    # acompletion raising propagates out of execute_task -> execute_dag marks
+    # acompletion raising propagates out of the agent -> the run marks
     # the task FAILED -> run_mission must return FAILED and set the status.
     with patch("litellm.acompletion", AsyncMock(side_effect=RuntimeError("exec boom"))):
         outcome = await manager.run_mission("exec crash goal", None, _failing_workflow_json(), mission_id=mid)
@@ -458,9 +459,9 @@ async def test_unexpected_execution_crash_is_marked_failed_by_caller(monkeypatch
     async def _boom(*args, **kwargs):
         raise RuntimeError("unexpected crash inside DAG")
 
-    with patch.object(manager, "execute_dag", side_effect=_boom):
+    with patch.object(MissionRun, "execute", side_effect=_boom):
         with pytest.raises(RuntimeError):
-            # workflow_json skips LLM planning so the crash comes from execute_dag.
+            # workflow_json skips LLM planning so the crash comes from the run.
             await manager.run_mission("crash goal", None, _workflow_json(), mission_id=mid)
 
     # Worker except path: mark FAILED, so the mission never stalls IN_PROGRESS.

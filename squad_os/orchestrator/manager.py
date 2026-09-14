@@ -1,27 +1,22 @@
 import json
 import logging
 import re
-import asyncio
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
 from pydantic import BaseModel, Field
 from litellm import acompletion
 import os
 import shutil
-import aiosqlite
 from squad_os.agents.base import BaseAgent
 from squad_os.database.session import (
-    create_mission, create_task, update_task, update_mission, update_blackboard, DB_PATH, get_all_personas,
-    append_conversation, get_conversation, get_mission, get_task, set_mission_status, create_interrupt, get_task_interrupt,
-    update_interrupt_guidance,
-    append_conversation_event, update_mission_snapshot
+    create_mission, get_all_personas, append_conversation, get_mission,
 )
-from squad_os.database.session_missions import compute_mission_final_status
+# Re-exported for callers/tests that import the final-status helper from here.
+from squad_os.database.session_missions import compute_mission_final_status  # noqa: F401
+from squad_os.orchestrator.run_store import RunStore, SessionRunStore
 from squad_os.core.projects import ProjectBranch
-from squad_os.tools.self_healing import health_monitor
 from squad_os.core.utils import is_safe_path
-from squad_os.core.evaluator import SafeEvaluator, build_condition_context
-from squad_os.core.gates import GateSuite, TestGate, LintGate, TypeCheckGate, FileExistsGate, Gate
+from squad_os.orchestrator.mission_run import MissionRun, RunConfig
 from squad_os.agents.verifier import VerifierAgent
 
 class TaskPlan(BaseModel):
@@ -41,18 +36,19 @@ class MissionPlan(BaseModel):
 
 
 class Manager:
-    def __init__(self, tool_inventory: List[Any], model_name: str = "gpt-4o-mini", verification_enabled: bool = True):
+    def __init__(self, tool_inventory: List[Any], model_name: str = "gpt-4o-mini", verification_enabled: bool = True, store: Optional[RunStore] = None):
         self.tool_inventory = {t.name: t for t in tool_inventory}
         self.model_name = model_name
         self.max_retries = 3
         self.active_agents = {}
-        self.agent_metrics = {}  # role -> {"tasks_completed": int, "tasks_failed": int, "total_time": float}
-        self.agent_load = {}  # role -> current number of active tasks
         self.plan_mission_obj = None
         self.verifier = VerifierAgent() if verification_enabled else None
-        self.verification_disabled_tasks: set = set()  # task indices to skip verification for
         self.parent_event_ids = {}
         self.conversation_id = 1
+        # Storage seam (staged commit 1): every run-state persistence call
+        # goes through this port. Default adapter wraps the session functions;
+        # tests may inject their own.
+        self.store: RunStore = store if store is not None else SessionRunStore()
 
     def _repair_json(self, content: str) -> str:
         """Deep clean JSON, handling severe LLM hallucinations."""
@@ -225,91 +221,18 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
             fallback_tasks.append(TaskPlan(description=f"Execute your assigned goal: {self.active_agents[role].goal}", assigned_agent_role=role, depends_on=[i-1] if i > 0 else []))
         return MissionPlan(tasks=fallback_tasks)
 
-    def _write_project_memory(self, branch, goal: str, tasks: List, task_results: Dict[int, str], waves: int):
-        """Auto-generate a comprehensive project_memory.md after mission completion."""
-        from datetime import datetime
-        import os
-
-        memory_path = os.path.join(branch.project_path, "project_memory.md")
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-        # Scan all generated files in the branch
-        all_files = []
-        total_size = 0
-        for root, dirs, files in os.walk(branch.project_path):
-            dirs[:] = [d for d in dirs if not d.startswith('.') and d != '__pycache__']
-            for f in files:
-                if f.startswith('.'):
-                    continue
-                rel = os.path.relpath(os.path.join(root, f), branch.project_path)
-                fpath = os.path.join(root, f)
-                size = os.path.getsize(fpath)
-                total_size += size
-                all_files.append((rel, size))
-
-        lines = []
-        lines.append(f"# Project Memory: {branch.task_id}")
-        lines.append("")
-        lines.append(f"**Mission:** {goal}")
-        lines.append(f"**Completed:** {now}")
-        lines.append(f"**Waves executed:** {waves}")
-        lines.append(f"**Files generated:** {len(all_files)} ({total_size:,} bytes)")
-        lines.append("")
-        lines.append("---")
-        lines.append("")
-
-        # Task summary
-        lines.append("## Task Execution Summary")
-        lines.append("")
-        for i in sorted(task_results.keys()):
-            desc = tasks[i].description if i < len(tasks) else f"Task {i}"
-            result_preview = task_results[i][:300].replace("\n", " ")
-            lines.append(f"### Task {i}: {desc}")
-            lines.append(f"> {result_preview}")
-            lines.append("")
-
-        # File inventory
-        lines.append("## Generated Files")
-        lines.append("")
-        lines.append("| File | Size |")
-        lines.append("|------|------|")
-        for rel, size in sorted(all_files, key=lambda x: x[0]):
-            lines.append(f"| {rel} | {size:,} B |")
-        lines.append("")
-
-        # Agent performance
-        lines.append("## Agent Performance")
-        lines.append("")
-        lines.append("| Agent | Success Rate | Avg Time | Health |")
-        lines.append("|-------|-------------|----------|--------|")
-        for role, metrics in sorted(self.agent_metrics.items()):
-            total = metrics["tasks_completed"] + metrics["tasks_failed"]
-            if total > 0:
-                rate = f"{metrics['tasks_completed']}/{total} ({metrics['tasks_completed']/total*100:.0f}%)"
-                avg = f"{metrics['total_time'] / max(1, metrics['tasks_completed']):.1f}s"
-                health = "✅" if metrics['tasks_failed'] == 0 else "⚠️"
-                lines.append(f"| {role} | {rate} | {avg} | {health} |")
-        lines.append("")
-
-        content = "\n".join(lines)
-
-        with open(memory_path, "w", encoding="utf-8") as f:
-            f.write(content)
-
-        print(f"📝 [Manager]: Auto-generated project_memory.md ({len(all_files)} files, {total_size:,} bytes)")
-
     async def run_mission(self, goal: str, uploaded_files_json: Optional[str] = None, workflow_json: Optional[str] = None, mission_id: Optional[int] = None) -> str:
         if mission_id is None:
             mission_id = await create_mission(goal, uploaded_files_json, workflow_json)
         else:
             # Reuse the caller-provided mission row (worker queue/schedule dispatch)
             # so tasks, interrupts and events attach to the SAME mission — no duplicate rows.
-            await update_mission(mission_id, "IN_PROGRESS")
+            await self.store.update_mission(mission_id, "IN_PROGRESS")
 
         # Initialize Event Sourcing: create MISSION.STARTED event
         # Guarded: event/snapshot writes must not crash the mission if tables are missing.
         try:
-            parent_id = await append_conversation_event(
+            parent_id = await self.store.append_conversation_event(
                 conversation_id=self.conversation_id,
                 event_namespace="MISSION",
                 event_type="STARTED",
@@ -322,7 +245,7 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
             self.parent_event_ids[mission_id] = parent_id
 
             # Initialize Mission Snapshot
-            await update_mission_snapshot(
+            await self.store.update_mission_snapshot(
                 mission_id=mission_id,
                 status="IN_PROGRESS",
                 progress=0.0,
@@ -382,9 +305,7 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
                         header = f"\n\n--- UPLOADED FILES ({len(file_summaries)}) ---\n"
                         enriched_goal += header + "\n".join(file_summaries)
 
-                    async with aiosqlite.connect(DB_PATH) as db:
-                        await db.execute("UPDATE missions SET uploaded_files = ? WHERE id = ?", (json.dumps(files), mission_id))
-                        await db.commit()
+                    await self.store.update_mission_uploaded_files(mission_id, json.dumps(files))
             except Exception as e:
                 print(f"⚠️ [Manager]: Error processing uploaded files: {e}")
 
@@ -457,8 +378,8 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
         except Exception as e:
             print(f"❌ [Manager]: Setup failed: {e}")
             try:
-                await update_mission(mission_id, "FAILED")
-                await update_mission_snapshot(
+                await self.store.update_mission(mission_id, "FAILED")
+                await self.store.update_mission_snapshot(
                     mission_id=mission_id,
                     status="FAILED",
                     progress=1.0,
@@ -469,7 +390,7 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
                     token_usage=0,
                     estimated_cost=0.0
                 )
-                await append_conversation_event(
+                await self.store.append_conversation_event(
                     conversation_id=self.conversation_id,
                     event_namespace="ERROR",
                     event_type="COMPLETE",
@@ -485,25 +406,19 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
                 logging.error(f"Database error while updating mission status: {db_err}")
             return "FAILED"
 
-        # --- EXECUTE DAG ---
-        # Returns the per-task state map; derive the honest final status here.
-        # A mission is COMPLETED only when every task reached a terminal
-        # state. FAILED tasks fail it; tasks still PENDING or waiting on
-        # human HITL approval (PAUSED_FOR_REVIEW) mean the mission did not
-        # finish — mark it FAILED rather than falsely COMPLETED.
-        # (Accept a plain status string too, for test doubles.)
-        dag_outcome = await self.execute_dag(tasks, mission_id, enriched_goal, shared_branch)
+        # --- EXECUTE THE RUN ---
+        # MissionRun owns the execution; the honest final status comes back on
+        # the RunOutcome (strict grammar: anything not COMPLETED/SKIPPED —
+        # including tasks awaiting human approval — fails the mission).
+        run = self.make_run(mission_id, tasks, shared_branch)
+        outcome = await run.execute(enriched_goal)
 
         # Final status
         try:
-            if isinstance(dag_outcome, dict):
-                unfinished = [s for s in dag_outcome.values() if s not in ("COMPLETED", "SKIPPED")]
-                final_status = "FAILED" if unfinished else "COMPLETED"
-            else:
-                final_status = dag_outcome if isinstance(dag_outcome, str) else "COMPLETED"
+            final_status = outcome.status
 
-            await update_mission(mission_id, final_status)
-            await update_mission_snapshot(
+            await self.store.update_mission(mission_id, final_status)
+            await self.store.update_mission_snapshot(
                 mission_id=mission_id,
                 status=final_status,
                 progress=1.0,
@@ -514,7 +429,7 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
                 token_usage=0,
                 estimated_cost=0.0
             )
-            await append_conversation_event(
+            await self.store.append_conversation_event(
                 conversation_id=self.conversation_id,
                 event_namespace="MISSION" if final_status == "COMPLETED" else "ERROR",
                 event_type="COMPLETE",
@@ -551,10 +466,7 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
         enriched_goal = goal
 
         # Gather previous task results from DB
-        async with aiosqlite.connect(DB_PATH) as db:
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute("SELECT description, status, output_data, assigned_agent FROM tasks WHERE mission_id = ? ORDER BY id", (mission_id,))
-            prev_tasks = [dict(r) for r in await cursor.fetchall()]
+        prev_tasks = await self.store.get_mission_tasks(mission_id)
 
         if prev_tasks:
             summary_lines = ["\n\n--- PREVIOUS ATTEMPT RESULTS ---"]
@@ -584,7 +496,7 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
 
         # 5. Re-plan and re-execute
         try:
-            await set_mission_status(mission_id, "IN_PROGRESS")
+            await self.store.update_mission(mission_id, "IN_PROGRESS")
             await append_conversation(mission_id, "system", f"Re-planning with follow-up: {user_message[:100]}")
 
             if workflow_json:
@@ -636,622 +548,38 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
 
             await append_conversation(mission_id, "system", f"Re-planning complete — {len(tasks)} tasks to execute.")
 
-            # Re-execute on the same branch
-            await self.execute_dag(tasks, mission_id, enriched_goal, shared_branch)
-            await set_mission_status(mission_id, "COMPLETED")
+            # Re-execute on the same branch: a fresh MissionRun for this follow-up
+            run = self.make_run(mission_id, tasks, shared_branch)
+            outcome = await run.execute(enriched_goal)
+            await self.store.update_mission(mission_id, outcome.status)
 
-            # Log success to conversation
-            completed = sum(1 for t in self.plan_mission_obj.tasks if hasattr(t, '_result') and getattr(t, '_result') == "COMPLETED")
-            await append_conversation(mission_id, "system", f"Follow-up execution complete. {completed}/{len(tasks)} tasks succeeded.")
+            # Log outcome to conversation (honest mapping — FAILED runs are reported)
+            await append_conversation(mission_id, "system", f"Follow-up execution complete. {outcome.summary}")
 
         except Exception as e:
             print(f"❌ [Manager]: Follow-up failed: {e}")
-            await set_mission_status(mission_id, "FAILED")
+            await self.store.update_mission(mission_id, "FAILED")
             await append_conversation(mission_id, "system", f"Follow-up failed: {str(e)[:200]}")
 
-    async def _prompt_human_in_terminal(self, mission_id: int, task_idx: int, interrupt_id: int, context: str):
-        """Terminal fast-path for HITL approval. Returns (decision, guidance).
-
-        Default is undecided (async dashboard flow resolves via wave loop).
-        Tests monkeypatch this hook to simulate terminal approval/rejection.
+    def make_run(self, mission_id: int, tasks: List[TaskPlan], shared_branch: Optional[ProjectBranch]) -> MissionRun:
+        """Construct a MissionRun wired to this Manager's squad, store,
+        verifier and config — the single construction point for runs
+        (run_mission, handle_followup, and the Agent Store workflow tool).
         """
-        return ("undecided", "")
-
-    async def execute_task(self, task_idx: int, context: str, mission_id: int, task_states, task_results, task_ids, tasks) -> bool:
-        """Execute a single task. Returns True if successful."""
-        task_data = tasks[task_idx]
-
-        if task_data.is_swarm:
-            return await self.execute_swarm_task(task_idx, context, mission_id, task_states, task_results, task_ids)
-
-        agent = self.active_agents.get(task_data.assigned_agent_role)
-
-        # Initialize agent metrics if not present (Fix 3)
-        if task_data.assigned_agent_role not in self.agent_metrics:
-            self.agent_metrics[task_data.assigned_agent_role] = {
-                "tasks_completed": 0,
-                "tasks_failed": 0,
-                "total_time": 0.0
-            }
-            
-        # Initialize load tracking if not present
-        if task_data.assigned_agent_role not in self.agent_load:
-            self.agent_load[task_data.assigned_agent_role] = 0
-
-        # Track load
-        self.agent_load[task_data.assigned_agent_role] += 1
-
-        # Fuzzy match fallback
-        if not agent:
-            target = str(task_data.assigned_agent_role).lower()
-            for r, a in self.active_agents.items():
-                if r.lower() in target or target in r.lower():
-                    agent = a
-                    break
-
-        if not agent:
-            print(f"⚠️ [Manager]: Skipping task {task_idx}, role '{task_data.assigned_agent_role}' not found.")
-            task_states[task_idx] = "FAILED"
-            
-            # Safe metric update to prevent KeyError (Redundant check for safety)
-            if task_data.assigned_agent_role not in self.agent_metrics:
-                self.agent_metrics[task_data.assigned_agent_role] = {"tasks_completed": 0, "tasks_failed": 0, "total_time": 0.0}
-            
-            self.agent_metrics[task_data.assigned_agent_role]["tasks_failed"] += 1
-            
-            # Safe load update
-            if task_data.assigned_agent_role in self.agent_load:
-                self.agent_load[task_data.assigned_agent_role] -= 1
-            else:
-                self.agent_load[task_data.assigned_agent_role] = 0
-                
-            health_monitor.record_failure(task_data.assigned_agent_role, "Agent role not found in active agents")
-            return False
-
-        print(f"\n🚀 [Manager]: Task {task_idx}/{len(tasks)} -> {agent.role}")
-        task_id = await create_task(mission_id, task_data.description, agent.role)
-        task_ids[task_idx] = task_id
-
-        # Event Sourcing: Log TOOL.THINKING event
-        await append_conversation_event(
-            conversation_id=self.conversation_id,
-            event_namespace="TOOL",
-            event_type="THINKING",
-            payload={
-                "agent": agent.role,
-                "thought": f"Starting task: {task_data.description}",
-                "confidence": "HIGH"
-            },
-            parent_event_id=self.parent_event_ids.get(mission_id),
-            mission_id=mission_id
-        )
-
-        # Update Mission Snapshot progress
-        completed_count = sum(1 for s in task_states.values() if s == "COMPLETED")
-        total_count = len(tasks)
-        progress = completed_count / total_count if total_count > 0 else 0.0
-        await update_mission_snapshot(
+        return MissionRun(
             mission_id=mission_id,
-            status="IN_PROGRESS",
-            progress=progress,
-            latest_thought=f"Agent '{agent.role}' is starting task: {task_data.description}",
-            next_action="Working on wave tasks.",
-            eta=90,
-            confidence="HIGH",
-            token_usage=0,
-            estimated_cost=0.0
+            plan=MissionPlan(
+                tasks=list(tasks),
+                suggested_parallelism=getattr(self.plan_mission_obj, "suggested_parallelism", 2),
+            ),
+            agents=self.active_agents,
+            branch=shared_branch,
+            store=self.store,
+            config=RunConfig(
+                verification_enabled=self.verifier is not None,
+                model_name=self.model_name,
+                conversation_id=self.conversation_id,
+            ),
+            verifier=self.verifier,
+            parent_event_ids=self.parent_event_ids,
         )
-
-        # Create per-task isolated workspace so parallel agents don't collide
-        if agent.active_branch:
-            task_workspace = os.path.join(agent.active_branch.project_path, f"task_{task_idx}")
-            os.makedirs(task_workspace, exist_ok=True)
-            agent.task_workspace = task_workspace
-            print(f"  [Manager]: Task {task_idx} isolated workspace: {task_workspace}")
-
-        # --- HITL BREAKPOINT ---
-        # If the agent carries destructive tools, pause for human review before executing.
-        destructive_names = [n for n, t in agent.tools.items() if getattr(t, 'destructive', False)]
-        if destructive_names:
-            interrupt_id = await create_interrupt(
-                mission_id=mission_id,
-                task_idx=task_idx,
-                context=f"Agent '{agent.role}' has access to destructive tools: {destructive_names}. Task: {task_data.description}",
-                error_message=f"Task paused: destructive tools ({', '.join(destructive_names)}) require human approval."
-            )
-            await update_task(task_id, status="PAUSED_FOR_REVIEW")
-            task_states[task_idx] = "PAUSED_FOR_REVIEW"
-
-            # Event Sourcing: Log INBOX.APPROVAL_REQUESTED event
-            await append_conversation_event(
-                conversation_id=self.conversation_id,
-                event_namespace="INBOX",
-                event_type="APPROVAL_REQUESTED",
-                payload={
-                    "approval_id": interrupt_id,
-                    "status": "PENDING",
-                    "message": f"Task paused: destructive tools ({', '.join(destructive_names)}) require human approval.",
-                    "changes_summary": task_data.description
-                },
-                parent_event_id=self.parent_event_ids.get(mission_id),
-                mission_id=mission_id
-            )
-
-            # Update snapshot status to FOLLOWUP
-            await update_mission_snapshot(
-                mission_id=mission_id,
-                status="FOLLOWUP",
-                progress=progress,
-                latest_thought=f"Task {task_idx} paused for human-in-the-loop validation of destructive tools.",
-                next_action="Awaiting user approval in the AI Inbox.",
-                eta=0,
-                confidence="MEDIUM",
-                token_usage=0,
-                estimated_cost=0.0
-            )
-
-            print(f"  [HITL]: Task {task_idx} paused (interrupt #{interrupt_id}). Destructive tools: {destructive_names}")
-
-            # Release the worker slot while paused so agent_load doesn't leak.
-            self.agent_load[task_data.assigned_agent_role] = max(0, self.agent_load.get(task_data.assigned_agent_role, 0) - 1)
-
-            # Terminal fast-path: resolve inline if a human is at the terminal.
-            try:
-                _decision, _guidance = await self._prompt_human_in_terminal(
-                    mission_id=mission_id, task_idx=task_idx,
-                    interrupt_id=interrupt_id, context=task_data.description,
-                )
-            except Exception:
-                _decision, _guidance = ("undecided", "")
-            _guidance_text = (_guidance or "").strip()
-            if _guidance_text.upper().startswith("APPROVED"):
-                await update_interrupt_guidance(interrupt_id, _guidance_text)
-                print(f"  [HITL]: Task {task_idx} approved in terminal. Proceeding.")
-                # Fall through to normal execution below (no re-pause, no new interrupt).
-            elif _guidance_text and _guidance_text.upper() not in ("PENDING", "UNDECIDED"):
-                await update_interrupt_guidance(interrupt_id, _guidance_text)
-                await update_task(task_id, status="FAILED",
-                                  error=f"Rejected by human: {_guidance_text}")
-                task_states[task_idx] = "FAILED"
-                self.agent_metrics[task_data.assigned_agent_role]["tasks_failed"] += 1
-                health_monitor.record_failure(task_data.assigned_agent_role, f"Rejected by human: {_guidance_text[:200]}")
-                print(f"  [HITL]: Task {task_idx} rejected by human.")
-                return False
-            else:
-                return True  # Not a failure — DAG will check back once human resolves
-
-        start_time = datetime.now()
-        try:
-            result = await agent.execute_task(task_data.description, context)
-        finally:
-            elapsed = (datetime.now() - start_time).total_seconds()
-            self.agent_load[task_data.assigned_agent_role] = max(0, self.agent_load.get(task_data.assigned_agent_role, 0) - 1)
-
-        output_text = result.get("output", "Task completed without text summary.")
-
-        # --- TOOL ENFORCEMENT CHECK ---
-        must_use = "must use" in task_data.description.lower() or "delegate_task" in task_data.description.lower()
-        if must_use and len(output_text) < 20 and "DELEGATED" not in output_text:
-            print(f"️ [Manager]: Agent {agent.role} skipped mandatory tool use. Forcing retry...")
-            # Retry once with enforcement context
-            retry_context = context + f"\n\nERROR: You skipped a mandatory tool call. You MUST execute the tool now."
-            result = await agent.execute_task(task_data.description, retry_context)
-            output_text = result.get("output", "Task completed without text summary.")
-
-        # Update metrics (load is released once, in the finally above)
-        self.agent_metrics[task_data.assigned_agent_role]["total_time"] += elapsed
-
-        # --- VERIFICATION GATE ---
-        # The maker never grades its own work. An external oracle checks it.
-        verification_passed = True
-        verification_report = None
-        if self.verifier and task_idx not in self.verification_disabled_tasks and agent.active_branch:
-            # Resolve workspace with fallback chain:
-            # 1. task_workspace (if set and still exists)
-            # 2. project root (if exists)
-            # 3. archive path (if project was archived mid-task)
-            workspace = (agent.task_workspace if agent.task_workspace and os.path.isdir(agent.task_workspace)
-                         else agent.active_branch.project_path if os.path.isdir(agent.active_branch.project_path)
-                         else None)
-            if workspace is None:
-                archive_candidate = os.path.join(agent.active_branch.base_dir, "archives", agent.active_branch.task_id)
-                if os.path.isdir(archive_candidate):
-                    workspace = archive_candidate
-            if workspace:
-                print(f"  [Verifier]: Running gates against task {task_idx} workspace...")
-                gate_names = task_data.verification_gates if task_data.verification_gates else None
-                report = await self.verifier.verify(
-                    workspace=workspace,
-                    task_description=task_data.description,
-                    agent_output=output_text,
-                    task_idx=task_idx,
-                    gate_names=gate_names,
-                )
-                if report.all_required_passed:
-                    # Enforce: if gates were explicitly requested but none could execute, treat as failure
-                    if task_data.verification_gates and not report.results:
-                        print(f"  [Verifier]: Task {task_idx} — required gates {task_data.verification_gates} could NOT be executed (no matching gate implementations).")
-                        verification_passed = False
-                        verification_report = report.to_dict()
-                        verification_report["reason"] = f"Required gates {task_data.verification_gates} have no matching implementation"
-                    else:
-                        print(f"  [Verifier]: Task {task_idx} — all gates PASSED ({report.total_duration_ms:.0f}ms)")
-                else:
-                    print(f"  [Verifier]: Task {task_idx} — gates FAILED ({report.total_duration_ms:.0f}ms)")
-                    print(f"  [Verifier]: Report:\n{report.summary()}")
-                    verification_passed = False
-                    verification_report = report.to_dict()
-            else:
-                print(f"  [Verifier]: Task {task_idx} workspace not found (project was archived by commit). Skipping file gates for meta-task.")
-
-        # Success path (only if verification passed)
-        if verification_passed:
-            await update_task(task_id, status="COMPLETED", output_data=output_text,
-                              verification_status="PASSED" if verification_report else "NOT_VERIFIED",
-                              verification_details=json.dumps(verification_report) if verification_report else None)
-            task_results[task_idx] = output_text
-            task_states[task_idx] = "COMPLETED"
-            self.agent_metrics[task_data.assigned_agent_role]["tasks_completed"] += 1
-            health_monitor.record_success(task_data.assigned_agent_role)
-
-            # Write result to blackboard for other tasks
-            await update_blackboard(f"task_{task_idx}_result", output_text)
-
-            # Event Sourcing: Log TOOL.JOURNAL event
-            await append_conversation_event(
-                conversation_id=self.conversation_id,
-                event_namespace="TOOL",
-                event_type="JOURNAL",
-                payload={
-                    "agent": agent.role,
-                    "status": "COMPLETED",
-                    "output": output_text
-                },
-                parent_event_id=self.parent_event_ids.get(mission_id),
-                mission_id=mission_id
-            )
-
-            # Update Mission Snapshot
-            completed_count = sum(1 for s in task_states.values() if s == "COMPLETED")
-            total_count = len(tasks)
-            progress = completed_count / total_count if total_count > 0 else 1.0
-            await update_mission_snapshot(
-                mission_id=mission_id,
-                status="IN_PROGRESS" if progress < 1.0 else "COMPLETED",
-                progress=progress,
-                latest_thought=f"Task {task_idx} completed successfully by '{agent.role}'.",
-                next_action="Resolving next tasks.",
-                eta=max(0, 90 - 30 * completed_count),
-                confidence="HIGH",
-                token_usage=0,
-                estimated_cost=0.0
-            )
-
-            print(f"✅ [Manager]: Task {task_idx} completed in {elapsed:.1f}s.")
-            return True
-        else:
-            await update_task(task_id, status="FAILED", output_data=output_text,
-                              error=f"Verification failed: {json.dumps(verification_report)[:500]}",
-                              verification_status="FAILED",
-                              verification_details=json.dumps(verification_report))
-            task_results[task_idx] = output_text
-            task_states[task_idx] = "FAILED"
-            self.agent_metrics[task_data.assigned_agent_role]["tasks_failed"] += 1
-            health_monitor.record_failure(task_data.assigned_agent_role, f"Verification failed: {json.dumps(verification_report)[:200]}")
-
-            # Event Sourcing: Log ERROR.JOURNAL event
-            await append_conversation_event(
-                conversation_id=self.conversation_id,
-                event_namespace="ERROR",
-                event_type="JOURNAL",
-                payload={
-                    "agent": agent.role,
-                    "status": "FAILED",
-                    "error": f"Verification failed or execution error: {output_text}"
-                },
-                parent_event_id=self.parent_event_ids.get(mission_id),
-                mission_id=mission_id
-            )
-
-            # Update Mission Snapshot status to FAILED
-            completed_count = sum(1 for s in task_states.values() if s == "COMPLETED")
-            total_count = len(tasks)
-            progress = completed_count / total_count if total_count > 0 else 1.0
-            await update_mission_snapshot(
-                mission_id=mission_id,
-                status="FAILED",
-                progress=progress,
-                latest_thought=f"Task {task_idx} failed during execution or verification.",
-                next_action="Examine error logs and resolve.",
-                eta=0,
-                confidence="LOW",
-                token_usage=0,
-                estimated_cost=0.0
-            )
-
-            print(f"❌ [Manager]: Task {task_idx} FAILED verification in {elapsed:.1f}s.")
-            return False
-
-    async def execute_swarm_task(self, task_idx: int, context: str, mission_id: int, task_states, task_results, task_ids) -> bool:
-        """Execute a task using a swarm of agents for consensus."""
-        task_data = self.plan_mission_obj.tasks[task_idx] if hasattr(self, 'plan_mission_obj') else None
-        if not task_data:
-             return False
-
-        print(f"\n🐝 [Manager]: Starting SWARM for Task {task_idx}...")
-        roles = [task_data.assigned_agent_role] + task_data.swarm_roles
-
-        # 1. Parallel Execution
-        async def agent_task(role: str):
-            agent = self.active_agents.get(role)
-            if not agent: return f"[{role}]: Agent not found."
-            print(f"  🐝 [Swarm]: {role} is thinking...")
-            try:
-                result = await agent.execute_task(task_data.description, context)
-                return f"[{role}]: {result.get('output', 'No output')}"
-            except Exception as e:
-                print(f"  ⚠️ [Swarm]: {role} failed: {e}")
-                return f"[{role}]: FAILED - {str(e)}"
-
-        outputs = await asyncio.gather(*[agent_task(r) for r in roles])
-        debate_history = "\n\n".join(outputs)
-
-        # 2. Consensus Building
-        print(f"  🐝 [Swarm]: Building consensus between {len(roles)} agents...")
-        consensus_prompt = f"""The following agents have provided their perspectives on the task:
-{debate_history}
-
-Original Task: {task_data.description}
-Mission Context: {context}
-
-Act as a Lead Coordinator. Synthesize these perspectives into a single, optimized final answer or plan of action.
-Identify any conflicts and resolve them based on the best technical reasoning provided.
-FINAL CONSENSUS:"""
-
-        # Use the manager's model to synthesize
-        response = await acompletion(model=self.model_name, messages=[{"role": "user", "content": consensus_prompt}])
-        final_output = response.choices[0].message.content
-
-        # 3. Record result
-        task_id = await create_task(mission_id, f"[SWARM] {task_data.description}", "Manager (Consensus)")
-        task_ids[task_idx] = task_id
-        await update_task(task_id, status="COMPLETED", output_data=final_output)
-        task_results[task_idx] = final_output
-        task_states[task_idx] = "COMPLETED"
-
-        print(f"✅ [Manager]: Swarm Task {task_idx} reached consensus.")
-        return True
-
-    async def execute_dag(self, tasks: List[TaskPlan], mission_id: int, enriched_goal: str, shared_branch: ProjectBranch):
-        """DAG-BASED PARALLEL EXECUTION"""
-        # State values: "PENDING" | "RUNNING" | "COMPLETED" | "FAILED" | "SKIPPED" | "PAUSED_FOR_REVIEW"
-        task_states = {}
-        task_results = {}  # task_idx -> output_text
-        task_ids = {}  # task_idx -> database task_id
-        
-        for i in range(len(tasks)):
-            task_states[i] = "PENDING"
-
-        max_waves = len(tasks) * 2
-        wave = 0
-        _memory_written = False
-        sem = asyncio.Semaphore(getattr(self.plan_mission_obj, 'suggested_parallelism', 2))
-        
-        while (any(state in ("PENDING", "PAUSED_FOR_REVIEW") for state in task_states.values())
-               and wave < max_waves):
-            wave += 1
-
-            # --- HITL RESOLUTION CHECK ---
-            # If a PAUSED_FOR_REVIEW task's interrupt has been resolved by the human,
-            # either approve (re-queue as PENDING) or reject (mark FAILED with guidance).
-            for i in range(len(tasks)):
-                if task_states.get(i) != "PAUSED_FOR_REVIEW":
-                    continue
-                interrupt = await get_task_interrupt(mission_id, i)
-                if interrupt and interrupt["status"] == "RESOLVED":
-                    guidance = (interrupt.get("user_guidance") or "").strip()
-                    if guidance.upper().startswith("APPROVED"):
-                        print(f"  [HITL]: Task {i} approved by human. Resuming.")
-                        task_states[i] = "PENDING"
-                        if i in task_ids:
-                            await update_task(task_ids[i], status="PENDING")
-                    else:
-                        print(f"  [HITL]: Task {i} rejected by human: {guidance}")
-                        task_states[i] = "FAILED"
-                        if i in task_ids:
-                            await update_task(task_ids[i], status="FAILED",
-                                              error=f"Rejected by human: {guidance}")
-
-            # Find tasks that are ready to execute
-            ready_tasks = []
-            for i in range(len(tasks)):
-                if task_states[i] != "PENDING":
-                    continue
-                
-                # Check if all dependencies are in a terminal state (COMPLETED or SKIPPED)
-                deps = tasks[i].depends_on
-                if not all(task_states.get(dep) in ("COMPLETED", "SKIPPED") for dep in deps):
-                    continue
-                
-                # If a parent was SKIPPED, auto-skip child (condition cannot be met)
-                if any(task_states.get(dep) == "SKIPPED" for dep in deps):
-                    task_states[i] = "SKIPPED"
-                    task_id = await create_task(
-                        mission_id, tasks[i].description, tasks[i].assigned_agent_role
-                    )
-                    task_ids[i] = task_id
-                    await update_task(
-                        task_id, status="SKIPPED",
-                        output_data="Parent task was skipped — condition branch unreachable."
-                    )
-                    print(f"⏭️ [Manager]: Task {i} auto-skipped — parent task skipped")
-                    continue
-                
-                # Evaluate conditions from squad.yaml
-                conditions = getattr(tasks[i], "conditions", [])
-                if conditions:
-                    ctx = build_condition_context(task_results, deps)
-                    if not all(SafeEvaluator.evaluate(c, ctx) for c in conditions):
-                        task_states[i] = "SKIPPED"
-                        task_id = await create_task(
-                            mission_id, tasks[i].description, tasks[i].assigned_agent_role
-                        )
-                        task_ids[i] = task_id
-                        await update_task(
-                            task_id, status="SKIPPED",
-                            output_data=f"Condition not met: {'; '.join(conditions)}"
-                        )
-                        print(f"⏭️ [Manager]: Task {i} skipped — conditions not met: {conditions}")
-                        continue
-                
-                ready_tasks.append(i)
-            
-            # Sort by priority (higher first), then by dependency count (fewer deps first)
-            ready_tasks.sort(key=lambda idx: (-tasks[idx].priority, len(tasks[idx].depends_on)))
-            
-            if not ready_tasks:
-                # Check for circular dependencies or failed dependencies
-                pending_with_failed_deps = []
-                for i in range(len(tasks)):
-                    if task_states[i] == "PENDING":
-                        deps = tasks[i].depends_on
-                        if any(task_states.get(dep) == "FAILED" for dep in deps):
-                            pending_with_failed_deps.append(i)
-                
-                if pending_with_failed_deps:
-                    print(f"⚠️ [Manager]: Tasks {pending_with_failed_deps} have failed dependencies. Skipping.")
-                    for i in pending_with_failed_deps:
-                        task_states[i] = "FAILED"
-                    continue
-                else:
-                    print(f"⚠️ [Manager]: No tasks ready to execute. Possible circular dependency.")
-                    break
-            
-            # Write project memory before the commit task runs (branch gets archived after)
-            for task_idx in ready_tasks:
-                if "commit_project" in tasks[task_idx].description.lower():
-                    try:
-                        self._write_project_memory(shared_branch, enriched_goal, tasks, task_results, wave)
-                    except Exception as e:
-                        print(f"⚠️ [Manager]: Failed to write project memory: {e}")
-                    _memory_written = True
-
-            # Execute ready tasks in parallel
-            print(f"\n🔄 [Manager]: Wave {wave} - Executing {len(ready_tasks)} tasks in parallel: {ready_tasks}")
-            
-            # Build context for each task from its dependencies
-            task_contexts = {}
-            for task_idx in ready_tasks:
-                context_parts = [f"Mission: {enriched_goal}"]
-                for dep_idx in tasks[task_idx].depends_on:
-                    if dep_idx in task_results:
-                        context_parts.append(f"Result from Task {dep_idx}: {task_results[dep_idx]}")
-                task_contexts[task_idx] = "\n\n".join(context_parts)
-            
-            # Limit parallelism based on plan suggestion and agent load
-            max_concurrent = getattr(self.plan_mission_obj, 'suggested_parallelism', 2)
-            # Check if any agent is overloaded
-            for task_idx in ready_tasks:
-                role = tasks[task_idx].assigned_agent_role
-                current_load = self.agent_load.get(role, 0)
-                if current_load >= max_concurrent:
-                    print(f"⚠️ [Manager]: Agent '{role}' is at capacity ({current_load} tasks). Deferring task {task_idx}.")
-            
-            # Execute in parallel (all ready tasks, load tracking happens inside execute_task)
-            async def capped_execute(idx):
-                async with sem:
-                    return await self.execute_task(idx, task_contexts[idx], mission_id, task_states, task_results, task_ids, tasks)
-            results = await asyncio.gather(*[capped_execute(idx) for idx in ready_tasks], return_exceptions=True)
-            
-            # Handle exceptions
-            for i, result in enumerate(results):
-                if isinstance(result, Exception):
-                    task_idx = ready_tasks[i]
-                    print(f"❌ [Manager]: Task {task_idx} failed with exception: {result}")
-                    task_states[task_idx] = "FAILED"
-                    if task_idx in task_ids:
-                        try:
-                            await update_task(task_ids[task_idx], status="FAILED", output_data=str(result))
-                        except Exception as db_err:
-                            logging.error(f"Failed to update task {task_idx} status: {db_err}")
-                    
-                    role = tasks[task_idx].assigned_agent_role
-                    if role not in self.agent_metrics:
-                        self.agent_metrics[role] = {"tasks_completed": 0, "tasks_failed": 0, "total_time": 0.0}
-                    self.agent_metrics[role]["tasks_failed"] += 1
-                    
-                    health_monitor.record_failure(role, str(result))
-        
-        # --- DYNAMIC TASK REASSIGNMENT ---
-        # Retry failed tasks with different agents if available
-        failed_tasks = [i for i, state in task_states.items() if state == "FAILED"]
-        if failed_tasks:
-            print(f"\n🔄 [Manager]: Attempting to reassign {len(failed_tasks)} failed task(s)...")
-            for task_idx in failed_tasks:
-                original_role = tasks[task_idx].assigned_agent_role
-                # Find alternative agents
-                for role, agent in self.active_agents.items():
-                    if role == original_role:
-                        continue
-                    # Skip if this agent is already heavily loaded
-                    if self.agent_load.get(role, 0) > 2:
-                        continue
-                    
-                    print(f"🔄 [Manager]: Reassigning task {task_idx} from '{original_role}' to '{role}'")
-                    task_states[task_idx] = "PENDING"
-                    tasks[task_idx].assigned_agent_role = role
-                    
-                    # Rebuild context
-                    context_parts = [f"Mission: {enriched_goal}"]
-                    for dep_idx in tasks[task_idx].depends_on:
-                        if dep_idx in task_results:
-                            context_parts.append(f"Result from Task {dep_idx}: {task_results[dep_idx]}")
-                    # Inject previous verification failure details
-                    if task_idx in task_ids:
-                        try:
-                            prev_task = await get_task(task_ids[task_idx])
-                            if prev_task and prev_task.get("verification_details"):
-                                details = json.loads(prev_task["verification_details"])
-                                context_parts.append(
-                                    f"--- PREVIOUS ATTEMPT VERIFICATION FAILURES ---\n"
-                                    f"The previous attempt failed automated verification. "
-                                    f"Fix the specific issues below:\n"
-                                    f"{json.dumps(details, indent=2)}"
-                                )
-                                print(f"  [Manager]: Injected verification failure context for task {task_idx} retry.")
-                        except Exception as e:
-                            logging.warning(f"Could not load verification details for task {task_idx}: {e}")
-                    new_context = "\n\n".join(context_parts)
-                    
-                    # Retry
-                    success = await self.execute_task(task_idx, new_context, mission_id, task_states, task_results, task_ids, tasks)
-                    if success:
-                        print(f"✅ [Manager]: Task {task_idx} successfully reassigned and completed.")
-                    else:
-                        print(f"❌ [Manager]: Task {task_idx} reassignment also failed.")
-                    break  # Only try one reassignment per task
-        
-        # Auto-generate project memory (fallback if no commit task ran)
-        if not _memory_written:
-            try:
-                self._write_project_memory(shared_branch, enriched_goal, tasks, task_results, wave)
-            except Exception as e:
-                print(f"⚠️ [Manager]: Failed to write project memory: {e}")
-
-        # Final status
-        completed = sum(1 for s in task_states.values() if s == "COMPLETED")
-        failed = sum(1 for s in task_states.values() if s == "FAILED")
-        skipped = sum(1 for s in task_states.values() if s == "SKIPPED")
-        total = len(tasks)
-        print(f"📊 [Manager]: DAG complete — {completed}/{total} completed, {skipped} skipped, {failed} failed")
-        
-        # Agent performance report
-        print(f"\n📊 [Manager]: Agent Performance Report:")
-        for role, metrics in self.agent_metrics.items():
-            total = metrics["tasks_completed"] + metrics["tasks_failed"]
-            if total > 0:
-                avg_time = metrics["total_time"] / max(1, metrics["tasks_completed"])
-                success_rate = (metrics["tasks_completed"] / total) * 100
-                print(f"   {role}: {metrics['tasks_completed']}/{total} succeeded ({success_rate:.0f}%), avg {avg_time:.1f}s/task")
-
-        return task_states
