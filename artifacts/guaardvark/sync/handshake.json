@@ -16,7 +16,7 @@
   },
   "blackboard_set": "Blackboard 'guaardvark_test' set successfully.",
   "blackboard_get": "{\n  \"keys\": [\n    \"mock_key\"\n  ]\n}",
-  "delegate": "{\n  \"status\": \"completed\",\n  \"node\": \"auto-selected\",\n  \"task_type\": \"image_gen\",\n  \"result\": {\n    \"artifact\": \"mock_output\",\n    \"bytes\": 10000000\n  },\n  \"task_id\": \"e2b.local_409.457866179\"\n}",
+  "delegate": "{\n  \"status\": \"completed\",\n  \"node\": \"auto-selected\",\n  \"task_type\": \"image_gen\",\n  \"result\": {\n    \"artifact\": \"mock_output\",\n    \"bytes\": 10000000\n  },\n  \"task_id\": \"e2b.local_520.56908061\"\n}",
   "envelope": {
     "discovery_lt_5s": true,
     "delegate_lt_30s": true

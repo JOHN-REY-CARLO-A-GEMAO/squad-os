@@ -14,7 +14,7 @@
   "mission_status": "IN_PROGRESS",
   "tasks_count": 2,
   "interrupts_count": 1,
-  "system_summary": "CPU: 0.0% | RAM: 9.1% (357MB/3939MB)",
+  "system_summary": "CPU: 0.0% | RAM: 9.1% (358MB/3939MB)",
   "ro_verified": true,
   "mocked": false
 }

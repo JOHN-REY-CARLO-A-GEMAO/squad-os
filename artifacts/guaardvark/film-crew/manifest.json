@@ -76,7 +76,7 @@
         "swarm_roles": [],
         "llm_default": "",
         "conditions": [
-          "'APPROVED' in task_3 or 'completed' in task_3 or True"
+          "'APPROVED' in task_3"
         ]
       }
     ],
@@ -118,7 +118,7 @@
       "terminal"
     ]
   },
-  "sqad_bytes": 4229,
+  "sqad_bytes": 4216,
   "validated": true,
   "warnings": []
 }

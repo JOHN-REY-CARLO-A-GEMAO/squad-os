@@ -45,7 +45,7 @@ topology:
       child: director
     - parent: director
       child: editor
-      condition: "'APPROVED' in task_3 or 'completed' in task_3 or True"
+      condition: "'APPROVED' in task_3"
 
 runtime:
   required_tools:
