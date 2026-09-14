@@ -1,0 +1,10 @@
+{
+  "image_gen": "Generated /tmp/pytest-of-user/pytest-4/test_media_pipeline_mocked0/workspace/outputs/media/board_A_1.png (mocked, Pillow)",
+  "video_gen": "Generated /tmp/pytest-of-user/pytest-4/test_media_pipeline_mocked0/workspace/outputs/media/director_clip.mp4 (mocked, stub MP4 fallback)",
+  "video_edit": "Stitched /tmp/pytest-of-user/pytest-4/test_media_pipeline_mocked0/workspace/outputs/media/director_clip.mp4 \u2192 /tmp/pytest-of-user/pytest-4/test_media_pipeline_mocked0/workspace/outputs/media/output.mp4 (mocked, copied)",
+  "output_mp4_bytes": 1056,
+  "ffprobe_real": false,
+  "ffprobe": {},
+  "mocked": true,
+  "note": "1s MP4 mocked at diffusers boundary; FileExistsGate passes. Real ffmpeg when available, else stub with valid PNG/MP4 magic."
+}

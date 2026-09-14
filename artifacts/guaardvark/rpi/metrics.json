@@ -1,0 +1,22 @@
+{
+  "arch": "aarch64-emulated",
+  "mocked": true,
+  "memory": {
+    "total_gb": 4.0,
+    "available_gb": 0.78,
+    "used_gb": 3.22,
+    "percent": 80.5,
+    "swap_total_gb": 0,
+    "swap_percent": 0
+  },
+  "alerts": [
+    "OK: All metrics within normal range"
+  ],
+  "summary": "CPU: 10.8% | RAM: 80.5% (3296MB/4096MB) | Temp: 62.0\u00b0C",
+  "envelope": {
+    "idle_ram_lt_512mb": true,
+    "thermal_lt_85": true,
+    "cpu_lt_80": true
+  },
+  "note": "Mocked psutil+platform; does not prove physical RPi5 hardware (Q8 distinction)."
+}

@@ -1,0 +1,20 @@
+{
+  "mission_id": 1,
+  "task_ids": [
+    1,
+    2
+  ],
+  "interrupt_id": 1,
+  "snapshot_keys": [
+    "mission",
+    "tasks",
+    "interrupts",
+    "system"
+  ],
+  "mission_status": "IN_PROGRESS",
+  "tasks_count": 2,
+  "interrupts_count": 1,
+  "system_summary": "CPU: 0.0% | RAM: 9.1% (357MB/3939MB)",
+  "ro_verified": true,
+  "mocked": false
+}
