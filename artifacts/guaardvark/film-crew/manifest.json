@@ -1,0 +1,124 @@
+{
+  "package_id": "film_crew",
+  "name": "Film Crew",
+  "version": "1.0.0",
+  "agents": 5,
+  "tasks": 5,
+  "tools": [
+    "image_gen",
+    "compute_delegate",
+    "web_search",
+    "video_gen",
+    "video_edit",
+    "terminal"
+  ],
+  "workflow": {
+    "name": "Film Crew workflow",
+    "description": "Storyboard \u2192 Producer \u2192 Screenwriter \u2192 Director \u2192 Editor pipeline with offload, conditionals, HITL, and verification. Validates the Guaardvark close-out bet.",
+    "suggested_parallelism": 5,
+    "tasks": [
+      {
+        "description": "Create storyboard frames from the goal. MUST use image_gen tool to generate at least one storyboard frame. Save frames to workspace.",
+        "assigned_agent_role": "Storyboard Artist",
+        "depends_on": [],
+        "priority": 1,
+        "estimated_complexity": "medium",
+        "is_swarm": false,
+        "swarm_roles": [],
+        "llm_default": ""
+      },
+      {
+        "description": "Offload heavy render tasks. MUST use compute_delegate with task_type=image_gen and include producer payload. Verify offload status.",
+        "assigned_agent_role": "Producer",
+        "depends_on": [
+          0
+        ],
+        "priority": 1,
+        "estimated_complexity": "medium",
+        "is_swarm": false,
+        "swarm_roles": [],
+        "llm_default": ""
+      },
+      {
+        "description": "Research narrative and write screenplay beats. MUST use web_search tool to ground story research.",
+        "assigned_agent_role": "Screenwriter",
+        "depends_on": [
+          0
+        ],
+        "priority": 1,
+        "estimated_complexity": "medium",
+        "is_swarm": false,
+        "swarm_roles": [],
+        "llm_default": ""
+      },
+      {
+        "description": "Animate storyboard into video. MUST use video_gen mode=image_to_video with a prompt describing the scene transition.",
+        "assigned_agent_role": "Director",
+        "depends_on": [
+          1,
+          2
+        ],
+        "priority": 1,
+        "estimated_complexity": "medium",
+        "is_swarm": false,
+        "swarm_roles": [],
+        "llm_default": ""
+      },
+      {
+        "description": "Stitch and verify the final cut. MUST use video_edit action=stitch then MUST use terminal to ls the artifacts directory. Verification will check output.mp4 exists.",
+        "assigned_agent_role": "Editor",
+        "depends_on": [
+          3
+        ],
+        "priority": 1,
+        "estimated_complexity": "medium",
+        "is_swarm": false,
+        "swarm_roles": [],
+        "llm_default": "",
+        "conditions": [
+          "'APPROVED' in task_3"
+        ]
+      }
+    ],
+    "required_tools": [
+      "image_gen",
+      "compute_delegate",
+      "web_search",
+      "video_gen",
+      "video_edit",
+      "terminal"
+    ],
+    "required_agents": [
+      "Storyboard Artist",
+      "Producer",
+      "Screenwriter",
+      "Director",
+      "Editor"
+    ],
+    "environment_defaults": {
+      "LOG_LEVEL": "INFO",
+      "ENABLE_CACHE": "true"
+    }
+  },
+  "manifest": {
+    "id": "film_crew",
+    "name": "Film Crew",
+    "version": "1.0.0",
+    "author": "Axiom",
+    "description": "Storyboard \u2192 Producer \u2192 Screenwriter \u2192 Director \u2192 Editor pipeline with offload, conditionals, HITL, and verification. Validates the Guaardvark close-out bet.",
+    "license": "Apache-2.0",
+    "min_squad_os_version": "",
+    "tags": [],
+    "assumes_tools": [
+      "image_gen",
+      "compute_delegate",
+      "web_search",
+      "video_gen",
+      "video_edit",
+      "terminal"
+    ]
+  },
+  "sqad_bytes": 4216,
+  "validated": true,
+  "warnings": []
+}

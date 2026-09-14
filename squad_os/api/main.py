@@ -51,6 +51,17 @@ from squad_os.api.v1 import public_router, v1_router
 app.include_router(v1_router)
 app.include_router(public_router)
 
+# Guaardvark Close-Out: Axiom View read-only projection (Q10)
+# Public for kiosk (no auth) + auth-gated variant — both read-only.
+try:
+    from squad_os.api.axiom_view import router as axiom_router, public_router as axiom_public_router
+    if axiom_router is not None:
+        app.include_router(axiom_router, prefix="/api/v1")
+    if axiom_public_router is not None:
+        app.include_router(axiom_public_router, prefix="/api/v1")
+except Exception as _e:
+    print(f"[Axiom View] router not loaded: {_e}")
+
 # --- CORE SCHEMAS ---
 
 class MissionRequest(BaseModel):

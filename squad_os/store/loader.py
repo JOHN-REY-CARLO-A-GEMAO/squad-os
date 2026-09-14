@@ -361,7 +361,11 @@ class AgentPackageLoader:
         install_dir = os.path.realpath(install_dir)
         with zipfile.ZipFile(source_path, "r") as zf:
             for member in zf.infolist():
-                if os.path.isabs(member.filename):
+                # Cross-platform absolute check: POSIX os.path.isabs misses Windows
+                # drive paths like C:/evil.txt when running on Linux, so also
+                # reject Windows drive prefixes and UNC paths explicitly.
+                is_abs = os.path.isabs(member.filename) or bool(re.match(r'^[a-zA-Z]:[/\\]', member.filename)) or member.filename.startswith('\\\\')
+                if is_abs:
                     raise ValueError(f"Unsafe absolute path in package archive: '{member.filename}'")
                 dest_path = os.path.realpath(os.path.join(install_dir, member.filename))
                 if dest_path != install_dir and not dest_path.startswith(install_dir + os.sep):

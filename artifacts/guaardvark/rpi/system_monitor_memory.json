@@ -1,0 +1,13 @@
+{
+  "memory": {
+    "total_gb": 4.0,
+    "available_gb": 0.78,
+    "used_gb": 3.22,
+    "percent": 80.5,
+    "swap_total_gb": 0,
+    "swap_percent": 0
+  },
+  "alerts": [
+    "OK: All metrics within normal range"
+  ]
+}

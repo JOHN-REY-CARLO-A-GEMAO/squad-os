@@ -57,6 +57,13 @@ memory/*.md
 # Package build artifacts
 *.sqad
 
+# Guaardvark validation artifacts — evidence is tracked via allowlist (Q13 contract)
+# Ignore all artifacts except the Guaardvark close-out evidence
+artifacts/**
+!artifacts/guaardvark/
+!artifacts/guaardvark/**
+!artifacts/guaardvark/.gitkeep
+
 # Runtime data
 workspace/
 data/

@@ -1,0 +1,60 @@
+spec_version: "1.0.0"
+metadata:
+  name: "Film Crew"
+  version: "1.0.0"
+  author: "Axiom"
+  description: "Storyboard → Producer → Screenwriter → Director → Editor pipeline with offload, conditionals, HITL, and verification. Validates the Guaardvark close-out bet."
+  license: "Apache-2.0"
+
+topology:
+  engine: "dag"
+  agents:
+    - id: storyboard
+      role: "Storyboard Artist"
+      system_prompt: "Create storyboard frames from the goal. MUST use image_gen tool to generate at least one storyboard frame. Save frames to workspace."
+      tools: ["image_gen"]
+
+    - id: producer
+      role: "Producer"
+      system_prompt: "Offload heavy render tasks. MUST use compute_delegate with task_type=image_gen and include producer payload. Verify offload status."
+      tools: ["compute_delegate"]
+
+    - id: screenwriter
+      role: "Screenwriter"
+      system_prompt: "Research narrative and write screenplay beats. MUST use web_search tool to ground story research."
+      tools: ["web_search"]
+
+    - id: director
+      role: "Director"
+      system_prompt: "Animate storyboard into video. MUST use video_gen mode=image_to_video with a prompt describing the scene transition."
+      tools: ["video_gen"]
+
+    - id: editor
+      role: "Editor"
+      system_prompt: "Stitch and verify the final cut. MUST use video_edit action=stitch then MUST use terminal to ls the artifacts directory. Verification will check output.mp4 exists."
+      tools: ["video_edit", "terminal"]
+
+  dependencies:
+    - parent: storyboard
+      child: producer
+    - parent: storyboard
+      child: screenwriter
+    - parent: producer
+      child: director
+    - parent: screenwriter
+      child: director
+    - parent: director
+      child: editor
+      condition: "'APPROVED' in task_3"
+
+runtime:
+  required_tools:
+    - name: "image_gen"
+    - name: "compute_delegate"
+    - name: "web_search"
+    - name: "video_gen"
+    - name: "video_edit"
+    - name: "terminal"
+  environment_defaults:
+    LOG_LEVEL: "INFO"
+    ENABLE_CACHE: "true"

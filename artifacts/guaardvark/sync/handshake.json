@@ -1,0 +1,27 @@
+{
+  "discovery_ms": 0,
+  "delegate_ms": 0,
+  "discovery": {
+    "nodes_found": 1,
+    "nodes": [
+      {
+        "id": "gpu-node-1",
+        "capabilities": [
+          "gpu"
+        ],
+        "host": "127.0.0.1",
+        "port": 8901
+      }
+    ]
+  },
+  "blackboard_set": "Blackboard 'guaardvark_test' set successfully.",
+  "blackboard_get": "{\n  \"keys\": [\n    \"mock_key\"\n  ]\n}",
+  "delegate": "{\n  \"status\": \"completed\",\n  \"node\": \"auto-selected\",\n  \"task_type\": \"image_gen\",\n  \"result\": {\n    \"artifact\": \"mock_output\",\n    \"bytes\": 10000000\n  },\n  \"task_id\": \"e2b.local_520.56908061\"\n}",
+  "envelope": {
+    "discovery_lt_5s": true,
+    "delegate_lt_30s": true
+  },
+  "mode": "loopback",
+  "mocked": true,
+  "note": "Loopback with mocked aiohttp; no external sync server required. Proves interface + timing envelope, not physical two-node."
+}
