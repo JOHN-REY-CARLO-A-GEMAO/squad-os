@@ -21,6 +21,7 @@ import squad_os.orchestrator.manager as manager_mod
 from squad_os.database import session as session_mod
 from squad_os.database.session import init_db
 from squad_os.orchestrator.manager import Manager, MissionPlan, TaskPlan
+from squad_os.orchestrator.mission_run import RunOutcome
 from squad_os.orchestrator.run_store import RunStore, SessionRunStore
 
 
@@ -64,8 +65,9 @@ async def test_run_mission_routes_status_through_injected_store(monkeypatch):
     )
     assert mgr.store.__class__ is FakeStore
 
-    async def fake_execute_dag(*a, **kw):
-        return {0: "FAILED"}
+    class FakeRun:
+        async def execute(self, context=""):
+            return RunOutcome(status="FAILED", task_states={0: "FAILED"}, summary="0/1 completed, 0 skipped, 1 failed")
 
     async def fake_plan_mission(goal):
         return MissionPlan(tasks=[
@@ -88,7 +90,7 @@ async def test_run_mission_routes_status_through_injected_store(monkeypatch):
 
     monkeypatch.setattr(manager_mod, "create_mission", _noop)  # prep stays module-level
     monkeypatch.setattr(manager_mod, "ProjectBranch", FakeBranch)
-    monkeypatch.setattr(mgr, "execute_dag", fake_execute_dag)
+    monkeypatch.setattr(mgr, "make_run", lambda *a, **k: FakeRun())
     monkeypatch.setattr(mgr, "recruit_squad", _noop)
     monkeypatch.setattr(mgr, "plan_mission", fake_plan_mission)
 

@@ -407,22 +407,16 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
                 logging.error(f"Database error while updating mission status: {db_err}")
             return "FAILED"
 
-        # --- EXECUTE DAG ---
-        # Returns the per-task state map; derive the honest final status here.
-        # A mission is COMPLETED only when every task reached a terminal
-        # state. FAILED tasks fail it; tasks still PENDING or waiting on
-        # human HITL approval (PAUSED_FOR_REVIEW) mean the mission did not
-        # finish — mark it FAILED rather than falsely COMPLETED.
-        # (Accept a plain status string too, for test doubles.)
-        dag_outcome = await self.execute_dag(tasks, mission_id, enriched_goal, shared_branch)
+        # --- EXECUTE THE RUN ---
+        # MissionRun owns the execution; the honest final status comes back on
+        # the RunOutcome (strict grammar: anything not COMPLETED/SKIPPED —
+        # including tasks awaiting human approval — fails the mission).
+        run = self.make_run(mission_id, tasks, shared_branch)
+        outcome = await run.execute(enriched_goal)
 
         # Final status
         try:
-            if isinstance(dag_outcome, dict):
-                unfinished = [s for s in dag_outcome.values() if s not in ("COMPLETED", "SKIPPED")]
-                final_status = "FAILED" if unfinished else "COMPLETED"
-            else:
-                final_status = dag_outcome if isinstance(dag_outcome, str) else "COMPLETED"
+            final_status = outcome.status
 
             await self.store.update_mission(mission_id, final_status)
             await self.store.update_mission_snapshot(
@@ -555,77 +549,25 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
 
             await append_conversation(mission_id, "system", f"Re-planning complete — {len(tasks)} tasks to execute.")
 
-            # Re-execute on the same branch
-            await self.execute_dag(tasks, mission_id, enriched_goal, shared_branch)
-            await self.store.update_mission(mission_id, "COMPLETED")
+            # Re-execute on the same branch: a fresh MissionRun for this follow-up
+            run = self.make_run(mission_id, tasks, shared_branch)
+            outcome = await run.execute(enriched_goal)
+            await self.store.update_mission(mission_id, outcome.status)
 
-            # Log success to conversation
-            completed = sum(1 for t in self.plan_mission_obj.tasks if hasattr(t, '_result') and getattr(t, '_result') == "COMPLETED")
-            await append_conversation(mission_id, "system", f"Follow-up execution complete. {completed}/{len(tasks)} tasks succeeded.")
+            # Log outcome to conversation (honest mapping — FAILED runs are reported)
+            await append_conversation(mission_id, "system", f"Follow-up execution complete. {outcome.summary}")
 
         except Exception as e:
             print(f"❌ [Manager]: Follow-up failed: {e}")
             await self.store.update_mission(mission_id, "FAILED")
             await append_conversation(mission_id, "system", f"Follow-up failed: {str(e)[:200]}")
 
-    async def execute_swarm_task(self, task_idx: int, context: str, mission_id: int, task_states, task_results, task_ids) -> bool:
-        """Execute a task using a swarm of agents for consensus."""
-        task_data = self.plan_mission_obj.tasks[task_idx] if hasattr(self, 'plan_mission_obj') else None
-        if not task_data:
-             return False
-
-        print(f"\n🐝 [Manager]: Starting SWARM for Task {task_idx}...")
-        roles = [task_data.assigned_agent_role] + task_data.swarm_roles
-
-        # 1. Parallel Execution
-        async def agent_task(role: str):
-            agent = self.active_agents.get(role)
-            if not agent: return f"[{role}]: Agent not found."
-            print(f"  🐝 [Swarm]: {role} is thinking...")
-            try:
-                result = await agent.execute_task(task_data.description, context)
-                return f"[{role}]: {result.get('output', 'No output')}"
-            except Exception as e:
-                print(f"  ⚠️ [Swarm]: {role} failed: {e}")
-                return f"[{role}]: FAILED - {str(e)}"
-
-        outputs = await asyncio.gather(*[agent_task(r) for r in roles])
-        debate_history = "\n\n".join(outputs)
-
-        # 2. Consensus Building
-        print(f"  🐝 [Swarm]: Building consensus between {len(roles)} agents...")
-        consensus_prompt = f"""The following agents have provided their perspectives on the task:
-{debate_history}
-
-Original Task: {task_data.description}
-Mission Context: {context}
-
-Act as a Lead Coordinator. Synthesize these perspectives into a single, optimized final answer or plan of action.
-Identify any conflicts and resolve them based on the best technical reasoning provided.
-FINAL CONSENSUS:"""
-
-        # Use the manager's model to synthesize
-        response = await acompletion(model=self.model_name, messages=[{"role": "user", "content": consensus_prompt}])
-        final_output = response.choices[0].message.content
-
-        # 3. Record result
-        task_id = await self.store.create_task(mission_id, f"[SWARM] {task_data.description}", "Manager (Consensus)")
-        task_ids[task_idx] = task_id
-        await self.store.update_task(task_id, status="COMPLETED", output_data=final_output)
-        task_results[task_idx] = final_output
-        task_states[task_idx] = "COMPLETED"
-
-        print(f"✅ [Manager]: Swarm Task {task_idx} reached consensus.")
-        return True
-
-    async def execute_dag(self, tasks: List[TaskPlan], mission_id: int, enriched_goal: str, shared_branch: ProjectBranch):
-        """Temporary delegate (staged commit 2): execution lives in MissionRun.
-
-        Kept so run_mission and handle_followup keep working unchanged;
-        commit 3 removes this when follow-ups construct MissionRun directly.
-        Returns today's contract: the per-task state map.
+    def make_run(self, mission_id: int, tasks: List[TaskPlan], shared_branch: Optional[ProjectBranch]) -> MissionRun:
+        """Construct a MissionRun wired to this Manager's squad, store,
+        verifier and config — the single construction point for runs
+        (run_mission, handle_followup, and the Agent Store workflow tool).
         """
-        run = MissionRun(
+        return MissionRun(
             mission_id=mission_id,
             plan=MissionPlan(
                 tasks=list(tasks),
@@ -640,8 +582,5 @@ FINAL CONSENSUS:"""
                 conversation_id=self.conversation_id,
             ),
             verifier=self.verifier,
-            swarm_executor=self.execute_swarm_task,
             parent_event_ids=self.parent_event_ids,
         )
-        outcome = await run.execute(enriched_goal)
-        return outcome.task_states

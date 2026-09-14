@@ -273,11 +273,12 @@ class RunWorkflowTool(BaseTool):
             )
             manager.plan_mission_obj = plan
 
-            await manager.execute_dag(
-                plan.tasks, mission_id, goal, shared_branch
-            )
-            await update_mission(mission_id, "COMPLETED")
-            return f"✅ Workflow '{workflow_name}' completed as mission #{mission_id}."
+            run = manager.make_run(mission_id, plan.tasks, shared_branch)
+            outcome = await run.execute(goal)
+            await update_mission(mission_id, outcome.status)
+            if outcome.status == "COMPLETED":
+                return f"✅ Workflow '{workflow_name}' completed as mission #{mission_id}."
+            return f"❌ Workflow '{workflow_name}' finished with status {outcome.status} as mission #{mission_id}."
         except Exception as e:
             await update_mission(mission_id, "FAILED")
             return f"❌ Workflow '{workflow_name}' failed: {e}"

@@ -5,9 +5,8 @@ HITL raise/resolve, verification gates, retries, event/snapshot writes
 and the project-memory fallback, behind one interface: execute().
 
 The Manager constructs a MissionRun after prep (recruit / plan / branch /
-uploads) and maps the RunOutcome onto today's status grammar. Swarm
-execution is injected as a temporary cut-line (staged commit 2); commit 3
-folds it in and removes the injection.
+uploads) and maps the RunOutcome onto the external status grammar. Swarm
+execution (fan-out + consensus) lives here too.
 """
 
 from __future__ import annotations
@@ -19,7 +18,9 @@ import os
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
+from litellm import acompletion
 
 from squad_os.agents.verifier import VerifierAgent
 from squad_os.core.evaluator import SafeEvaluator, build_condition_context
@@ -60,11 +61,6 @@ class RunConfig:
     conversation_id: int = 1
 
 
-# Temporary cut-line (staged commit 2): Manager.execute_swarm_task is passed
-# in with today's signature; commit 3 folds the swarm into MissionRun.
-SwarmExecutor = Callable[..., Awaitable[bool]]
-
-
 class MissionRun:
     """One execution of a Mission's task DAG. See CONTEXT.md."""
 
@@ -78,7 +74,6 @@ class MissionRun:
         config: Optional[RunConfig] = None,
         *,
         verifier: Optional[VerifierAgent] = None,
-        swarm_executor: Optional[SwarmExecutor] = None,
         parent_event_ids: Optional[Dict[int, int]] = None,
     ):
         self.mission_id = mission_id
@@ -92,7 +87,6 @@ class MissionRun:
             self.verifier = verifier
         else:
             self.verifier = VerifierAgent() if self.config.verification_enabled else None
-        self._swarm_executor = swarm_executor
         self.parent_event_ids = parent_event_ids if parent_event_ids is not None else {}
         self.verification_disabled_tasks: set = set()
 
@@ -204,7 +198,7 @@ class MissionRun:
         task_data = tasks[task_idx]
 
         if task_data.is_swarm:
-            return await self._swarm_executor(task_idx, context, mission_id, task_states, task_results, task_ids)
+            return await self._execute_swarm_task(task_idx, context)
 
         agent = self.agents.get(task_data.assigned_agent_role)
 
@@ -513,6 +507,62 @@ class MissionRun:
 
             print(f"❌ [Manager]: Task {task_idx} FAILED verification in {elapsed:.1f}s.")
             return False
+
+    async def _execute_swarm_task(self, task_idx: int, context: str) -> bool:
+        """Execute a task using a swarm of agents for consensus.
+
+        Moved verbatim from Manager.execute_swarm_task (staged commit 3);
+        the run state is owned by this instance.
+        """
+        mission_id = self.mission_id
+        task_states = self.task_states
+        task_results = self.task_results
+        task_ids = self.task_ids
+        task_data = self.tasks[task_idx]
+
+        print(f"\n🐝 [Manager]: Starting SWARM for Task {task_idx}...")
+        roles = [task_data.assigned_agent_role] + task_data.swarm_roles
+
+        # 1. Parallel Execution
+        async def agent_task(role: str):
+            agent = self.agents.get(role)
+            if not agent: return f"[{role}]: Agent not found."
+            print(f"  🐝 [Swarm]: {role} is thinking...")
+            try:
+                result = await agent.execute_task(task_data.description, context)
+                return f"[{role}]: {result.get('output', 'No output')}"
+            except Exception as e:
+                print(f"  ⚠️ [Swarm]: {role} failed: {e}")
+                return f"[{role}]: FAILED - {str(e)}"
+
+        outputs = await asyncio.gather(*[agent_task(r) for r in roles])
+        debate_history = "\n\n".join(outputs)
+
+        # 2. Consensus Building
+        print(f"  🐝 [Swarm]: Building consensus between {len(roles)} agents...")
+        consensus_prompt = f"""The following agents have provided their perspectives on the task:
+{debate_history}
+
+Original Task: {task_data.description}
+Mission Context: {context}
+
+Act as a Lead Coordinator. Synthesize these perspectives into a single, optimized final answer or plan of action.
+Identify any conflicts and resolve them based on the best technical reasoning provided.
+FINAL CONSENSUS:"""
+
+        # Use the manager's model to synthesize
+        response = await acompletion(model=self.config.model_name, messages=[{"role": "user", "content": consensus_prompt}])
+        final_output = response.choices[0].message.content
+
+        # 3. Record result
+        task_id = await self.store.create_task(mission_id, f"[SWARM] {task_data.description}", "Manager (Consensus)")
+        task_ids[task_idx] = task_id
+        await self.store.update_task(task_id, status="COMPLETED", output_data=final_output)
+        task_results[task_idx] = final_output
+        task_states[task_idx] = "COMPLETED"
+
+        print(f"✅ [Manager]: Swarm Task {task_idx} reached consensus.")
+        return True
 
     async def execute(self, context: str = "") -> RunOutcome:
         """Run the mission's task DAG to completion.

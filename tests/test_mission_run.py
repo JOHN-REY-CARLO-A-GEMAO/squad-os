@@ -1,10 +1,10 @@
-"""MissionRun interface tests (staged commit 2 of the MissionRun architecture).
+"""MissionRun interface tests (staged commits 2-3 of the MissionRun architecture).
 
 Drives the run through its one interface — execute() — with fake agents and
 the InMemoryRunStore adapter. Scenarios re-expressed from the deleted
 test_hitl_flow.py and test_verification_retry.py (replace, don't layer),
-plus the temporary cut-lines: the swarm executor injection and the Manager
-execute_dag delegate.
+plus the routing: Manager.make_run is the single construction point, swarm
+consensus lives inside the run, and follow-ups map RunOutcome honestly.
 """
 import json
 import os
@@ -17,6 +17,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+import squad_os.orchestrator.manager as manager_mod
+import squad_os.orchestrator.mission_run as mission_run_mod
 from squad_os.core.gates import VerificationReport, GateResult
 from squad_os.orchestrator.manager import Manager, MissionPlan, TaskPlan
 from squad_os.orchestrator.mission_run import MissionRun, RunConfig, RunOutcome
@@ -262,49 +264,132 @@ async def test_verification_failure_triggers_reassignment_retry(tmp_path):
     assert outcome.status == "FAILED"  # Fixer also fails the same gates
 
 
-# ── Temporary cut-line: swarm executor injection ─────────────────────
+# ── Swarm: fan-out + consensus inside the run ────────────────────────
 
-async def test_swarm_routes_to_injected_executor(tmp_path):
+async def test_swarm_task_reaches_consensus(tmp_path, monkeypatch):
+    from unittest.mock import MagicMock
+
     store = InMemoryRunStore()
-    calls = []
-    tasks = [TaskPlan(description="swarm it", assigned_agent_role="Analyst",
-                      is_swarm=True, swarm_roles=["Second"])]
-
-    async def fake_swarm(task_idx, context, mission_id, task_states, task_results, task_ids):
-        calls.append((task_idx, context, mission_id))
-        tid = await store.create_task(mission_id, f"[SWARM] {tasks[0].description}",
-                                      "Manager (Consensus)")
-        task_ids[task_idx] = tid
-        await store.update_task(tid, status="COMPLETED", output_data="consensus")
-        task_results[task_idx] = "consensus"
-        task_states[task_idx] = "COMPLETED"
-        return True
-
-    run = make_run(tasks, {"Analyst": FakeAgent(), "Second": FakeAgent()},
-                   tmp_path, store=store, swarm_executor=fake_swarm)
-    outcome = await run.execute("g")
-
-    assert calls == [(0, "Mission: g", 7)], "swarm tasks route to the injected executor"
-    assert outcome.status == "COMPLETED"
-    assert outcome.task_states == {0: "COMPLETED"}
-
-
-# ── Temporary cut-line: Manager execute_dag delegate ─────────────────
-
-async def test_manager_execute_dag_delegates_to_mission_run(tmp_path):
-    """The delegate keeps today's contract (per-task state map) and routes
-    persistence through the Manager's injected store."""
-    store = InMemoryRunStore()
-    mgr = Manager(tool_inventory=[], model_name="test", verification_enabled=False, store=store)
-    mgr.active_agents = {"Analyst": FakeAgent()}
-    mgr.plan_mission_obj = SimpleNamespace(suggested_parallelism=2)
-
-    result = await mgr.execute_dag(
-        [TaskPlan(description="delegate me", assigned_agent_role="Analyst")],
-        mission_id=7, enriched_goal="g", shared_branch=FakeBranch(tmp_path),
+    lead = FakeAgent(role="Analyst", output="perspective A")
+    second = FakeAgent(role="Second", output="perspective B")
+    run = make_run(
+        [TaskPlan(description="swarm it", assigned_agent_role="Analyst",
+                  is_swarm=True, swarm_roles=["Second"])],
+        {"Analyst": lead, "Second": second}, tmp_path, store=store,
     )
 
-    assert isinstance(result, dict), "delegate returns today's task-state map"
-    assert result == {0: "COMPLETED"}
+    consensus = MagicMock()
+    consensus.choices = [MagicMock(message=MagicMock(content="FINAL CONSENSUS: combine both"))]
+
+    async def fake_acompletion(**kw):
+        return consensus
+
+    monkeypatch.setattr(mission_run_mod, "acompletion", fake_acompletion)
+    outcome = await run.execute("g")
+
+    assert outcome.status == "COMPLETED"
+    assert outcome.task_states == {0: "COMPLETED"}
+    assert len(lead.contexts) == 1 and len(second.contexts) == 1, "all swarm roles executed"
     rows = await store.get_mission_tasks(7)
-    assert rows[0]["status"] == "COMPLETED", "the run used the Manager's store"
+    assert rows[0]["assigned_agent"] == "Manager (Consensus)"
+    assert "FINAL CONSENSUS" in rows[0]["output_data"]
+
+
+# ── Routing: Manager constructs runs, maps outcomes honestly ─────────
+
+async def test_run_mission_routes_through_mission_run_and_injected_store(tmp_path, monkeypatch):
+    """Manager → MissionRun → injected store, end to end: the run executes
+    the squad's tasks and the final status lands through the seam."""
+    store = InMemoryRunStore()
+    mgr = Manager(tool_inventory=[], model_name="test", verification_enabled=False, store=store)
+    agent = FakeAgent()
+    mgr.active_agents = {"Analyst": agent}
+
+    class FakeBranch:
+        def __init__(self, bid):
+            self.project_path = str(tmp_path)
+            self.base_dir = str(tmp_path)
+            self.task_id = "test-branch"
+
+        @classmethod
+        def create_id(cls, slug):
+            return "test-branch"
+
+        def fork(self):
+            pass
+
+    async def fake_plan_mission(goal):
+        return MissionPlan(
+            tasks=[TaskPlan(description="do the thing", assigned_agent_role="Analyst")],
+            suggested_parallelism=2,
+        )
+
+    async def _noop(*a, **k):
+        return None
+
+    async def fake_create_mission(*a, **k):
+        return 99
+
+    monkeypatch.setattr(manager_mod, "create_mission", fake_create_mission)
+    monkeypatch.setattr(manager_mod, "ProjectBranch", FakeBranch)
+    monkeypatch.setattr(mgr, "recruit_squad", _noop)
+    monkeypatch.setattr(mgr, "plan_mission", fake_plan_mission)
+
+    result = await mgr.run_mission("some goal")
+
+    assert result == "COMPLETED"
+    assert store.mission_status[99] == "COMPLETED", "final status written through the injected store"
+    assert store.mission_status.get(99) is not None
+    rows = await store.get_mission_tasks(99)
+    assert rows[0]["status"] == "COMPLETED", "the run executed through MissionRun"
+
+
+@pytest.fixture
+async def _isolated_db(tmp_path, monkeypatch):
+    """Hermetic real DB for follow-up routing (handle_followup reads the
+    mission row and conversation through the session package)."""
+    monkeypatch.chdir(tmp_path)
+    from squad_os.database.session import init_db
+    await init_db()
+
+
+async def test_handle_followup_runs_fresh_run_and_maps_outcome_honestly(tmp_path, _isolated_db, monkeypatch):
+    """A follow-up is a fresh MissionRun on the same mission row; the run's
+    outcome maps honestly onto the mission status (this pins the deliberate
+    commit-3 change: FAILED runs are no longer reported as COMPLETED)."""
+    from squad_os.database import session as session_mod
+
+    mission_id = await session_mod.create_mission("original goal")
+    mgr = Manager(tool_inventory=[], model_name="test", verification_enabled=False)
+    mgr.active_agents = {"Broken": FakeAgent(role="Broken", exc=RuntimeError("nope"))}
+
+    async def fake_plan_mission(goal):
+        return MissionPlan(tasks=[TaskPlan(description="fix it", assigned_agent_role="Broken")])
+
+    class FakeBranch:
+        def __init__(self, bid):
+            self.project_path = str(tmp_path)
+            self.base_dir = str(tmp_path)
+            self.task_id = "test-branch"
+
+        @classmethod
+        def create_id(cls, slug):
+            return "test-branch"
+
+        def fork(self):
+            pass
+
+    async def _noop(*a, **k):
+        return None
+
+    monkeypatch.setattr(manager_mod, "ProjectBranch", FakeBranch)
+    monkeypatch.setattr(mgr, "recruit_squad", _noop)
+    monkeypatch.setattr(mgr, "plan_mission", fake_plan_mission)
+
+    await mgr.handle_followup(mission_id, "please fix it")
+
+    mission = await session_mod.get_mission(mission_id)
+    assert mission["status"] == "FAILED", "honest mapping: the follow-up run failed"
+    history = await session_mod.get_conversation(mission_id)
+    assert any("Follow-up execution complete" in (m.get("content") or "") for m in history), \
+        "outcome summary logged to the conversation"
