@@ -8,15 +8,13 @@ from pydantic import BaseModel, Field
 from litellm import acompletion
 import os
 import shutil
-import aiosqlite
 from squad_os.agents.base import BaseAgent
 from squad_os.database.session import (
-    create_mission, create_task, update_task, update_mission, update_blackboard, DB_PATH, get_all_personas,
-    append_conversation, get_conversation, get_mission, get_task, set_mission_status, create_interrupt, get_task_interrupt,
-    update_interrupt_guidance,
-    append_conversation_event, update_mission_snapshot
+    create_mission, get_all_personas, append_conversation, get_mission,
 )
-from squad_os.database.session_missions import compute_mission_final_status
+# Re-exported for callers/tests that import the final-status helper from here.
+from squad_os.database.session_missions import compute_mission_final_status  # noqa: F401
+from squad_os.orchestrator.run_store import RunStore, SessionRunStore
 from squad_os.core.projects import ProjectBranch
 from squad_os.tools.self_healing import health_monitor
 from squad_os.core.utils import is_safe_path
@@ -41,7 +39,7 @@ class MissionPlan(BaseModel):
 
 
 class Manager:
-    def __init__(self, tool_inventory: List[Any], model_name: str = "gpt-4o-mini", verification_enabled: bool = True):
+    def __init__(self, tool_inventory: List[Any], model_name: str = "gpt-4o-mini", verification_enabled: bool = True, store: Optional[RunStore] = None):
         self.tool_inventory = {t.name: t for t in tool_inventory}
         self.model_name = model_name
         self.max_retries = 3
@@ -53,6 +51,10 @@ class Manager:
         self.verification_disabled_tasks: set = set()  # task indices to skip verification for
         self.parent_event_ids = {}
         self.conversation_id = 1
+        # Storage seam (staged commit 1): every run-state persistence call
+        # goes through this port. Default adapter wraps the session functions;
+        # tests may inject their own.
+        self.store: RunStore = store if store is not None else SessionRunStore()
 
     def _repair_json(self, content: str) -> str:
         """Deep clean JSON, handling severe LLM hallucinations."""
@@ -304,12 +306,12 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
         else:
             # Reuse the caller-provided mission row (worker queue/schedule dispatch)
             # so tasks, interrupts and events attach to the SAME mission — no duplicate rows.
-            await update_mission(mission_id, "IN_PROGRESS")
+            await self.store.update_mission(mission_id, "IN_PROGRESS")
 
         # Initialize Event Sourcing: create MISSION.STARTED event
         # Guarded: event/snapshot writes must not crash the mission if tables are missing.
         try:
-            parent_id = await append_conversation_event(
+            parent_id = await self.store.append_conversation_event(
                 conversation_id=self.conversation_id,
                 event_namespace="MISSION",
                 event_type="STARTED",
@@ -322,7 +324,7 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
             self.parent_event_ids[mission_id] = parent_id
 
             # Initialize Mission Snapshot
-            await update_mission_snapshot(
+            await self.store.update_mission_snapshot(
                 mission_id=mission_id,
                 status="IN_PROGRESS",
                 progress=0.0,
@@ -382,9 +384,7 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
                         header = f"\n\n--- UPLOADED FILES ({len(file_summaries)}) ---\n"
                         enriched_goal += header + "\n".join(file_summaries)
 
-                    async with aiosqlite.connect(DB_PATH) as db:
-                        await db.execute("UPDATE missions SET uploaded_files = ? WHERE id = ?", (json.dumps(files), mission_id))
-                        await db.commit()
+                    await self.store.update_mission_uploaded_files(mission_id, json.dumps(files))
             except Exception as e:
                 print(f"⚠️ [Manager]: Error processing uploaded files: {e}")
 
@@ -457,8 +457,8 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
         except Exception as e:
             print(f"❌ [Manager]: Setup failed: {e}")
             try:
-                await update_mission(mission_id, "FAILED")
-                await update_mission_snapshot(
+                await self.store.update_mission(mission_id, "FAILED")
+                await self.store.update_mission_snapshot(
                     mission_id=mission_id,
                     status="FAILED",
                     progress=1.0,
@@ -469,7 +469,7 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
                     token_usage=0,
                     estimated_cost=0.0
                 )
-                await append_conversation_event(
+                await self.store.append_conversation_event(
                     conversation_id=self.conversation_id,
                     event_namespace="ERROR",
                     event_type="COMPLETE",
@@ -502,8 +502,8 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
             else:
                 final_status = dag_outcome if isinstance(dag_outcome, str) else "COMPLETED"
 
-            await update_mission(mission_id, final_status)
-            await update_mission_snapshot(
+            await self.store.update_mission(mission_id, final_status)
+            await self.store.update_mission_snapshot(
                 mission_id=mission_id,
                 status=final_status,
                 progress=1.0,
@@ -514,7 +514,7 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
                 token_usage=0,
                 estimated_cost=0.0
             )
-            await append_conversation_event(
+            await self.store.append_conversation_event(
                 conversation_id=self.conversation_id,
                 event_namespace="MISSION" if final_status == "COMPLETED" else "ERROR",
                 event_type="COMPLETE",
@@ -551,10 +551,7 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
         enriched_goal = goal
 
         # Gather previous task results from DB
-        async with aiosqlite.connect(DB_PATH) as db:
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute("SELECT description, status, output_data, assigned_agent FROM tasks WHERE mission_id = ? ORDER BY id", (mission_id,))
-            prev_tasks = [dict(r) for r in await cursor.fetchall()]
+        prev_tasks = await self.store.get_mission_tasks(mission_id)
 
         if prev_tasks:
             summary_lines = ["\n\n--- PREVIOUS ATTEMPT RESULTS ---"]
@@ -584,7 +581,7 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
 
         # 5. Re-plan and re-execute
         try:
-            await set_mission_status(mission_id, "IN_PROGRESS")
+            await self.store.update_mission(mission_id, "IN_PROGRESS")
             await append_conversation(mission_id, "system", f"Re-planning with follow-up: {user_message[:100]}")
 
             if workflow_json:
@@ -638,7 +635,7 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
 
             # Re-execute on the same branch
             await self.execute_dag(tasks, mission_id, enriched_goal, shared_branch)
-            await set_mission_status(mission_id, "COMPLETED")
+            await self.store.update_mission(mission_id, "COMPLETED")
 
             # Log success to conversation
             completed = sum(1 for t in self.plan_mission_obj.tasks if hasattr(t, '_result') and getattr(t, '_result') == "COMPLETED")
@@ -646,7 +643,7 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
 
         except Exception as e:
             print(f"❌ [Manager]: Follow-up failed: {e}")
-            await set_mission_status(mission_id, "FAILED")
+            await self.store.update_mission(mission_id, "FAILED")
             await append_conversation(mission_id, "system", f"Follow-up failed: {str(e)[:200]}")
 
     async def _prompt_human_in_terminal(self, mission_id: int, task_idx: int, interrupt_id: int, context: str):
@@ -709,11 +706,11 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
             return False
 
         print(f"\n🚀 [Manager]: Task {task_idx}/{len(tasks)} -> {agent.role}")
-        task_id = await create_task(mission_id, task_data.description, agent.role)
+        task_id = await self.store.create_task(mission_id, task_data.description, agent.role)
         task_ids[task_idx] = task_id
 
         # Event Sourcing: Log TOOL.THINKING event
-        await append_conversation_event(
+        await self.store.append_conversation_event(
             conversation_id=self.conversation_id,
             event_namespace="TOOL",
             event_type="THINKING",
@@ -730,7 +727,7 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
         completed_count = sum(1 for s in task_states.values() if s == "COMPLETED")
         total_count = len(tasks)
         progress = completed_count / total_count if total_count > 0 else 0.0
-        await update_mission_snapshot(
+        await self.store.update_mission_snapshot(
             mission_id=mission_id,
             status="IN_PROGRESS",
             progress=progress,
@@ -753,17 +750,17 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
         # If the agent carries destructive tools, pause for human review before executing.
         destructive_names = [n for n, t in agent.tools.items() if getattr(t, 'destructive', False)]
         if destructive_names:
-            interrupt_id = await create_interrupt(
+            interrupt_id = await self.store.create_interrupt(
                 mission_id=mission_id,
                 task_idx=task_idx,
                 context=f"Agent '{agent.role}' has access to destructive tools: {destructive_names}. Task: {task_data.description}",
                 error_message=f"Task paused: destructive tools ({', '.join(destructive_names)}) require human approval."
             )
-            await update_task(task_id, status="PAUSED_FOR_REVIEW")
+            await self.store.update_task(task_id, status="PAUSED_FOR_REVIEW")
             task_states[task_idx] = "PAUSED_FOR_REVIEW"
 
             # Event Sourcing: Log INBOX.APPROVAL_REQUESTED event
-            await append_conversation_event(
+            await self.store.append_conversation_event(
                 conversation_id=self.conversation_id,
                 event_namespace="INBOX",
                 event_type="APPROVAL_REQUESTED",
@@ -778,7 +775,7 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
             )
 
             # Update snapshot status to FOLLOWUP
-            await update_mission_snapshot(
+            await self.store.update_mission_snapshot(
                 mission_id=mission_id,
                 status="FOLLOWUP",
                 progress=progress,
@@ -805,12 +802,12 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
                 _decision, _guidance = ("undecided", "")
             _guidance_text = (_guidance or "").strip()
             if _guidance_text.upper().startswith("APPROVED"):
-                await update_interrupt_guidance(interrupt_id, _guidance_text)
+                await self.store.update_interrupt_guidance(interrupt_id, _guidance_text)
                 print(f"  [HITL]: Task {task_idx} approved in terminal. Proceeding.")
                 # Fall through to normal execution below (no re-pause, no new interrupt).
             elif _guidance_text and _guidance_text.upper() not in ("PENDING", "UNDECIDED"):
-                await update_interrupt_guidance(interrupt_id, _guidance_text)
-                await update_task(task_id, status="FAILED",
+                await self.store.update_interrupt_guidance(interrupt_id, _guidance_text)
+                await self.store.update_task(task_id, status="FAILED",
                                   error=f"Rejected by human: {_guidance_text}")
                 task_states[task_idx] = "FAILED"
                 self.agent_metrics[task_data.assigned_agent_role]["tasks_failed"] += 1
@@ -886,7 +883,7 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
 
         # Success path (only if verification passed)
         if verification_passed:
-            await update_task(task_id, status="COMPLETED", output_data=output_text,
+            await self.store.update_task(task_id, status="COMPLETED", output_data=output_text,
                               verification_status="PASSED" if verification_report else "NOT_VERIFIED",
                               verification_details=json.dumps(verification_report) if verification_report else None)
             task_results[task_idx] = output_text
@@ -895,10 +892,10 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
             health_monitor.record_success(task_data.assigned_agent_role)
 
             # Write result to blackboard for other tasks
-            await update_blackboard(f"task_{task_idx}_result", output_text)
+            await self.store.update_blackboard(f"task_{task_idx}_result", output_text)
 
             # Event Sourcing: Log TOOL.JOURNAL event
-            await append_conversation_event(
+            await self.store.append_conversation_event(
                 conversation_id=self.conversation_id,
                 event_namespace="TOOL",
                 event_type="JOURNAL",
@@ -915,7 +912,7 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
             completed_count = sum(1 for s in task_states.values() if s == "COMPLETED")
             total_count = len(tasks)
             progress = completed_count / total_count if total_count > 0 else 1.0
-            await update_mission_snapshot(
+            await self.store.update_mission_snapshot(
                 mission_id=mission_id,
                 status="IN_PROGRESS" if progress < 1.0 else "COMPLETED",
                 progress=progress,
@@ -930,7 +927,7 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
             print(f"✅ [Manager]: Task {task_idx} completed in {elapsed:.1f}s.")
             return True
         else:
-            await update_task(task_id, status="FAILED", output_data=output_text,
+            await self.store.update_task(task_id, status="FAILED", output_data=output_text,
                               error=f"Verification failed: {json.dumps(verification_report)[:500]}",
                               verification_status="FAILED",
                               verification_details=json.dumps(verification_report))
@@ -940,7 +937,7 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
             health_monitor.record_failure(task_data.assigned_agent_role, f"Verification failed: {json.dumps(verification_report)[:200]}")
 
             # Event Sourcing: Log ERROR.JOURNAL event
-            await append_conversation_event(
+            await self.store.append_conversation_event(
                 conversation_id=self.conversation_id,
                 event_namespace="ERROR",
                 event_type="JOURNAL",
@@ -957,7 +954,7 @@ Structure: {{ "tasks": [ {{ "description": "...", "assigned_agent_role": "...", 
             completed_count = sum(1 for s in task_states.values() if s == "COMPLETED")
             total_count = len(tasks)
             progress = completed_count / total_count if total_count > 0 else 1.0
-            await update_mission_snapshot(
+            await self.store.update_mission_snapshot(
                 mission_id=mission_id,
                 status="FAILED",
                 progress=progress,
@@ -1013,9 +1010,9 @@ FINAL CONSENSUS:"""
         final_output = response.choices[0].message.content
 
         # 3. Record result
-        task_id = await create_task(mission_id, f"[SWARM] {task_data.description}", "Manager (Consensus)")
+        task_id = await self.store.create_task(mission_id, f"[SWARM] {task_data.description}", "Manager (Consensus)")
         task_ids[task_idx] = task_id
-        await update_task(task_id, status="COMPLETED", output_data=final_output)
+        await self.store.update_task(task_id, status="COMPLETED", output_data=final_output)
         task_results[task_idx] = final_output
         task_states[task_idx] = "COMPLETED"
 
@@ -1047,19 +1044,19 @@ FINAL CONSENSUS:"""
             for i in range(len(tasks)):
                 if task_states.get(i) != "PAUSED_FOR_REVIEW":
                     continue
-                interrupt = await get_task_interrupt(mission_id, i)
+                interrupt = await self.store.get_task_interrupt(mission_id, i)
                 if interrupt and interrupt["status"] == "RESOLVED":
                     guidance = (interrupt.get("user_guidance") or "").strip()
                     if guidance.upper().startswith("APPROVED"):
                         print(f"  [HITL]: Task {i} approved by human. Resuming.")
                         task_states[i] = "PENDING"
                         if i in task_ids:
-                            await update_task(task_ids[i], status="PENDING")
+                            await self.store.update_task(task_ids[i], status="PENDING")
                     else:
                         print(f"  [HITL]: Task {i} rejected by human: {guidance}")
                         task_states[i] = "FAILED"
                         if i in task_ids:
-                            await update_task(task_ids[i], status="FAILED",
+                            await self.store.update_task(task_ids[i], status="FAILED",
                                               error=f"Rejected by human: {guidance}")
 
             # Find tasks that are ready to execute
@@ -1076,11 +1073,11 @@ FINAL CONSENSUS:"""
                 # If a parent was SKIPPED, auto-skip child (condition cannot be met)
                 if any(task_states.get(dep) == "SKIPPED" for dep in deps):
                     task_states[i] = "SKIPPED"
-                    task_id = await create_task(
+                    task_id = await self.store.create_task(
                         mission_id, tasks[i].description, tasks[i].assigned_agent_role
                     )
                     task_ids[i] = task_id
-                    await update_task(
+                    await self.store.update_task(
                         task_id, status="SKIPPED",
                         output_data="Parent task was skipped — condition branch unreachable."
                     )
@@ -1093,11 +1090,11 @@ FINAL CONSENSUS:"""
                     ctx = build_condition_context(task_results, deps)
                     if not all(SafeEvaluator.evaluate(c, ctx) for c in conditions):
                         task_states[i] = "SKIPPED"
-                        task_id = await create_task(
+                        task_id = await self.store.create_task(
                             mission_id, tasks[i].description, tasks[i].assigned_agent_role
                         )
                         task_ids[i] = task_id
-                        await update_task(
+                        await self.store.update_task(
                             task_id, status="SKIPPED",
                             output_data=f"Condition not met: {'; '.join(conditions)}"
                         )
@@ -1171,7 +1168,7 @@ FINAL CONSENSUS:"""
                     task_states[task_idx] = "FAILED"
                     if task_idx in task_ids:
                         try:
-                            await update_task(task_ids[task_idx], status="FAILED", output_data=str(result))
+                            await self.store.update_task(task_ids[task_idx], status="FAILED", output_data=str(result))
                         except Exception as db_err:
                             logging.error(f"Failed to update task {task_idx} status: {db_err}")
                     
@@ -1209,7 +1206,7 @@ FINAL CONSENSUS:"""
                     # Inject previous verification failure details
                     if task_idx in task_ids:
                         try:
-                            prev_task = await get_task(task_ids[task_idx])
+                            prev_task = await self.store.get_task(task_ids[task_idx])
                             if prev_task and prev_task.get("verification_details"):
                                 details = json.loads(prev_task["verification_details"])
                                 context_parts.append(

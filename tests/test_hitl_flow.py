@@ -89,11 +89,11 @@ async def test_hitl_gate_fires_once(monkeypatch):
     async def fake_prompt(*a, **kw):
         return ("decided", "APPROVED")
 
-    monkeypatch.setattr(manager_mod, "create_interrupt", fake_create_interrupt)
-    monkeypatch.setattr(manager_mod, "create_task", fake_create_task)
-    monkeypatch.setattr(manager_mod, "update_task", fake_update_task)
-    monkeypatch.setattr(manager_mod, "get_task_interrupt", fake_get_task_interrupt)
-    monkeypatch.setattr(manager_mod, "update_interrupt_guidance", fake_update_interrupt_guidance)
+    monkeypatch.setattr(mgr.store, "create_interrupt", fake_create_interrupt)
+    monkeypatch.setattr(mgr.store, "create_task", fake_create_task)
+    monkeypatch.setattr(mgr.store, "update_task", fake_update_task)
+    monkeypatch.setattr(mgr.store, "get_task_interrupt", fake_get_task_interrupt)
+    monkeypatch.setattr(mgr.store, "update_interrupt_guidance", fake_update_interrupt_guidance)
     monkeypatch.setattr(mgr, "_prompt_human_in_terminal", fake_prompt)
 
     tasks = [TaskPlan(
@@ -134,11 +134,11 @@ async def test_hitl_gate_respects_rejection(monkeypatch):
     async def fake_prompt(*a, **kw):
         return ("decided", "reject this task, bad plan")
 
-    monkeypatch.setattr(manager_mod, "create_interrupt", fake_create_interrupt)
-    monkeypatch.setattr(manager_mod, "create_task", fake_create_task)
-    monkeypatch.setattr(manager_mod, "update_task", fake_update_task)
-    monkeypatch.setattr(manager_mod, "get_task_interrupt", fake_get_task_interrupt)
-    monkeypatch.setattr(manager_mod, "update_interrupt_guidance", _noop)
+    monkeypatch.setattr(mgr.store, "create_interrupt", fake_create_interrupt)
+    monkeypatch.setattr(mgr.store, "create_task", fake_create_task)
+    monkeypatch.setattr(mgr.store, "update_task", fake_update_task)
+    monkeypatch.setattr(mgr.store, "get_task_interrupt", fake_get_task_interrupt)
+    monkeypatch.setattr(mgr.store, "update_interrupt_guidance", _noop)
     monkeypatch.setattr(mgr, "_prompt_human_in_terminal", fake_prompt)
 
     tasks = [TaskPlan(
@@ -174,11 +174,11 @@ async def test_agent_load_zero_after_pause_and_execute(monkeypatch):
     async def fake_prompt(*a, **kw):
         return ("decided", "APPROVED")
 
-    monkeypatch.setattr(manager_mod, "create_interrupt", fake_create_interrupt)
-    monkeypatch.setattr(manager_mod, "create_task", lambda *a, **k: asyncio.sleep(0, result=100))
-    monkeypatch.setattr(manager_mod, "update_task", _noop)
-    monkeypatch.setattr(manager_mod, "get_task_interrupt", fake_get_task_interrupt)
-    monkeypatch.setattr(manager_mod, "update_interrupt_guidance", _noop)
+    monkeypatch.setattr(mgr.store, "create_interrupt", fake_create_interrupt)
+    monkeypatch.setattr(mgr.store, "create_task", lambda *a, **k: asyncio.sleep(0, result=100))
+    monkeypatch.setattr(mgr.store, "update_task", _noop)
+    monkeypatch.setattr(mgr.store, "get_task_interrupt", fake_get_task_interrupt)
+    monkeypatch.setattr(mgr.store, "update_interrupt_guidance", _noop)
     monkeypatch.setattr(mgr, "_prompt_human_in_terminal", fake_prompt)
 
     tasks = [TaskPlan(
@@ -247,7 +247,7 @@ async def test_run_mission_reuses_queue_mission_id(monkeypatch):
             pass
 
     monkeypatch.setattr(manager_mod, "create_mission", fake_create_mission)
-    monkeypatch.setattr(manager_mod, "update_mission", fake_update_mission)
+    monkeypatch.setattr(mgr.store, "update_mission", fake_update_mission)
     monkeypatch.setattr(manager_mod, "ProjectBranch", FakeBranch)
     monkeypatch.setattr(mgr, "execute_dag", fake_execute_dag)
     monkeypatch.setattr(mgr, "recruit_squad", _noop)
@@ -295,7 +295,7 @@ async def test_run_mission_creates_when_no_id(monkeypatch):
         ])
 
     monkeypatch.setattr(manager_mod, "create_mission", fake_create_mission)
-    monkeypatch.setattr(manager_mod, "update_mission", fake_update_mission)
+    monkeypatch.setattr(mgr.store, "update_mission", fake_update_mission)
     monkeypatch.setattr(manager_mod, "ProjectBranch", FakeBranch)
     monkeypatch.setattr(mgr, "execute_dag", fake_execute_dag)
     monkeypatch.setattr(mgr, "recruit_squad", _noop)
