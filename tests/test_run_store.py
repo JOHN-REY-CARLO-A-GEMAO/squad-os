@@ -159,3 +159,14 @@ async def test_session_run_store_delegates_to_shared_memory():
     # Final status helper
     assert store.final_status({0: "COMPLETED", 1: "FAILED"}) == "FAILED"
     assert store.final_status({}) == "COMPLETED"
+
+
+# ── Final-status precedence (re-expressed from the deleted test_hitl_flow) ──
+
+def test_final_status_precedence_matrix():
+    store = SessionRunStore()
+    assert store.final_status({0: "COMPLETED", 1: "COMPLETED"}) == "COMPLETED"
+    assert store.final_status({0: "COMPLETED", 1: "SKIPPED"}) == "COMPLETED"
+    assert store.final_status({0: "COMPLETED", 1: "FAILED"}) == "FAILED"
+    assert store.final_status({0: "PAUSED_FOR_REVIEW", 1: "FAILED"}) == "PAUSED_FOR_REVIEW"
+    assert store.final_status({}) == "COMPLETED"
